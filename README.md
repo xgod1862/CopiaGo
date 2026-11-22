@@ -11,6 +11,14 @@
 3. 在 CopiaGo 中点击「连接 iPhone」。配对完成后拔线，等托盘面板显示「已连接（无线）」。
 4. 在 iPhone 上复制一段文字，在 Windows 应用中按 `Ctrl+V`。
 
+## 界面截图
+
+| 首次配对 | 托盘弹窗 | 剪贴板历史 |
+| --- | --- | --- |
+| [![CopiaGo 首次配对引导](docs/images/first-pairing.png)](docs/images/first-pairing.png) | [![CopiaGo 托盘弹窗中的同步设置](docs/images/tray-popup.png)](docs/images/tray-popup.png) | [![CopiaGo 剪贴板中的文字、图片和文件记录](docs/images/clipboard-history.png)](docs/images/clipboard-history.png) |
+
+截图来自运行中的 CopiaGo 1.0.0，连接状态和历史记录使用示例数据。点击图片可查看原图。
+
 ## 同步范围
 
 | 方向 | 内容 | 默认行为 |

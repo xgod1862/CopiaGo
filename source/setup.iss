@@ -2,7 +2,7 @@
   #define Root ".."
 #endif
 #define Name "CopiaGo"
-#define Version "0.3.5"
+#define Version "1.0.0"
 #ifndef DistDir
   #define DistDir Root + "\build\dist\iPhoneClipboard"
 #endif
@@ -38,7 +38,7 @@ Name: startup; Description: "登录 Windows 后自动启动"; Flags: checkedonce
 [Files]
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Root}\source\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#Root}\source\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Root}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\source\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]

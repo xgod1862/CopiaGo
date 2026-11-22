@@ -18,7 +18,12 @@ from iphone_clip.clipboard import Clip, fingerprint
 from iphone_clip.files import FILE_DESCRIPTOR, MAX_FILE_BYTES, content_type, name_from_descriptor, safe_name
 from iphone_clip.settings import data_dir
 
-StatusCallback = Callable[[str, str], None]
+from iphone_clip.i18n import Message, message
+
+StatusCallback = Callable[[str, Message], None]
+IDLE_PROMPT = message("连接并信任你的 iPhone")
+CONNECTED_WIFI = message("已连接（无线）")
+CONNECTED_USB = message("已连接（USB） · 可以拔掉数据线，之后将通过无线连接")
 ClipCallback = Callable[[Clip, bool], None]  # (clip, copied while disconnected)
 DESCRIPTION_BYTES = 256 * 1024  # a file this small comes along with its description
 
@@ -93,6 +98,10 @@ async def usb_identifiers() -> list[str]:
     return [str(d.serial) for d in devices if str(d.connection_type).upper() == "USB"]
 
 
+class USBPairingError(RuntimeError):
+    """Pairing could not start because the USB device selection was invalid."""
+
+
 async def pair_over_usb() -> str:
     """Set up one explicitly trusted device for wireless RemotePairing."""
     from pymobiledevice3.exceptions import RemotePairingCompletedError
@@ -101,9 +110,9 @@ async def pair_over_usb() -> str:
 
     identifiers = await usb_identifiers()
     if not identifiers:
-        raise RuntimeError("未找到 USB 连接的 iPhone。请用数据线连接并解锁后重试")
+        raise USBPairingError(message("未找到 USB 连接的 iPhone。请用数据线连接并解锁后重试"))
     if len(identifiers) != 1:
-        raise RuntimeError("请暂时只连接一台 iPhone")
+        raise USBPairingError(message("请暂时只连接一台 iPhone"))
     lockdown = await create_using_usbmux(serial=identifiers[0], autopair=True)
     try:
         if not await lockdown.get_enable_wifi_connections():
@@ -271,36 +280,36 @@ def snapshot_types(snapshot: dict) -> list[str]:
     return sorted({name for item in items for name in item.get("types", ()) if isinstance(name, str)})
 
 
-def unsupported_kind(types: list[str]) -> str | None:
+def unsupported_kind(types: list[str]) -> Message | None:
     """What a copy that yielded no text or picture was, in words for the status line."""
     if not types:
         return None
     if any("movie" in name or "video" in name or name in ("public.mpeg-4", "public.avi", "public.mpeg")
            for name in types):
-        return "视频"
+        return message("视频")
     if any(name in ("public.file-url", "public.url") or name.startswith(("com.adobe.pdf", "public.zip"))
            for name in types):
-        return "文件"
-    return "文件或其他内容"
+        return message("文件")
+    return message("文件或其他内容")
 
 
-def failure_message(exc: BaseException, pairing: bool) -> str:
+def failure_message(exc: BaseException, pairing: bool) -> Message:
+    if isinstance(exc, USBPairingError):
+        return exc.args[0]
     name = type(exc).__name__
     if name in ("ConnectionRefusedError", "ConnectionFailedError", "ConnectionFailedToUsbmuxdError"):
-        return "等待 Apple 设备连接服务或 iPhone…"
+        return message("等待 Apple 设备连接服务或 iPhone…")
     if name == "DeveloperModeIsNotEnabledError":
-        return "需要开启开发者模式：在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启并重启手机，解锁后点「继续连接」"
+        return message("需要开启开发者模式：在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启并重启手机，解锁后点「继续连接」")
     if name == "UserDeniedPairingError":
-        return "iPhone 上选择了「不信任」。请重新插拔数据线，在提示时点「信任」，再点「连接 iPhone」"
+        return message("iPhone 上选择了「不信任」。请重新插拔数据线，在提示时点「信任」，再点「连接 iPhone」")
     if name == "PasswordRequiredError":
-        return "请先解锁 iPhone，再点「连接 iPhone」"
+        return message("请先解锁 iPhone，再点「连接 iPhone」")
     if name == "PairingDialogResponsePendingError" or (pairing and isinstance(exc, TimeoutError)):
-        return "未完成配对：请在 iPhone 上点「信任」并输入锁屏密码，然后再点「连接 iPhone」"
-    if "USB" in str(exc) or "一台" in str(exc):
-        return str(exc)
+        return message("未完成配对：请在 iPhone 上点「信任」并输入锁屏密码，然后再点「连接 iPhone」")
     if pairing:
-        return "配对未完成：请保持 iPhone 解锁并连着数据线，然后再点「连接 iPhone」"
-    return "等待 iPhone 连接；请检查解锁、信任及同一局域网"
+        return message("配对未完成：请保持 iPhone 解锁并连着数据线，然后再点「连接 iPhone」")
+    return message("等待 iPhone 连接；请检查解锁、信任及同一局域网")
 
 
 class Bridge:
@@ -414,7 +423,7 @@ class Bridge:
                     if not self.pair_requested.is_set():
                         # After a failure, keep its message visible until the user tries again.
                         if not prompted:
-                            self.status("setup", "连接并信任你的 iPhone")
+                            self.status("setup", IDLE_PROMPT)
                             prompted = True
                         while not self.interrupted() and not self.pair_requested.is_set():
                             await asyncio.sleep(0.25)
@@ -422,7 +431,7 @@ class Bridge:
                             continue
                     self.pair_requested.clear()
                     pairing = True
-                    self.status("pairing", "正在配对：请解锁 iPhone，出现提示时点「信任」并输入锁屏密码…")
+                    self.status("pairing", message("正在配对：请解锁 iPhone，出现提示时点「信任」并输入锁屏密码…"))
                     await asyncio.wait_for(pair_over_usb(), timeout=120)
                     pairing = False
                     configure_pairing_storage()  # seals the record just written, whichever path wrote it
@@ -430,7 +439,7 @@ class Bridge:
                     if not records:
                         raise RuntimeError("无线配对记录尚未生成")
                 if len(records) != 1:
-                    self.status("error", "已配对多台 iPhone。请在设置中点「忘记此 iPhone」后重新配对")
+                    self.status("error", message("已配对多台 iPhone。请在设置中点「忘记此 iPhone」后重新配对"))
                     await asyncio.sleep(5)
                     continue
                 serial = records[0]
@@ -461,7 +470,7 @@ class Bridge:
                     if developer:
                         self.status("developer", failure_message(exc, pairing))
                     else:
-                        self.status("hold", "连接未完成：请保持 iPhone 解锁并连着数据线，然后点「继续连接」")
+                        self.status("hold", message("连接未完成：请保持 iPhone 解锁并连着数据线，然后点「继续连接」"))
                     while not self.interrupted() and not self.pair_requested.is_set():
                         await asyncio.sleep(0.25)
                     self.pair_requested.clear()
@@ -475,8 +484,7 @@ class Bridge:
         from pymobiledevice3.services.mobile_image_mounter import auto_mount
         from pymobiledevice3.exceptions import AlreadyMountedError
 
-        label = "无线" if wireless else "USB"
-        self.status("connecting", f"正在建立{label}连接…")
+        self.status("connecting", message("正在建立无线连接…" if wireless else "正在建立USB连接…"))
         for attempt in range(2):
             async with UserspaceRsdTunnel(serial=serial, autopair=False, remotepairing=wireless) as rsd:
                 diagnostic_event("tunnel_open")
@@ -484,27 +492,26 @@ class Bridge:
                 if PasteboardService.SERVICE_NAME not in services:
                     if attempt:
                         raise RuntimeError("设备未提供剪贴板开发服务")
-                    self.status("connecting", "正在准备 iPhone 开发者服务。首次需要下载文件，可能要几分钟，请保持联网…")
+                    self.status("connecting", message("正在准备 iPhone 开发者服务。首次需要下载文件，可能要几分钟，请保持联网…"))
                     try:
                         await asyncio.wait_for(auto_mount(rsd), timeout=240)
                     except AlreadyMountedError:
                         pass
                     continue  # Refresh the advertised service table after mounting.
-                await self._monitor(rsd, label=label, wireless=wireless)
+                await self._monitor(rsd, wireless=wireless)
                 return
 
-    async def _monitor(self, rsd: object, *, label: str, wireless: bool) -> None:
+    async def _monitor(self, rsd: object, *, wireless: bool) -> None:
         # The tunnel and its lock are shared with pushes from this computer while connected.
         lock = asyncio.Lock()
         changed = asyncio.Event()
         self.rsd, self.rsd_lock = rsd, lock
         try:
-            await self._watch(rsd, lock, changed, label=label, wireless=wireless)
+            await self._watch(rsd, lock, changed, wireless=wireless)
         finally:
             self.rsd = None
 
-    async def _watch(self, rsd: object, lock: asyncio.Lock, changed: asyncio.Event, *, label: str,
-                     wireless: bool) -> None:
+    async def _watch(self, rsd: object, lock: asyncio.Lock, changed: asyncio.Event, *, wireless: bool) -> None:
         from pymobiledevice3.remote.core_device.pasteboard_service import (
             GENERAL_PASTEBOARD,
             PASTEBOARD_CHANGED_NOTIFICATION,
@@ -533,7 +540,7 @@ class Bridge:
             elif self.last_change is None:
                 self.last_change = initial
 
-            self.status("connected", f"已连接（{label}）" + (" · 可以拔掉数据线，之后将通过无线连接" if not wireless else ""))
+            self.status("connected", CONNECTED_WIFI if wireless else CONNECTED_USB)
 
             async def receive() -> None:
                 async for event in notifications.receive_notification():
@@ -603,7 +610,7 @@ class Bridge:
                             await probe_sizes()
                         kind = unsupported_kind(types)
                         if kind:
-                            self.status("unsupported", f"iPhone 上复制了{kind}，目前只同步文字、图片和「文件」App 里的文件")
+                            self.status("unsupported", message("iPhone 上复制了{kind}，目前只同步文字、图片和「文件」App 里的文件", kind=kind))
 
             async def probe_sizes() -> None:
                 """Diagnostics only: ask the phone for sizes without the data, and time it."""

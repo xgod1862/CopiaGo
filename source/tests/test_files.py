@@ -30,8 +30,10 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(files.safe_name('a<b>:c?.pdf', "com.adobe.pdf"), "a_b__c_.pdf")
         self.assertEqual(files.safe_name("CON.txt", "public.plain-text"), "_CON.txt")
         self.assertEqual(files.safe_name("无扩展名", PPTX), "无扩展名.pptx")
-        self.assertTrue(files.safe_name(None, PPTX).startswith("iPhone 文件 "))
-        self.assertTrue(files.safe_name(None, PPTX).endswith(".pptx"))
+        with mock.patch("iphone_clip.i18n._language", "zh-CN"):
+            self.assertTrue(files.safe_name(None, PPTX).startswith("iPhone 文件 "))
+        with mock.patch("iphone_clip.i18n._language", "en"):
+            self.assertRegex(files.safe_name(None, PPTX), r"^iPhone file \d{8}-\d{6}\.pptx$")
 
 
 class StorageTests(unittest.TestCase):

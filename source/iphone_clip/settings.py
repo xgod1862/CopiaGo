@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import sys
 
+from iphone_clip.i18n import LANGUAGE_OPTIONS
+
 
 def data_dir() -> Path:
     override = os.environ.get("ICB_DATA_DIR")
@@ -31,6 +33,17 @@ def _save(key: str, value) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(values), encoding="utf-8")
     temporary.replace(path)
+
+
+def language_preference() -> str:
+    value = _load().get("language")
+    return value if value in LANGUAGE_OPTIONS else "system"
+
+
+def set_language_preference(value: str) -> None:
+    if value not in LANGUAGE_OPTIONS:
+        raise ValueError(f"Unsupported language preference: {value}")
+    _save("language", value)
 
 
 def history_enabled() -> bool:

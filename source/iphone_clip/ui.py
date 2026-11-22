@@ -24,11 +24,14 @@ import win32con
 from iphone_clip import APP_NAME, __version__
 from iphone_clip.clipboard import ClipboardWriter, Clip, ClipTooLarge, fingerprint
 from iphone_clip import files
-from iphone_clip.device import (Bridge, FileTooLarge, OfferExpired, configure_pairing_storage,
+from iphone_clip.device import (Bridge, CONNECTED_WIFI, FileTooLarge, IDLE_PROMPT, OfferExpired,
+                                configure_pairing_storage,
                                 forget_paired_devices, paired_identifiers)
 from iphone_clip.history import History
+from iphone_clip.i18n import Message, message, tr, use_language
 from iphone_clip.popup import HistoryPopup
-from iphone_clip.settings import (data_dir, history_enabled, notifications_enabled, pc_history_enabled,
+from iphone_clip.settings import (data_dir, history_enabled, language_preference, notifications_enabled,
+                                  pc_history_enabled, set_language_preference,
                                   pull_enabled, push_enabled, set_history_enabled, set_notifications_enabled,
                                   set_pc_history_enabled, set_pull_enabled, set_push_enabled, set_sync_types,
                                   sync_types, file_ask_mb, set_file_ask_mb)
@@ -37,7 +40,6 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "iPhoneClipboardPrototype"
 # Status tones, mapped onto the panel's colours.
 MUTED, ACCENT, WARN = "muted", "ok", "warn"
-IDLE_PROMPT = "连接并信任你的 iPhone"
 ICON_GRACE = 30  # seconds before a dropped connection turns the tray icon grey
 DISCONNECT_NOTICE = 5 * 60
 STORE_SEARCH = "ms-windows-store://search/?query=Apple%20Devices"
@@ -151,12 +153,14 @@ def tray_icon(connected: bool) -> Image.Image:
 
 class Window:
     def __init__(self, minimized: bool, wake) -> None:
+        self.language = language_preference()
+        use_language(self.language)
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.bind_all("<Escape>", lambda _: self.hide())
         self.scale = self.root.winfo_fpixels("1i") / 96
         self.events = queue.SimpleQueue()
-        self.status = tk.StringVar(value="正在连接 iPhone…")
+        self.status = message("正在连接 iPhone…")
         self.startup_var = tk.BooleanVar(value=startup_enabled())
         self.save_history = tk.BooleanVar(value=history_enabled())
         self.notify_var = tk.BooleanVar(value=notifications_enabled())
@@ -215,16 +219,8 @@ class Window:
                                   on_open_store=self.open_store, on_finish=self.finish_onboarding,
                                   on_send_item=self.send_item,
                                   version=__version__)
-        self.status.trace_add("write", lambda *_: self.update_popup_status())
         self.update_popup_status()
-        menu = pystray.Menu(
-            pystray.MenuItem("剪贴板历史", lambda: self.events.put(("show", "")), default=True),
-            pystray.MenuItem("使用 iPhone 上最新复制的内容", lambda: self.events.put(("use_pending", "")),
-                             visible=lambda _: self.pending_clip is not None),
-            pystray.MenuItem("连接与设置", lambda: self.events.put(("open_setup", ""))),
-            pystray.MenuItem("退出", lambda: self.events.put(("quit", ""))),
-        )
-        self.tray = pystray.Icon("iPhoneClipboardPrototype", tray_icon(False), APP_NAME, menu)
+        self.tray = pystray.Icon("iPhoneClipboardPrototype", tray_icon(False), APP_NAME, self.tray_menu())
         self.tray.run_detached()
         if getattr(sys, "frozen", False):
             self.root.after(1500, lambda: self.promote_tray(10))
@@ -232,6 +228,15 @@ class Window:
         if not self.paired or not minimized:
             self.show()
         self.root.after(100, self.drain)
+
+    def tray_menu(self) -> pystray.Menu:
+        return pystray.Menu(
+            pystray.MenuItem(tr("剪贴板历史"), lambda: self.events.put(("show", "")), default=True),
+            pystray.MenuItem(tr("使用 iPhone 上最新复制的内容"), lambda: self.events.put(("use_pending", "")),
+                             visible=lambda _: self.pending_clip is not None),
+            pystray.MenuItem(tr("连接与设置"), lambda: self.events.put(("open_setup", ""))),
+            pystray.MenuItem(tr("退出"), lambda: self.events.put(("quit", ""))),
+        )
 
     def px(self, value: float) -> int:
         return round(value * self.scale)
@@ -257,7 +262,9 @@ class Window:
             driver = "ok"
         else:
             driver = "failed" if self.driver_failed else "missing"
+        self.popup.back_page = "onboarding" if not self.paired or self.just_paired else "history"
         self.popup.set_onboarding(phase, driver, retry=self.bridge_state in ("developer", "hold"))
+        self.popup.set_settings(self.settings_state())
 
     def promote_tray(self, attempts):
         try:
@@ -287,7 +294,7 @@ class Window:
         try:
             forget_paired_devices()
         except OSError:
-            self.status.set("无法删除配对记录")
+            self.set_status(message("无法删除配对记录"))
             return False
         self.bridge.request_reset()
         self.bridge.hold_failures.set()
@@ -300,14 +307,14 @@ class Window:
         self.pending_clip = None
         self.tray.update_menu()
         self.set_icon(False)
-        self.status.set("已忘记 iPhone。请用数据线连接后重新配对")
+        self.set_status(message("已忘记 iPhone。请用数据线连接后重新配对"))
         return True
 
     def install_driver(self):
         if self.installing:
             return
         self.installing = True
-        self.status.set("正在安装 Apple 连接组件，请完成 Windows 提示。")
+        self.set_status(message("正在安装 Apple 连接组件，请完成 Windows 提示。"))
         self.update_onboarding()
 
         def install():
@@ -319,13 +326,13 @@ class Window:
                     creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=300,
                 )
                 ready = result.returncode == 0 or apple_driver_installed()
-                message = ("连接组件已就绪，可以连接 iPhone。" if ready
-                           else "安装未完成。可以在 Microsoft Store 安装「Apple Devices」后重试。")
+                status = message("连接组件已就绪，可以连接 iPhone。" if ready else
+                                 "安装未完成。可以在 Microsoft Store 安装「Apple Devices」后重试。")
             except (OSError, subprocess.TimeoutExpired):
                 ready = False
-                message = "无法运行 Windows 包管理器。可以在 Microsoft Store 安装「Apple Devices」后重试。"
+                status = message("无法运行 Windows 包管理器。可以在 Microsoft Store 安装「Apple Devices」后重试。")
             self.driver_failed = not ready
-            self.events.put(("driver", message))
+            self.events.put(("driver", status))
 
         threading.Thread(target=install, name="apple-driver-setup", daemon=True).start()
 
@@ -333,7 +340,7 @@ class Window:
         try:
             os.startfile(STORE_SEARCH)
         except OSError:
-            self.status.set("无法打开 Microsoft Store")
+            self.set_status(message("无法打开 Microsoft Store"))
 
     def refresh(self):
         if self.popup.visible:
@@ -344,7 +351,7 @@ class Window:
             phone, pc = self.history.entries("phone"), self.history.entries("pc")
         except Exception:
             phone, pc = [], []
-            self.status.set("无法读取历史")
+            self.set_status(message("无法读取历史"))
         self.popup.set_entries({"phone": (phone, self.save_history.get()), "pc": (pc, self.pc_history_var.get())})
 
     def copy_item(self, item_id):
@@ -355,7 +362,7 @@ class Window:
             else:
                 self.writer.put(clip)
         except Exception:
-            self.status.set("无法复制这条历史")
+            self.set_status(message("无法复制这条历史"))
             return
         self.popup.copied(item_id)
         self.root.after(450, self.hide)
@@ -364,7 +371,7 @@ class Window:
         try:
             self.history.remove(item_id)
         except Exception:
-            self.status.set("无法删除这条历史")
+            self.set_status(message("无法删除这条历史"))
             return
         self.refresh()
 
@@ -372,7 +379,7 @@ class Window:
         try:
             self.history.remove(source=source)
         except Exception:
-            self.status.set("无法清空历史")
+            self.set_status(message("无法清空历史"))
             return
         self.refresh()
 
@@ -385,7 +392,8 @@ class Window:
             self.change_history()
 
     def settings_state(self):
-        return {"startup": (self.startup_var.get(), bool(startup_command())),
+        return {"language": self.language, "paired": self.paired,
+                "startup": (self.startup_var.get(), bool(startup_command())),
                 "history": (self.save_history.get(), True),
                 "pc_history": (self.pc_history_var.get(), True),
                 "pull": (self.pull_var.get(), True),
@@ -405,11 +413,14 @@ class Window:
         self.popup.set_settings(self.settings_state())
 
     def toggle_type(self, key, kind):
+        if key == "language":
+            self.change_language(kind)
+            return
         if key == "ask_limit":
             try:
                 set_file_ask_mb(kind)
             except OSError:
-                self.status.set("无法保存同步设置")
+                self.set_status(message("无法保存同步设置"))
                 return
             self.ask_mb = kind
             self.popup.set_settings(self.settings_state())
@@ -418,15 +429,36 @@ class Window:
         chosen = set(self.types[direction]) ^ {kind}
         if not chosen:
             self.status_color = MUTED
-            self.status.set("至少保留一种同步内容")
+            self.set_status(message("至少保留一种同步内容"))
             return
         try:
             set_sync_types(direction, chosen)
         except OSError:
-            self.status.set("无法保存同步设置")
+            self.set_status(message("无法保存同步设置"))
             return
         self.types[direction] = sync_types(direction)
         self.popup.set_settings(self.settings_state())
+
+    def change_language(self, preference: str) -> None:
+        try:
+            set_language_preference(preference)
+        except OSError:
+            self.set_status(message("无法保存语言设置"))
+            return
+        self.language = preference
+        use_language(preference)
+        self.popup.set_settings(self.settings_state())
+        self.update_popup_status()
+        self.tray.menu = self.tray_menu()
+        self.update_tray_title()
+
+    def set_status(self, status: Message) -> None:
+        self.status = status
+        self.update_popup_status()
+        self.update_tray_title()
+
+    def update_tray_title(self) -> None:
+        self.tray.title = f"{APP_NAME} · {self.status}"[:127]
 
     def update_popup_status(self):
         if self.connected:
@@ -435,7 +467,7 @@ class Window:
             chip = "warn"
         else:
             chip = "busy"
-        self.popup.set_status(self.status.get(), chip, self.status_color, self.connection_message)
+        self.popup.set_status(str(self.status), chip, self.status_color, str(self.connection_message))
 
     def change_history(self):
         enabled = self.save_history.get()
@@ -443,7 +475,7 @@ class Window:
             set_history_enabled(enabled)
         except OSError:
             self.save_history.set(self.save_switch.is_set())
-            self.status.set("无法保存历史设置")
+            self.set_status(message("无法保存历史设置"))
         else:
             self.save_switch.set() if enabled else self.save_switch.clear()
         # The empty list's button and the settings switch are the same setting; keep both in step.
@@ -455,7 +487,7 @@ class Window:
             set_pc_history_enabled(self.pc_history_var.get())
         except OSError:
             self.pc_history_var.set(not self.pc_history_var.get())
-            self.status.set("无法保存历史设置")
+            self.set_status(message("无法保存历史设置"))
         else:
             # Record from the next copy on; what is on the clipboard now is not taken in.
             self.watch_sequence = self.writer._current_sequence()
@@ -467,7 +499,7 @@ class Window:
             set_pull_enabled(self.pull_var.get())
         except OSError:
             self.pull_var.set(not self.pull_var.get())
-            self.status.set("无法保存同步设置")
+            self.set_status(message("无法保存同步设置"))
             return
         self.pull_switch.set() if self.pull_var.get() else self.pull_switch.clear()
 
@@ -476,14 +508,14 @@ class Window:
             set_notifications_enabled(self.notify_var.get())
         except OSError:
             self.notify_var.set(not self.notify_var.get())
-            self.status.set("无法保存通知设置")
+            self.set_status(message("无法保存通知设置"))
 
     def change_push(self):
         try:
             set_push_enabled(self.push_var.get())
         except OSError:
             self.push_var.set(not self.push_var.get())
-            self.status.set("无法保存同步设置")
+            self.set_status(message("无法保存同步设置"))
             return
         # Start from the clipboard as it is now; turning the switch on sends nothing by itself.
         self.watch_sequence = self.writer._current_sequence()
@@ -520,19 +552,19 @@ class Window:
     def send_item(self, item_id):
         """Send one item of the computer history to the iPhone."""
         if not self.connected:
-            self.report_send("iPhone 未连接，无法发送", True)
+            self.report_send(message("iPhone 未连接，无法发送"), True)
             return
         try:
             clip = self.history.get(item_id)
         except Exception:
-            self.report_send("无法读取这条历史", True)
+            self.report_send(message("无法读取这条历史"), True)
             return
         self.push(clip, manual=True, item_id=item_id)
 
     def report_send(self, message, manual):
         if manual:
             self.status_color = WARN
-            self.status.set(message)
+            self.set_status(message)
             if not self.popup.visible:
                 self.notify(message)
 
@@ -541,21 +573,21 @@ class Window:
         if not manual and mark == self.last_sent:
             return
         self.last_sent = mark
-        kind = "图片" if clip.image else "文本"
+        kind = message("图片" if clip.image else "文本")
         try:
             future = self.bridge.push(clip)
         except ConnectionError:
-            self.report_send("iPhone 未连接，无法发送", manual)
+            self.report_send(message("iPhone 未连接，无法发送"), manual)
             return
         state = "pushed_manual" if manual else "pushed"
 
         def done(result):
             if result.cancelled() or result.exception() is not None:
-                self.events.put(("push_error", "发送到 iPhone 失败"))
+                self.events.put(("push_error", message("发送到 iPhone 失败")))
                 return
             if item_id is not None:
                 self.events.put(("sent_item", str(item_id)))
-            self.events.put((state, f"已发送{kind}到 iPhone"))
+            self.events.put((state, message("已发送{kind}到 iPhone", kind=kind)))
 
         future.add_done_callback(done)
 
@@ -571,13 +603,13 @@ class Window:
                         pass
         except OSError:
             self.startup_var.set(startup_enabled())
-            self.status.set("无法更改开机启动")
+            self.set_status(message("无法更改开机启动"))
 
     def run_bridge(self):
         try:
             asyncio.run(self.bridge.run())
         except Exception:
-            self.post_status("error", "同步进程已停止，请重新打开应用")
+            self.post_status("error", message("同步进程已停止，请重新打开应用"))
 
     def post_status(self, state, message):
         self.events.put((state, message))
@@ -586,28 +618,30 @@ class Window:
         """A file was copied on the iPhone: sync it, ask first, or leave it, as the settings say."""
         self.clear_offer()
         name = files.short_name(offer.name)
-        size = files.human_size(offer.size) if offer.size else "大小未知"
-        meta = f"{offer.name.rpartition('.')[2].upper()} · {size}"
+        size = files.human_size(offer.size) if offer.size else message("大小未知")
+        extension = offer.name.rpartition(".")[2].upper()
+        meta = message("{extension} · {size}", extension=extension, size=size)
         if "file" not in self.types["pull"]:
             return  # turned off in settings: nothing to say
         if offer.size > files.MAX_FILE_BYTES:
             self.status_color = WARN
-            self.status.set(f"「{name}」{size}，超过 512 MB 上限，未同步")
+            self.set_status(message("「{name}」{size}，超过 512 MB 上限，未同步", name=name, size=size))
             return
         limit = self.ask_mb * 1024 * 1024
         if self.pull_switch.is_set() and (not limit or (offer.size and offer.size <= limit)):
             self.fetch_offer(offer)
             return
         if self.pull_switch.is_set():
-            reason = f"超过 {self.ask_mb} MB，要同步到电脑吗？" if offer.size else "大小未知，要同步到电脑吗？"
+            reason = (message("超过 {limit} MB，要同步到电脑吗？", limit=self.ask_mb) if offer.size else
+                      message("大小未知，要同步到电脑吗？"))
         else:
-            reason = "已关闭自动同步，需要时点「同步到电脑」"
+            reason = message("已关闭自动同步，需要时点「同步到电脑」")
         self.offer = offer
         self.popup.set_offer({"name": offer.name, "meta": meta, "reason": reason, "busy": False})
         self.status_color = MUTED
-        self.status.set(f"收到文件「{name}」{size}，等你选择是否同步")
+        self.set_status(message("收到文件「{name}」{size}，等你选择是否同步", name=name, size=size))
         if self.pull_switch.is_set() and not self.popup.visible:
-            self.notify(f"iPhone 上复制了「{name}」（{size}），超过 {self.ask_mb} MB。打开剪贴板面板选择是否同步")
+            self.notify(message("iPhone 上复制了「{name}」（{size}）。打开剪贴板面板选择是否同步", name=name, size=size))
 
     def answer_offer(self, accept):
         offer = self.offer
@@ -618,7 +652,7 @@ class Window:
         else:
             self.clear_offer()
             self.status_color = MUTED
-            self.status.set(f"已忽略「{files.short_name(offer.name)}」")
+            self.set_status(message("已忽略「{name}」", name=files.short_name(offer.name)))
 
     def clear_offer(self):
         self.offer = None
@@ -627,25 +661,26 @@ class Window:
     def fetch_offer(self, offer):
         if self.popup.offer is not None:
             self.popup.set_offer({**self.popup.offer, "busy": True})
-        size = files.human_size(offer.size) if offer.size else ""
+        name = files.short_name(offer.name)
         self.status_color = MUTED
-        self.status.set(f"正在同步「{files.short_name(offer.name)}」{size}…")
+        self.set_status(message("正在同步「{name}」{size}…", name=name, size=files.human_size(offer.size))
+                        if offer.size else message("正在同步「{name}」…", name=name))
         try:
             future = self.bridge.fetch(offer)
         except ConnectionError:
-            self.events.put(("file_error", (offer, "iPhone 未连接，无法同步文件")))
+            self.events.put(("file_error", (offer, message("iPhone 未连接，无法同步文件"))))
             return
 
         def done(result):
             error = None if result.cancelled() else result.exception()
             if result.cancelled() or error is not None:
                 if isinstance(error, OfferExpired):
-                    message = "手机上已复制了别的内容，这个文件不再可用"
+                    status = message("手机上已复制了别的内容，这个文件不再可用")
                 elif isinstance(error, FileTooLarge):
-                    message = f"「{files.short_name(offer.name)}」太大，未能同步"
+                    status = message("「{name}」太大，未能同步", name=name)
                 else:
-                    message = f"同步「{files.short_name(offer.name)}」失败"
-                self.events.put(("file_error", (offer, message)))
+                    status = message("同步「{name}」失败", name=name)
+                self.events.put(("file_error", (offer, status)))
             else:
                 self.events.put(("file_ready", (offer, result.result())))
 
@@ -656,60 +691,59 @@ class Window:
             path = files.save_received(clip.file_name or offer.name, clip.file_data)
             self.writer.put_files([path])
         except Exception:
-            self.file_failed(offer, f"无法把「{files.short_name(offer.name)}」放进电脑剪贴板")
+            self.file_failed(offer, message("无法把「{name}」放进电脑剪贴板", name=files.short_name(offer.name)))
             return
         note = self.save_history_item(clip) if "file" in self.types["pull"] else ""
         self.clear_offer()
-        message = f"已同步「{files.short_name(offer.name)}」· 可直接粘贴" + note
+        status = message("已同步「{name}」· 可直接粘贴{note}", name=files.short_name(offer.name), note=note)
         self.status_color = ACCENT
-        self.status.set(message)
+        self.set_status(status)
         self.refresh()
         if not self.popup.visible:
-            self.notify(message)
+            self.notify(status)
 
     def file_failed(self, offer, message):
         if self.offer is offer:
             self.clear_offer()
         self.status_color = WARN
-        self.status.set(message)
+        self.set_status(message)
         self.notify(message, alert=True)
 
     def receive_clip(self, clip: Clip, stale: bool = False):
-        kind = "图片" if clip.image else "文本"
+        kind = message("图片" if clip.image else "文本")
         if ("image" if clip.image else "text") not in self.types["pull"]:
             return  # the user does not sync this kind from the iPhone: no clipboard, no history, no notice
         if not self.pull_switch.is_set():
             # Automatic sync is off: keep it at hand (history, tray menu) without touching the PC clipboard.
             self.pending_clip = clip
-            kind = "图片" if clip.image else "文本"
-            self.events.put(("held", f"iPhone 上复制了新的{kind} · 未自动写入电脑，可在面板或托盘菜单中使用" +
-                             self.save_history_item(clip)))
+            self.events.put(("held", message("iPhone 上复制了新的{kind} · 未自动写入电脑，可在面板或托盘菜单中使用{note}",
+                                            kind=kind, note=self.save_history_item(clip))))
             return
         if stale and self.writer.changed_elsewhere():
             # Something was copied on this PC after the iPhone item; do not replace it with the older one.
             self.pending_clip = clip
-            kind = "图片" if clip.image else "文本"
-            self.events.put(("pending", f"iPhone 断线期间复制的{kind}未覆盖电脑剪贴板，可从托盘菜单使用" +
-                             self.save_history_item(clip)))
+            self.events.put(("pending", message("iPhone 断线期间复制的{kind}未覆盖电脑剪贴板，可从托盘菜单使用{note}",
+                                               kind=kind, note=self.save_history_item(clip))))
             return
         self.pending_clip = None
         try:
-            kind = self.writer.put(clip)
+            self.writer.put(clip)
         except ClipTooLarge:
-            self.events.put(("sync_error", "图片过大，未同步到电脑"))
+            self.events.put(("sync_error", message("图片过大，未同步到电脑")))
             return
         except Exception:
-            self.events.put(("sync_error", "写入 Windows 剪贴板失败"))
+            self.events.put(("sync_error", message("写入 Windows 剪贴板失败")))
             return
-        self.events.put(("synced", f"已同步{kind} · 可直接粘贴" + self.save_history_item(clip)))
+        self.events.put(("synced", message("已同步{kind} · 可直接粘贴{note}",
+                                      kind=kind, note=self.save_history_item(clip))))
 
-    def save_history_item(self, clip: Clip) -> str:
+    def save_history_item(self, clip: Clip) -> Message | str:
         if not self.save_switch.is_set():
             return ""
         try:
-            return "" if self.history.add(clip) else " · 项目过大，未加入历史"
+            return "" if self.history.add(clip) else message(" · 项目过大，未加入历史")
         except Exception:
-            return " · 历史保存失败"
+            return message(" · 历史保存失败")
 
     def use_pending(self):
         clip, self.pending_clip = self.pending_clip, None
@@ -717,9 +751,11 @@ class Window:
         if clip is None:
             return
         try:
-            self.status.set(f"已使用 iPhone 上的{self.writer.put(clip)} · 可直接粘贴")
+            self.writer.put(clip)
+            kind = message("图片" if clip.image else "文本")
+            self.set_status(message("已使用 iPhone 上的{kind} · 可直接粘贴", kind=kind))
         except Exception:
-            self.status.set("写入 Windows 剪贴板失败")
+            self.set_status(message("写入 Windows 剪贴板失败"))
 
     def notify(self, message, *, alert=False, always=False):
         """Show a Windows notification; an alert repeats only when its text changes.
@@ -733,7 +769,7 @@ class Window:
         if not (always or self.notify_var.get()):
             return
         try:
-            self.tray.notify(message, APP_NAME)
+            self.tray.notify(str(message), APP_NAME)
         except Exception:
             pass
 
@@ -744,7 +780,7 @@ class Window:
 
     def mark_connected(self):
         if self.disconnect_notified:
-            self.notify("已重新连接 iPhone")
+            self.notify(message("已重新连接 iPhone"))
         self.connected = True
         self.disconnected_at = None
         self.disconnect_notified = False
@@ -766,14 +802,15 @@ class Window:
             self.set_icon(False)
         if elapsed >= DISCONNECT_NOTICE and not self.disconnect_notified:
             self.disconnect_notified = True
-            self.notify(f"iPhone 已断开 {DISCONNECT_NOTICE // 60} 分钟，正在自动重连。请确认手机已解锁并在同一局域网")
+            self.notify(message("iPhone 已断开 {minutes} 分钟，正在自动重连。请确认手机已解锁并在同一局域网",
+                                minutes=DISCONNECT_NOTICE // 60))
 
     def drain(self):
         if self.wake():
             self.show()
         while True:
             try:
-                state, message = self.events.get_nowait()
+                state, event = self.events.get_nowait()
             except queue.Empty:
                 break
             if state == "show":
@@ -786,13 +823,13 @@ class Window:
             elif state == "use_pending":
                 self.use_pending()
             elif state == "sent_item":
-                self.popup.sent(int(message))
+                self.popup.sent(int(event))
             elif state == "offer":
-                self.handle_offer(message)
+                self.handle_offer(event)
             elif state == "file_ready":
-                self.file_ready(*message)
+                self.file_ready(*event)
             elif state == "file_error":
-                self.file_failed(*message)
+                self.file_failed(*event)
             elif state == "connected" and self.bridge.reset_requested.is_set():
                 continue  # A connection that was just forgotten.
             else:
@@ -803,15 +840,16 @@ class Window:
                     self.paired = True
                     self.bridge.hold_failures.clear()  # from now on, reconnect automatically
                     self.just_paired = True
-                    wireless = message.startswith("已连接（无线）")
+                    wireless = event == CONNECTED_WIFI
                     self.awaiting_wireless = not wireless
-                    self.notify("iPhone 已连接成功。" + ("复制即可同步到电脑。" if wireless else
-                                "现在可以拔掉数据线，之后在同一 Wi-Fi 下自动连接。"), always=True)
+                    self.notify(message("iPhone 已连接成功。复制即可同步到电脑。" if wireless else
+                                        "iPhone 已连接成功。现在可以拔掉数据线，之后在同一 Wi-Fi 下自动连接。"),
+                                always=True)
                     if not self.popup.visible:
                         self.show()
-                elif state == "connected" and self.awaiting_wireless and message.startswith("已连接（无线）"):
+                elif state == "connected" and self.awaiting_wireless and event == CONNECTED_WIFI:
                     self.awaiting_wireless = False
-                    self.notify("已通过 Wi-Fi 连接 iPhone，在手机上复制即可同步到电脑", always=True)
+                    self.notify(message("已通过 Wi-Fi 连接 iPhone，在手机上复制即可同步到电脑"), always=True)
                 if state in ("synced", "held", "pending", "unsupported") and self.offer is not None:
                     self.clear_offer()  # something newer was copied on the iPhone
                 if state == "held":
@@ -823,30 +861,29 @@ class Window:
                     if self.popup.visible:
                         self.refresh()
                     else:
-                        self.notify(message)
+                        self.notify(event)
                 if state in ("error", "sync_error", "push_error") or (state == "developer" and self.paired):
-                    self.notify(message, alert=True)
+                    self.notify(event, alert=True)
                 if state == "pushed_manual" and not self.popup.visible:
-                    self.notify(message)
+                    self.notify(event)
                 if state == "connected":
                     self.mark_connected()
                 elif state in ("waiting", "error", "developer", "hold"):
                     self.mark_disconnected()
                 if state in ("setup", "pairing", "connecting", "connected", "waiting", "error", "developer", "hold"):
                     self.bridge_state = state
-                    self.connection_message = message
+                    self.connection_message = event
                 if state in ("connecting", "waiting", "error") and not self.connected and self.last_connected:
-                    message += f"（上次连接 {self.last_connected}）"
+                    event = message("{status}（上次连接 {time}）", status=event, time=self.last_connected)
                 if state in ("waiting", "error", "sync_error", "push_error", "developer", "hold") or (
-                        state == "setup" and message != IDLE_PROMPT):
+                        state == "setup" and event != IDLE_PROMPT):
                     color = WARN
                 elif state == "unsupported":
                     color = MUTED
                 else:
                     color = ACCENT if self.connected else MUTED
                 self.status_color = color
-                self.status.set(message)
-                self.tray.title = f"{APP_NAME} · {message}"[:127]
+                self.set_status(event)
                 self.update_onboarding()
         self.check_connection()
         self.watch_ticks += 1
@@ -856,7 +893,8 @@ class Window:
 
     def show(self, page="history"):
         if not self.paired or self.just_paired:
-            page = "onboarding"
+            if page != "settings":
+                page = "onboarding"
             self.driver_ready = self.paired or apple_driver_installed()
             self.update_onboarding()
         monitor = win32api.MonitorFromPoint(win32api.GetCursorPos(), win32con.MONITOR_DEFAULTTONEAREST)

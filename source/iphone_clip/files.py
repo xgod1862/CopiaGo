@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from iphone_clip.i18n import tr
 from iphone_clip.settings import data_dir
 
 FILE_DESCRIPTOR = "com.apple.DocumentManager.FPItem.File"
@@ -72,7 +73,7 @@ def name_from_descriptor(descriptor: bytes | None, uti: str | None) -> str | Non
 
 
 def safe_name(name: str | None, uti: str | None) -> str:
-    """A file name Windows accepts, falling back to "iPhone 文件 <time>.<ext>"."""
+    """Return a Windows-safe file name, or a localized fallback without an original name."""
     extension = EXTENSIONS.get(uti or "", "bin")
     if name:
         name = _INVALID.sub("_", name).strip(" .")
@@ -84,7 +85,8 @@ def safe_name(name: str | None, uti: str | None) -> str:
         stem = stem[:120]
         if stem:
             return f"{stem}.{suffix}"
-    return f"iPhone 文件 {datetime.now():%Y%m%d-%H%M%S}.{extension}"
+    return tr("iPhone 文件 {timestamp}.{extension}", timestamp=f"{datetime.now():%Y%m%d-%H%M%S}",
+              extension=extension)
 
 
 def received_dir() -> Path:

@@ -5,6 +5,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $icon = Join-Path $PSScriptRoot 'iphone_clip\assets\jade.ico'
+$chineseFont = Join-Path $PSScriptRoot 'iphone_clip\assets\NotoSansSC.ttf'
 # pymobiledevice3 pulls in its interactive shell, tunnel server and media tooling; the app uses none of them.
 $excludes = @(
     'IPython', 'jedi', 'parso', 'traitlets', 'matplotlib_inline', 'stack_data', 'asttokens', 'executing', 'pure_eval',
@@ -12,7 +13,7 @@ $excludes = @(
 ) | ForEach-Object { '--exclude-module', $_ }
 & $Python -m PyInstaller --noconfirm --onedir --windowed --name iPhoneClipboard `
     --distpath $DistPath --workpath $BuildPath --specpath $BuildPath `
-    --icon $icon --add-data "${icon}:iphone_clip/assets" `
+    --icon $icon --add-data "${icon}:iphone_clip/assets" --add-data "${chineseFont}:iphone_clip/assets" `
     --collect-data pymobiledevice3 --recursive-copy-metadata pymobiledevice3 --collect-binaries pytun_pmd3 `
     --copy-metadata developer-disk-image --hidden-import pystray._win32 `
     --hidden-import pillow_heif --hidden-import win32timezone --hidden-import win32crypt @excludes main.py

@@ -13,6 +13,8 @@ Copy on your iPhone and paste directly into Windows apps. Pair once over USB, th
 3. Select **Connect iPhone** (「连接 iPhone」) in CopiaGo. Once pairing is complete, unplug the cable and wait for the tray panel to show **Connected (Wi-Fi)** (「已连接（无线）」).
 4. Copy some text on your iPhone and press `Ctrl+V` in a Windows app.
 
+The installer and CopiaGo use your Windows display language to choose English or Simplified Chinese. In CopiaGo, open **Settings → Language** to follow Windows or choose a language manually. Settings are also available from the pairing screen.
+
 ## Screenshots
 
 | First-time pairing | System tray popup | Clipboard history |

@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+from pathlib import Path
 import io
 import os
 import tkinter as tk
@@ -13,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from iphone_clip import APP_NAME
 from iphone_clip.files import human_size
+from iphone_clip.i18n import tr
 from iphone_clip.layered import LayeredWindow
 
 SUPERSAMPLE = 4
@@ -53,7 +55,7 @@ def short_time(created: str) -> str:
     if days == 0:
         return moment.strftime("%H:%M")
     if days == 1:
-        return "昨天 " + moment.strftime("%H:%M")
+        return tr("昨天 {time}", time=moment.strftime("%H:%M"))
     return moment.strftime("%m-%d" if moment.year == today.year else "%Y-%m-%d")
 
 
@@ -63,7 +65,13 @@ def font(pixels: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     try:
         return ImageFont.truetype(path, pixels)
     except OSError:
-        return ImageFont.load_default(pixels)
+        bundled = Path(__file__).with_name("assets") / "NotoSansSC.ttf"
+        try:
+            face = ImageFont.truetype(bundled, pixels)
+            face.set_variation_by_axes([700 if bold else 400])
+            return face
+        except OSError:
+            return ImageFont.load_default(pixels)
 
 
 def fit(text: str, face: ImageFont.FreeTypeFont, width: float) -> str:
@@ -81,19 +89,24 @@ def fit(text: str, face: ImageFont.FreeTypeFont, width: float) -> str:
 
 
 def wrap(text: str, face: ImageFont.FreeTypeFont, width: float, max_lines: int) -> list[str]:
-    """Break by character, which suits Chinese; the last kept line is ellipsized."""
+    """Wrap CJK by character and keep Latin words together when they fit."""
     lines, current = [], ""
     for character in text:
-        # Closing punctuation stays at the end of a line rather than starting the next one.
+        # Keep closing punctuation with its preceding text.
         if current and face.getlength(current + character) > width and character not in CLOSING:
-            lines.append(current)
-            current = character.lstrip()
+            split = current.rfind(" ")
+            if split > 0 and character.isascii() and not character.isspace() and current[split + 1:].isascii():
+                lines.append(current[:split].rstrip())
+                current = current[split + 1:] + character
+            else:
+                lines.append(current.rstrip())
+                current = character.lstrip()
         else:
             current += character
     if current:
-        lines.append(current)
+        lines.append(current.rstrip())
     if len(lines) > max_lines:
-        lines = lines[:max_lines - 1] + [fit("".join(lines[max_lines - 1:]) + "…", face, width)]
+        lines = lines[:max_lines - 1] + [fit(lines[max_lines - 1] + "…", face, width)]
     return lines or [""]
 
 
@@ -196,13 +209,15 @@ class Row:
 
 # Settings page: one section per direction, then general. Rows are (kind, key, label).
 SECTIONS = (
+    (None, (("types", "language", "语言"),)),
     ("iPhone → 电脑", (("switch", "pull", "自动同步到电脑"), ("types", "pull_types", "同步内容"),
                      ("types", "ask_limit", "大文件先询问"), ("switch", "history", "保留 iPhone 剪贴板历史"))),
     ("电脑 → iPhone", (("switch", "push", "自动同步到 iPhone"), ("types", "push_types", "同步内容"),
                      ("switch", "pc_history", "保留电脑剪贴板历史"))),
     ("通用", (("switch", "startup", "登录 Windows 时启动"), ("switch", "notify", "显示同步、断开和错误通知"))),
 )
-CHOICES = {  # chip rows: key -> (value, label); "ask_limit" picks one, the others any number
+CHOICES = {  # chip rows: key -> (value, label)
+    "language": (("system", "跟随系统"), ("zh-CN", "简体中文"), ("en", "English")),
     "pull_types": (("text", "文字"), ("image", "图片"), ("file", "文件")),
     "push_types": (("text", "文字"), ("image", "图片")),
     "ask_limit": ((10, "10MB"), (20, "20MB"), (50, "50MB"), (0, "不询问")),
@@ -224,8 +239,10 @@ STEPS = (
     ("拔掉数据线，开始使用", "之后 iPhone 和电脑在同一 Wi-Fi 下会自动连接。"),
 )
 PHASE_STEP = {"idle": 0, "pairing": 1, "preparing": 2, "developer": 2, "retry": 2}
-DEVELOPER_HELP = ("开发者模式未开启。在 iPhone「设置 → 隐私与安全性 → 开发者模式」中打开开关，按提示重启手机；"
-                  "重启后解锁，在弹窗中点「打开」，然后点下方按钮。")
+DEVELOPER_HELP = (
+    "开发者模式未开启。在 iPhone「设置 → 隐私与安全性 → 开发者模式」中打开开关，按提示重启手机；"
+    "重启后解锁，在弹窗中点「打开」，然后点下方按钮。"
+)
 CONTINUE_LABELS = {"developer": "我已开启，继续连接", "retry": "继续连接"}
 IDLE_PROMPT = "连接并信任你的 iPhone"
 
@@ -256,8 +273,9 @@ class HistoryPopup:
         self.sent_id = None
         self.version = version
         self.page = "history"
+        self.back_page = "history"
         self.onboarding = {"phase": "idle", "driver": "ok", "retry": False}
-        self.settings: dict[str, tuple[bool, bool]] = {}  # name: (on, can change)
+        self.settings: dict = {}
         self.shadow_window = LayeredWindow(master, click_through=True)
         self.window = LayeredWindow(master)
         self.entries: list = []
@@ -343,7 +361,7 @@ class HistoryPopup:
             self.detail, self.chip, self.tone, self.connection = detail, chip, tone, connection
             self.render()
 
-    def set_settings(self, values: dict[str, tuple[bool, bool]]) -> None:
+    def set_settings(self, values: dict) -> None:
         if values != self.settings:
             self.settings = values
             self.render()
@@ -438,7 +456,7 @@ class HistoryPopup:
         elif name == "settings":
             self.open_page("settings")
         elif name == "back":
-            self.open_page("history")
+            self.open_page(self.back_page)
         elif name == "enable":
             self.on_enable_history(self.tab)
         elif name == "tab":
@@ -562,11 +580,11 @@ class HistoryPopup:
             return []
         room = self.px(WIDTH) - self.px(PAD) * 2
         if self.onboarding.get("retry"):
-            room -= round(font(self.px(12)).getlength("继续连接")) + self.px(32)
+            room -= round(font(self.px(12)).getlength(tr("继续连接"))) + self.px(32)
         return wrap(self.detail, font(self.px(12)), room, 2)
 
     def detail_visible(self) -> bool:
-        return bool(self.detail) and not (self.tone == "ok" and self.detail.startswith("已连接"))
+        return bool(self.detail) and not (self.tone == "ok" and self.detail.startswith(tr("已连接")))
 
     def frame(self) -> Image.Image:
         if self.page == "onboarding":
@@ -589,10 +607,10 @@ class HistoryPopup:
             frame.alpha_composite(shape(px(32), px(32), px(16), CONTROL_HOVER if hovered else CONTROL), (pad, px(18)))
             frame.alpha_composite(icon("back", px(16), SOFT_INK), (pad + px(8), px(26)))
             self.hits.append((pad, px(18), pad + px(32), px(50), ("back",)))
-            draw.text((pad + px(44), px(34)), "设置", font=font(px(20), True), fill=INK, anchor="lm")
+            draw.text((pad + px(44), px(34)), tr("设置"), font=font(px(20), True), fill=INK, anchor="lm")
             chip_right = width - pad
         else:
-            draw.text((pad, px(34)), "剪贴板", font=font(px(20), True), fill=INK, anchor="lm")
+            draw.text((pad, px(34)), tr("剪贴板"), font=font(px(20), True), fill=INK, anchor="lm")
             settings_x = width - pad - px(32)
             hovered = self.hover == ("settings",)
             frame.alpha_composite(shape(px(32), px(32), px(16), CONTROL_HOVER if hovered else CONTROL),
@@ -601,6 +619,7 @@ class HistoryPopup:
             self.hits.append((settings_x, px(18), settings_x + px(32), px(50), ("settings",)))
             chip_right = settings_x - px(8)
         background, text_color, dot, label = CHIPS[self.chip]
+        label = tr(label)
         chip_font = font(px(12), True)
         chip_width = px(12) + px(7) + px(6) + round(chip_font.getlength(label)) + px(12)
         chip_x = chip_right - chip_width
@@ -609,8 +628,8 @@ class HistoryPopup:
         draw.text((chip_x + px(25), px(34)), label, font=chip_font, fill=text_color, anchor="lm")
         if detail_lines:
             if self.onboarding.get("retry"):
-                label_width = round(font(px(12)).getlength("继续连接")) + px(24)
-                self.button(frame, width - pad - label_width, px(58), label_width, px(26), "继续连接", ("pair",))
+                label_width = round(font(px(12)).getlength(tr("继续连接"))) + px(24)
+                self.button(frame, width - pad - label_width, px(58), label_width, px(26), tr("继续连接"), ("pair",))
             for number, line in enumerate(detail_lines):
                 draw.text((pad, px(70) + number * px(18)), line, font=font(px(12)), fill=TONES[self.tone],
                           anchor="lm")
@@ -621,6 +640,7 @@ class HistoryPopup:
             frame.alpha_composite(shape(inner, px(32), px(16), CONTROL), (pad, tabs_top))
             half = inner // 2
             for index, (key, label) in enumerate(TABS):
+                label = tr(label)
                 x = pad + index * half
                 count = len(self.lists[key][0])
                 text = f"{label} · {count}" if count else label
@@ -661,12 +681,13 @@ class HistoryPopup:
         if settings:
             note = f"{APP_NAME} {self.version}".strip()
         elif self.history_on:
-            note = f"{len(self.entries)} 条 · 加密保存在本机" if self.entries else "已开启 · 加密保存在本机"
+            note = (tr("{count} 条 · 加密保存在本机", count=len(self.entries)) if self.entries else
+                    tr("已开启 · 加密保存在本机"))
         else:
-            note = "未保留 iPhone 剪贴板历史" if self.tab == "phone" else "未保留电脑剪贴板历史"
+            note = tr("未保留 iPhone 剪贴板历史" if self.tab == "phone" else "未保留电脑剪贴板历史")
         right = width - pad
         if self.entries and not settings:
-            label = "确认清空" if self.confirming == "clear" else "清空"
+            label = tr("确认清空" if self.confirming == "clear" else "清空")
             button_width = round(note_font.getlength(label)) + px(28)
             button_x = right - button_width
             hovered = self.hover == ("clear",)
@@ -701,19 +722,19 @@ class HistoryPopup:
         title_font, small_font = font(px(13.5), True), font(px(12))
         draw.text((pad + px(60), top + px(21)), fit(offer["name"], title_font, card_width - px(74)),
                   font=title_font, fill=INK, anchor="lm")
-        draw.text((pad + px(60), top + px(40)), offer["meta"], font=small_font, fill=MUTED, anchor="lm")
+        draw.text((pad + px(60), top + px(40)), str(offer["meta"]), font=small_font, fill=MUTED, anchor="lm")
         button_y = top + height - px(12) - px(30)
         right = pad + card_width - px(12)
-        accept_label = "同步中…" if offer.get("busy") else "同步到电脑"
+        accept_label = tr("同步中…" if offer.get("busy") else "同步到电脑")
         accept_width = round(small_font.getlength(accept_label)) + px(28)
         self.button(layer, right - accept_width, button_y, accept_width, px(30), accept_label, ("offer", True),
                     primary=True, enabled=not offer.get("busy"))
         right -= accept_width + px(8)
         if not offer.get("busy"):
-            ignore_width = round(small_font.getlength("忽略")) + px(28)
-            self.button(layer, right - ignore_width, button_y, ignore_width, px(30), "忽略", ("offer", False))
+            ignore_width = round(small_font.getlength(tr("忽略"))) + px(28)
+            self.button(layer, right - ignore_width, button_y, ignore_width, px(30), tr("忽略"), ("offer", False))
             right -= ignore_width + px(8)
-        draw.text((pad + px(14), button_y + px(15)), fit(offer["reason"], small_font, right - pad - px(18)),
+        draw.text((pad + px(14), button_y + px(15)), fit(str(offer["reason"]), small_font, right - pad - px(18)),
                   font=small_font, fill=(138, 83, 0, 255), anchor="lm")
         # self.button records hits in layer coordinates; move them into window coordinates.
         self.hits = [(x0, y0 + list_top, x1, y1 + list_top, action) if action[0] == "offer" and y1 <= layer.height
@@ -754,7 +775,7 @@ class HistoryPopup:
                 name, _, size = entry.preview.decode("utf-8", errors="replace").partition("\n")
                 layer.alpha_composite(shape(px(36), px(36), px(10), (255, 247, 232, 255)), (pad + px(12), tile_y))
                 layer.alpha_composite(icon("file", px(18), (138, 83, 0, 255)), (pad + px(21), tile_y + px(9)))
-                title = name or "文件"
+                title = name or tr("文件").capitalize()
             elif entry.kind == "image":
                 text_x = pad + px(80)
                 thumbnail = self.thumbnail(entry, px(56), px(36))
@@ -763,7 +784,7 @@ class HistoryPopup:
                 else:
                     layer.alpha_composite(shape(px(56), px(36), px(10), TINT), (pad + px(12), tile_y))
                     layer.alpha_composite(icon("image", px(18), ACCENT), (pad + px(31), tile_y + px(9)))
-                title = "图片"
+                title = tr("图片").capitalize()
             else:
                 text = self.text_of(entry)
                 is_link = text.startswith(("http://", "https://"))
@@ -786,9 +807,9 @@ class HistoryPopup:
                 sub += " · " + human_size(int(size))
             marked = entry.id in (self.copied_id, self.sent_id)
             if entry.id == self.copied_id:
-                sub += " · 已复制"
+                sub += " · " + tr("已复制")
             elif entry.id == self.sent_id:
-                sub += " · 已发送到 iPhone"
+                sub += " · " + tr("已发送到 iPhone")
             draw.text((text_x, top + row.height - px(19)), sub, font=sub_font, fill=ACCENT if marked else MUTED,
                       anchor="lm")
 
@@ -835,35 +856,38 @@ class HistoryPopup:
         title_font, label_font, small_font = font(px(13.5), True), font(px(13.5)), font(px(12))
         hits: list[tuple[int, int, int, int, tuple]] = []
 
-        # The paired iPhone: connection detail and "forget".
         y = px(4)
-        confirming = self.confirming == "forget"
-        label = "确认忘记" if confirming else "忘记此 iPhone"
-        button_width = round(small_font.getlength(label)) + px(28)
-        lines = wrap(self.connection or self.detail or "未连接", small_font,
-                     card_width - px(60) - button_width - px(24), 2)
-        card_height = max(px(68), px(16) + px(20) + px(6) + len(lines) * px(18) + px(14))
-        content.alpha_composite(shape(card_width, card_height, px(16), CARD), (pad, y))
-        content.alpha_composite(shape(px(36), px(36), px(10), TINT), (pad + px(12), y + px(14)))
-        content.alpha_composite(icon("phone", px(18), ACCENT), (pad + px(21), y + px(23)))
-        draw.text((pad + px(60), y + px(14)), "iPhone", font=title_font, fill=INK)
-        for number, line in enumerate(lines):
-            tone = {"ok": "ok", "warn": "warn"}.get(self.chip, "muted") if self.connection else self.tone
-            draw.text((pad + px(60), y + px(40) + number * px(18)), line, font=small_font, fill=TONES[tone])
-        button_x, button_y = pad + card_width - px(12) - button_width, y + px(16)
-        hovered = self.hover == ("forget",)
-        content.alpha_composite(shape(button_width, px(32), px(16), DANGER_TINT if hovered or confirming else WHITE),
-                                (button_x, button_y))
-        draw.text((button_x + button_width // 2, button_y + px(16)), label, font=small_font, fill=DANGER,
-                  anchor="mm")
-        hits.append((button_x, button_y, button_x + button_width, button_y + px(32), ("forget",)))
-        y += card_height
+        if self.settings.get("paired", True):
+            # The paired iPhone: connection detail and "forget".
+            confirming = self.confirming == "forget"
+            label = tr("确认忘记" if confirming else "忘记此 iPhone")
+            button_width = round(small_font.getlength(label)) + px(28)
+            lines = wrap(self.connection or self.detail or tr("未连接"), small_font,
+                         card_width - px(60) - button_width - px(24), 2)
+            card_height = max(px(68), px(16) + px(20) + px(6) + len(lines) * px(18) + px(14))
+            content.alpha_composite(shape(card_width, card_height, px(16), CARD), (pad, y))
+            content.alpha_composite(shape(px(36), px(36), px(10), TINT), (pad + px(12), y + px(14)))
+            content.alpha_composite(icon("phone", px(18), ACCENT), (pad + px(21), y + px(23)))
+            draw.text((pad + px(60), y + px(14)), "iPhone", font=title_font, fill=INK)
+            for number, line in enumerate(lines):
+                tone = {"ok": "ok", "warn": "warn"}.get(self.chip, "muted") if self.connection else self.tone
+                draw.text((pad + px(60), y + px(40) + number * px(18)), line, font=small_font, fill=TONES[tone])
+            button_x, button_y = pad + card_width - px(12) - button_width, y + px(16)
+            hovered = self.hover == ("forget",)
+            content.alpha_composite(shape(button_width, px(32), px(16), DANGER_TINT if hovered or confirming else WHITE),
+                                    (button_x, button_y))
+            draw.text((button_x + button_width // 2, button_y + px(16)), label, font=small_font, fill=DANGER,
+                      anchor="mm")
+            hits.append((button_x, button_y, button_x + button_width, button_y + px(32), ("forget",)))
+            y += card_height
 
         row_height = px(44)
         for section, rows in SECTIONS:
             y += px(14)
-            draw.text((pad + px(6), y + px(9)), section, font=font(px(12), True), fill=MUTED, anchor="lm")
-            y += px(24)
+            if section:
+                draw.text((pad + px(6), y + px(9)), tr(section), font=font(px(12), True), fill=MUTED,
+                          anchor="lm")
+                y += px(24)
             content.alpha_composite(shape(card_width, row_height * len(rows), px(16), CARD), (pad, y))
             hovered_row = None
             for number, (kind, key, text) in enumerate(rows):
@@ -874,9 +898,10 @@ class HistoryPopup:
                         hovered_row = number
                         content.alpha_composite(shape(card_width - px(8), row_height - px(8), px(12), CARD_HOVER),
                                                 (pad + px(4), top + px(4)))
-                    draw.text((pad + px(16), top + row_height // 2), text, font=label_font,
-                              fill=INK if enabled else MUTED, anchor="lm")
                     switch_x, switch_y = pad + card_width - px(16) - px(44), top + (row_height - px(26)) // 2
+                    label = fit(tr(text), label_font, switch_x - pad - px(24))
+                    draw.text((pad + px(16), top + row_height // 2), label, font=label_font,
+                              fill=INK if enabled else MUTED, anchor="lm")
                     track = ACCENT if on else SWITCH_OFF
                     if not enabled:
                         track = track[:3] + (110,)
@@ -888,13 +913,13 @@ class HistoryPopup:
                     if enabled:
                         hits.append((pad, top, pad + card_width, top + row_height, ("toggle", key)))
                 else:
-                    # Chips: kinds of content (at least one stays chosen) or one size limit.
-                    single = key == "ask_limit"
-                    current = self.settings.get(key, ())
+                    # Language and size limits are single-choice. At least one content type stays selected.
+                    single = key in ("language", "ask_limit")
+                    current = self.settings.get(key, "system" if key == "language" else ())
                     chosen = (current,) if single else current
-                    draw.text((pad + px(16), top + row_height // 2), text, font=label_font, fill=INK, anchor="lm")
                     chip_right = pad + card_width - px(14)
                     for value, chip_label in reversed(CHOICES[key]):
+                        chip_label = tr(chip_label)
                         selected = value in chosen
                         chip_font = font(px(12 if single else 12.5), selected)
                         chip_width = round(chip_font.getlength(chip_label)) + px(16 if single else 30)
@@ -911,6 +936,8 @@ class HistoryPopup:
                         if not locked:
                             hits.append((chip_x, chip_y, chip_x + chip_width, chip_y + px(28), ("type", key, value)))
                         chip_right = chip_x - px(4 if single else 6)
+                    label = fit(tr(text), label_font, chip_right - pad - px(20))
+                    draw.text((pad + px(16), top + row_height // 2), label, font=label_font, fill=INK, anchor="lm")
                 if number and hovered_row not in (number, number - 1):
                     draw.line((pad + px(16), top, pad + card_width - px(16), top), fill=(226, 231, 236, 255))
             y += row_height * len(rows)
@@ -948,7 +975,8 @@ class HistoryPopup:
             fill, color = (CONTROL_HOVER if hovered else CONTROL), SOFT_INK
         frame.alpha_composite(shape(width, height, height / 2, fill), (x, y))
         face = font(px(14 if primary else 12.5), primary)
-        ImageDraw.Draw(frame).text((x + width // 2, y + height // 2), label, font=face, fill=color, anchor="mm")
+        ImageDraw.Draw(frame).text((x + width // 2, y + height // 2), fit(label, face, width - px(16)),
+                                   font=face, fill=color, anchor="mm")
         if enabled:
             self.hits.append((x, y, x + width, y + height, action))
 
@@ -965,22 +993,28 @@ class HistoryPopup:
         self.hits = []
 
         # Header with a close button: the guide does not hide when focus moves to the phone.
-        draw.text((pad, px(34)), "配对完成" if done else "连接 iPhone", font=font(px(20), True), fill=INK,
+        draw.text((pad, px(34)), tr("配对完成" if done else "连接 iPhone"), font=font(px(20), True), fill=INK,
                   anchor="lm")
         close_x = width - pad - px(32)
         canvas.alpha_composite(shape(px(32), px(32), px(16), CONTROL_HOVER if self.hover == ("close",) else CONTROL),
                                (close_x, px(18)))
         canvas.alpha_composite(icon("close", px(14), SOFT_INK), (close_x + px(9), px(27)))
         self.hits.append((close_x, px(18), close_x + px(32), px(50), ("close",)))
+        settings_x = close_x - px(40)
+        hovered = self.hover == ("settings",)
+        canvas.alpha_composite(shape(px(32), px(32), px(16), CONTROL_HOVER if hovered else CONTROL),
+                               (settings_x, px(18)))
+        canvas.alpha_composite(icon("sliders", px(16), SOFT_INK), (settings_x + px(8), px(26)))
+        self.hits.append((settings_x, px(18), settings_x + px(32), px(50), ("settings",)))
         y = px(66)
 
         if done:
             canvas.alpha_composite(shape(px(72), px(72), px(36), TINT), (width // 2 - px(36), y + px(8)))
             canvas.alpha_composite(icon("check", px(34), ACCENT), (width // 2 - px(17), y + px(27)))
             y += px(100)
-            draw.text((width // 2, y + px(12)), "现在可以拔掉数据线", font=font(px(16), True), fill=INK, anchor="mm")
+            draw.text((width // 2, y + px(12)), tr("现在可以拔掉数据线"), font=font(px(16), True), fill=INK, anchor="mm")
             y += px(36)
-            for line in wrap("之后 iPhone 和电脑在同一 Wi-Fi 下会自动连接，在手机上复制即可粘贴到电脑。",
+            for line in wrap(tr("之后 iPhone 和电脑在同一 Wi-Fi 下会自动连接，在手机上复制即可粘贴到电脑。"),
                              small_font, inner - px(24), 3):
                 draw.text((width // 2, y + px(9)), line, font=small_font, fill=MUTED, anchor="mm")
                 y += px(20)
@@ -995,7 +1029,7 @@ class HistoryPopup:
                 draw.text((chip_x + px(27), y + px(14)), chip_text, font=small_font, fill=text_color, anchor="lm")
                 y += px(28)
             y += px(24)
-            self.button(canvas, pad, y, inner, px(46), "开始使用", ("finish",), primary=True)
+            self.button(canvas, pad, y, inner, px(46), tr("开始使用"), ("finish",), primary=True)
             y += px(46)
         else:
             # Steps, with the current one expanded.
@@ -1004,8 +1038,8 @@ class HistoryPopup:
             for index, (title, description) in enumerate(STEPS):
                 if index == current and phase == "developer":
                     title, description = "开启开发者模式并重启手机", DEVELOPER_HELP
-                lines = wrap(description, small_font, inner - px(70), 4) if index == current else []
-                rows.append((index, title, lines, px(46) + len(lines) * px(18) + (px(6) if lines else 0)))
+                lines = wrap(tr(description), small_font, inner - px(70), 5) if index == current else []
+                rows.append((index, tr(title), lines, px(46) + len(lines) * px(18) + (px(6) if lines else 0)))
             card_height = sum(row[3] for row in rows) + px(12)
             canvas.alpha_composite(shape(inner, card_height, px(16), CARD), (pad, y))
             row_y = y + px(6)
@@ -1035,7 +1069,7 @@ class HistoryPopup:
             y += card_height + px(12)
 
             # What is happening right now, unless the expanded step already says it.
-            if self.detail and self.detail != IDLE_PROMPT and phase != "developer":
+            if self.detail and self.detail != tr(IDLE_PROMPT) and phase != "developer":
                 for line in wrap(self.detail, small_font, inner - px(8), 3):
                     draw.text((pad + px(4), y + px(9)), line, font=small_font, fill=TONES[self.tone], anchor="lm")
                     y += px(20)
@@ -1044,25 +1078,25 @@ class HistoryPopup:
             # Apple's device service, when it is missing.
             if driver != "ok":
                 note = "需要先安装 Apple 设备连接组件。将通过 Windows 包管理器安装 Apple Mobile Device Support，并代表你接受其许可协议。"
-                lines = wrap(note, small_font, inner - px(28), 3)
+                lines = wrap(tr(note), small_font, inner - px(28), 4)
                 box_height = px(14) + len(lines) * px(18) + px(10) + px(34) + px(14)
                 canvas.alpha_composite(shape(inner, box_height, px(16), (251, 240, 220, 255)), (pad, y))
                 for number, line in enumerate(lines):
                     draw.text((pad + px(14), y + px(14) + number * px(18)), line, font=small_font,
                               fill=(110, 66, 0, 255))
                 button_y = y + px(14) + len(lines) * px(18) + px(10)
-                label = "正在安装…" if driver == "installing" else "安装连接组件"
+                label = tr("正在安装…" if driver == "installing" else "安装连接组件")
                 install_width = round(small_font.getlength(label)) + px(32)
                 self.button(canvas, pad + px(14), button_y, install_width, px(34), label, ("install",),
                             enabled=driver != "installing")
                 if driver == "failed":
-                    store_label = "在 Microsoft Store 中查找"
+                    store_label = tr("在 Microsoft Store 中查找")
                     self.button(canvas, pad + px(22) + install_width, button_y,
                                 round(small_font.getlength(store_label)) + px(32), px(34), store_label, ("store",))
                 y += box_height + px(12)
 
             busy = phase in ("pairing", "preparing")
-            label = "正在连接…" if busy else CONTINUE_LABELS.get(phase, "连接 iPhone")
+            label = tr("正在连接…" if busy else CONTINUE_LABELS.get(phase, "连接 iPhone"))
             self.button(canvas, pad, y, inner, px(46), label, ("pair",), primary=True, enabled=not busy)
             y += px(46)
 
@@ -1082,10 +1116,11 @@ class HistoryPopup:
         layer.alpha_composite(shape(px(56), px(56), px(28), TINT), (center - px(28), y))
         layer.alpha_composite(icon("clipboard", px(26), ACCENT, TINT), (center - px(13), y + px(15)))
         when_on, when_off, enable_label = EMPTY_TEXT[self.tab]
+        enable_label = tr(enable_label)
         lines = when_on if self.history_on else when_off
-        draw.text((center, y + px(84)), lines[0], font=font(px(14), True), fill=INK, anchor="mm")
+        draw.text((center, y + px(84)), tr(lines[0]), font=font(px(14), True), fill=INK, anchor="mm")
         sub_font = font(px(12))
-        for number, line in enumerate(wrap(lines[1], sub_font, layer.width - px(PAD) * 4, 2)):
+        for number, line in enumerate(wrap(tr(lines[1]), sub_font, layer.width - px(PAD) * 4, 2)):
             draw.text((center, y + px(110) + number * px(20)), line, font=sub_font, fill=MUTED, anchor="mm")
         if not self.history_on:
             button_y = y + px(160)

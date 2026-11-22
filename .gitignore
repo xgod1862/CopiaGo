@@ -1,0 +1,57 @@
+# Local installations, build output, and distribution packages
+/app/
+/build/
+/dist/
+/release/
+/source/build/
+/source/dist/
+/source/release/
+/source/iPhoneClipboard.spec
+*.exe
+*.msi
+
+# Local toolchain and downloaded upstream checkouts
+/toolchain/
+/reference/
+.venv/
+venv/
+
+# Python cache and test output
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Clipboard history, received files, device credentials, and local settings
+/data/
+/source/data/
+device-data/
+/received/
+/source/received/
+remote_*.plist
+history.sqlite3
+history.sqlite3-*
+/settings.json
+/source/settings.json
+/portable-data
+/source/portable-data
+.env
+.env.*
+!.env.example
+!.env.template
+*.key
+*.pfx
+*.p12
+
+# Machine-specific test instructions and local diagnostics
+/source/TESTING.md
+*.log
+*.dmp
+Thumbs.db
+Desktop.ini
+.DS_Store

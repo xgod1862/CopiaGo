@@ -19,9 +19,13 @@
 
 | 首次配对 | 托盘弹窗 | 剪贴板历史 |
 | --- | --- | --- |
-| [![CopiaGo 首次配对引导](docs/images/first-pairing.png)](docs/images/first-pairing.png) | [![CopiaGo 托盘弹窗中的同步设置](docs/images/tray-popup.png)](docs/images/tray-popup.png) | [![CopiaGo 剪贴板中的文字、图片和文件记录](docs/images/clipboard-history.png)](docs/images/clipboard-history.png) |
+| [![CopiaGo 首次配对引导](docs/images/first-pairing.png)](docs/images/first-pairing.png) | [![CopiaGo 的托盘弹窗，历史记录处于关闭状态](docs/images/tray-popup.png)](docs/images/tray-popup.png) | [![CopiaGo 剪贴板中的文字、图片和文件记录](docs/images/clipboard-history.png)](docs/images/clipboard-history.png) |
 
-截图来自运行中的 CopiaGo 1.0.0，连接状态和历史记录使用示例数据。点击图片可查看原图。
+### 切换界面语言
+
+[![CopiaGo 设置里的跟随系统、简体中文和 English 选项](docs/images/language.png)](docs/images/language.png)
+
+截图来自运行中的 CopiaGo 1.1.0，连接状态和历史记录使用示例数据。点击图片可查看原图。
 
 ## 同步范围
 

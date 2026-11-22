@@ -19,9 +19,13 @@ The installer and CopiaGo use your Windows display language to choose English or
 
 | First-time pairing | System tray popup | Clipboard history |
 | --- | --- | --- |
-| [![The CopiaGo guide for pairing an iPhone](docs/images/first-pairing.png)](docs/images/first-pairing.png) | [![Sync settings in the CopiaGo tray popup](docs/images/tray-popup.png)](docs/images/tray-popup.png) | [![CopiaGo clipboard history with text, an image, and a file](docs/images/clipboard-history.png)](docs/images/clipboard-history.png) |
+| [![The CopiaGo guide for pairing an iPhone](docs/images/first-pairing-en.png)](docs/images/first-pairing-en.png) | [![The CopiaGo tray popup with clipboard history off](docs/images/tray-popup-en.png)](docs/images/tray-popup-en.png) | [![CopiaGo clipboard history with text, an image, and a file](docs/images/clipboard-history-en.png)](docs/images/clipboard-history-en.png) |
 
-These screenshots show CopiaGo 1.0.0 running with its Chinese interface. The connection state and clipboard entries use sample data. Click an image to view it at full size.
+### Interface language
+
+[![CopiaGo Settings showing System, Simplified Chinese, and English language choices](docs/images/language-en.png)](docs/images/language-en.png)
+
+These screenshots show CopiaGo 1.1.0 with a sample connection and clipboard history. Click an image to view it at full size.
 
 ## What syncs
 

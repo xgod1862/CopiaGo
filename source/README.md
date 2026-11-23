@@ -8,7 +8,7 @@
 - 如果引导显示缺少 Apple 连接组件，点击「安装 Apple 连接组件」，按 Windows 提示完成安装。安装失败时，可在 Microsoft Store 安装「Apple Devices」。
 - 解锁 iPhone 并用数据线连接电脑，点击「连接 iPhone」。手机弹出提示时点「信任」并输入锁屏密码。
 - 如果应用提示开启开发者模式，在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启，按提示重启，解锁后点「打开」。应用会自动继续。首次准备开发者服务时，请保持电脑联网。
-- 首次连接会提示正在等待 iPhone 信任、下载开发组件、请求 Apple 签名或安装镜像。下载时显示当前文件和已接收的数据量。根据失败提示检查网络或手机连接后，点击「继续连接」重试。
+- 首次连接会提示正在等待 iPhone 信任、下载开发组件、请求 Apple 签名或安装镜像。下载时显示当前文件和已接收的数据量。网速慢时会继续等待，连续 30 秒收不到数据才提示失败；已下载的部分会保留，检查网络或手机连接后点击「继续连接」会接着下载。开发组件依次从 GitHub、ghfast.top 代理和 jsDelivr 下载，某个来源连不上或中途卡住会自动换下一个；每个文件都按固定版本的 SHA-256 校验，内容不符会丢弃。
 - 显示「已连接」后拔掉数据线，等待状态显示「已连接（无线）」。日常使用只需复制和粘贴。
 - 换手机或连接异常时，可在面板设置页中点「忘记此 iPhone」（3 秒内再点一次确认），再重新配对。
 
@@ -56,10 +56,14 @@
 - Windows 系统剪贴板仍可正常粘贴。应用为同步内容写入 Windows 系统历史及云同步排除标记。
 - 常规安装的配对及历史数据在 `%LOCALAPPDATA%\iPhoneClipboardPrototype`。便携版在程序目录下的 `data`。卸载时会询问是否一并删除这些数据（默认保留）。
 - 托盘异常记录在同一数据目录下的 `tray-errors.log`，包含发生时间、异常类型和调用位置。
+- 首次连接的下载、签名和安装失败记录在 `developer-setup.log`，只包含阶段、耗时、字节数、HTTP 状态码和异常类型，不含设备标识或剪贴板内容。反馈首次连接问题时可附上此文件。
+- 首次下载开发组件时，GitHub 及备用来源（ghfast.top、jsDelivr）会看到这台电脑的 IP 地址和所请求的公开文件路径，不会收到配对记录、设备信息或剪贴板内容。
 
 ## 开发与来源
 
 使用带 Tk 的 64 位 Python 3.12。在源码目录安装 `requirements.txt` 后，运行 `build.ps1` 构建。安装包由 `setup.iss` 生成，需 Inno Setup 和简体中文语言文件。
+
+升级 pymobiledevice3 时，要同步更新 `iphone_clip/developer_setup.py` 中的 `DDI_REF`、`DDI_BUILD` 和 `PINNED_FILES`：`DDI_BUILD` 设为新版的 `LATEST_DDI_BUILD_ID`，`DDI_REF` 设为 [DeveloperDiskImage](https://github.com/doronz88/DeveloperDiskImage) 中发布该版本的提交，`PINNED_FILES` 填入该提交下各文件的字节数和 SHA-256。只升级库而漏改 `DDI_BUILD` 时，`tests/test_developer_setup.py` 会失败；`DDI_REF` 或 `PINNED_FILES` 填错不会被测试发现，会在下载时校验失败，所以更新后要实际下载一次确认。
 
 - 开发者模式：https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device.md
 - Windows 剪贴板格式：https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats

@@ -1,5 +1,8 @@
 import asyncio
+import hashlib
+import os
 import plistlib
+import shutil
 from pathlib import Path
 import tempfile
 import threading
@@ -92,7 +95,7 @@ class DeveloperSetupRetryTests(unittest.IsolatedAsyncioTestCase):
             task = asyncio.create_task(bridge.run())
             try:
                 await asyncio.wait_for(waiting.wait(), timeout=1)
-                self.assertEqual(messages[-1], ("hold", "下载 iPhone 开发组件超时。请检查电脑网络后重试。"))
+                self.assertEqual(messages[-1], ("hold", developer_setup.FAILURES["download"][1]))
                 self.assertEqual(open_tunnel.call_count, 1)
                 usb.assert_not_awaited()  # Switching cables cannot fix a PC download timeout.
                 bridge.request_pair()
@@ -103,62 +106,305 @@ class DeveloperSetupRetryTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(task, timeout=1)
 
 
+class FakeResponse:
+    def __init__(self, status=200, body=b"", headers=None, fail_after=None):
+        self.status_code = status
+        self.headers = headers or {}
+        self.body = body
+        self.fail_after = fail_after
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(response=self)
+
+    def iter_content(self, chunk_size):
+        for start in range(0, len(self.body), 3):
+            if self.fail_after is not None and start >= self.fail_after:
+                raise requests.ConnectionError(ReadTimeoutError(None, None, "read timed out"))
+            yield self.body[start:start + 3]
+
+
+class FakeSession:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+BODY = b"abcdef"
+
+
+def pin(**files):
+    """Pin test files by content: pin(**{"Image.dmg": b"..."})."""
+    return mock.patch.dict(developer_setup.PINNED_FILES, {"test": {
+        name: (len(data), hashlib.sha256(data).hexdigest()) for name, data in files.items()}})
+
+
+def fetch(session, staging, deadline=None, cancel=None, stats=None, events=None, names=None, preferred=None):
+    stats = stats if stats is not None else developer_setup.DownloadStats()
+    with mock.patch.object(developer_setup.requests, "Session", return_value=session):
+        developer_setup._download_parts(
+            "test", names or {"Image.dmg": "Image.dmg"}, staging,
+            developer_setup.time.monotonic() + 60 if deadline is None else deadline,
+            cancel or threading.Event(), stats, None if events is None else events.append, preferred)
+    return stats
+
+
+def host(call):
+    return [name for name, _ in developer_setup.SOURCES if call[0].startswith(
+        dict(developer_setup.SOURCES)[name].split("{")[0])][0]
+
+
+class PinnedImageTests(unittest.TestCase):
+    def test_pinned_build_matches_the_library(self):
+        # Upgrading pymobiledevice3 without updating DDI_REF and PINNED_FILES would download an
+        # image the library does not expect, and refresh the cache on every connection.
+        self.assertEqual(developer_setup.DDI_BUILD, mobile_image_mounter.LATEST_DDI_BUILD_ID)
+        self.assertRegex(developer_setup.DDI_REF, r"^[0-9a-f]{40}$")
+
+    def test_every_file_the_loader_requests_is_pinned(self):
+        from developer_disk_image.repo import CRYPTEX_IMAGE_PAYLOADS, CRYPTEX_IMAGE_ROOT
+
+        self.assertEqual(set(developer_setup.PINNED_FILES[CRYPTEX_IMAGE_ROOT]),
+                         {developer_setup.MANIFEST, *CRYPTEX_IMAGE_PAYLOADS.values()})
+        self.assertEqual(set(developer_setup.PINNED_FILES["PersonalizedImages/Xcode_iOS_DDI_Personalized"]),
+                         {developer_setup.MANIFEST, "Image.dmg", "Image.dmg.trustcache"})
+        for files in developer_setup.PINNED_FILES.values():
+            for size, digest in files.values():
+                self.assertGreater(size, 0)
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_every_source_uses_the_pinned_commit(self):
+        for _, template in developer_setup.SOURCES:
+            url = template.format(repo=developer_setup.DDI_REPO, ref=developer_setup.DDI_REF, path="x/y")
+            self.assertIn(developer_setup.DDI_REF, url)
+            self.assertTrue(url.startswith("https://"))
+            self.assertNotIn("/main/", url)
+
+
 class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory()
+        self.addCleanup(self.root.cleanup)
+        self.staging = Path(self.root.name) / "Image.download"
+        pinned = pin(**{"Image.dmg": BODY})
+        pinned.start()
+        self.addCleanup(pinned.stop)
+
     async def test_retry_refreshes_an_incomplete_cache_then_reuses_the_complete_image(self):
-        manifest = plistlib.dumps({"ProductBuildVersion": mobile_image_mounter.LATEST_DDI_BUILD_ID})
+        manifest = plistlib.dumps({"ProductBuildVersion": developer_setup.DDI_BUILD})
+        files = {developer_setup.MANIFEST: manifest, "Image.dmg": b"image", "Image.trustcache": b"trust"}
+        remote = {developer_setup.MANIFEST: manifest, "Image.dmg": b"image", "Image.dmg.trustcache": b"trust"}
+        key = "PersonalizedImages/Xcode_iOS_DDI_Personalized"
+        attempts = []
+
+        def download(_source, names, staging, _deadline, _cancel, stats, *_):
+            attempts.append(staging)
+            if len(attempts) == 1:
+                raise requests.Timeout()
+            staging.mkdir(parents=True, exist_ok=True)
+            for name in names:
+                (staging / name).write_bytes(files[name])
+            stats.source = "ghfast.top"
+
         with tempfile.TemporaryDirectory() as root:
             folder = Path(root) / "Xcode_iOS_DDI_Personalized"
             folder.mkdir()
             (folder / developer_setup.MANIFEST).write_bytes(manifest)
 
             with (
+                mock.patch.dict(developer_setup.PINNED_FILES, {key: {
+                    name: (len(data), hashlib.sha256(data).hexdigest()) for name, data in remote.items()}}),
                 mock.patch.object(common, "get_home_folder", return_value=Path(root)),
-                mock.patch.object(developer_setup, "_download_parts", side_effect=[
-                    requests.Timeout(),
-                    {developer_setup.MANIFEST: manifest, "Image.dmg": b"image", "Image.trustcache": b"trust"},
-                ]) as download,
+                mock.patch.object(developer_setup, "_download_parts", side_effect=download) as parts,
             ):
                 with self.assertRaises(requests.Timeout):
                     await developer_setup.load_image(False)
                 self.assertFalse((folder / "Image.dmg").exists())
                 self.assertEqual(await developer_setup.load_image(False), folder)
+                self.assertEqual((folder / "Image.dmg").read_bytes(), b"image")
+                self.assertFalse((Path(root) / "Xcode_iOS_DDI_Personalized.download").exists())
+                # The source that worked is tried first next time.
+                self.assertEqual((Path(root) / "developer-image-source").read_text(), "ghfast.top")
                 progress = mock.Mock()
                 self.assertEqual(await developer_setup.load_image(False, progress), folder)
                 progress.assert_not_called()
-                self.assertEqual(download.call_count, 2)
+                self.assertEqual(parts.call_count, 2)
+                # A cached file with the wrong size is downloaded again.
+                (folder / "Image.dmg").write_bytes(b"imag")
+                await developer_setup.load_image(False)
+                self.assertEqual(parts.call_count, 3)
+                self.assertEqual(parts.call_args.args[-1], "ghfast.top")
 
-    def test_download_sets_connection_and_read_timeouts(self):
-        response = mock.MagicMock()
-        response.__enter__.return_value.iter_content.return_value = [b"image"]
-        with mock.patch("iphone_clip.developer_setup.requests.Session") as session:
-            get = session.return_value.__enter__.return_value.get
-            get.return_value = response
-            result = developer_setup._download_parts(
-                "PersonalizedImages/test", {"Image.dmg": "Image.dmg"}, developer_setup.time.monotonic() + 120)
-        self.assertEqual(result, {"Image.dmg": b"image"})
-        self.assertEqual(get.call_args.kwargs["timeout"], developer_setup.HTTP_TIMEOUT)
+    def test_download_uses_a_stall_timeout_and_the_pinned_commit(self):
+        session = FakeSession(FakeResponse(body=BODY))
+        fetch(session, self.staging)
+        self.assertEqual((self.staging / "Image.dmg").read_bytes(), BODY)
+        url, kwargs = session.calls[0]
+        self.assertEqual(url, f"https://raw.githubusercontent.com/doronz88/DeveloperDiskImage/"
+                              f"{developer_setup.DDI_REF}/test/Image.dmg")
+        self.assertEqual(kwargs["timeout"], developer_setup.DOWNLOAD_HTTP_TIMEOUT)
+        self.assertGreaterEqual(developer_setup.DOWNLOAD_TIMEOUT, 10 * 60)
 
-    def test_streamed_download_reports_bytes_with_or_without_a_reliable_total(self):
-        for headers, expected in (
-            ({"Content-Length": "6"}, [None, 0, 0.5, 1]),
-            ({}, [None, None, None]),
-            ({"Content-Length": "6", "Content-Encoding": "gzip"}, [None, None, None]),
-        ):
-            with (
-                self.subTest(headers=headers),
-                mock.patch.object(developer_setup.requests, "Session") as session,
-                mock.patch.object(developer_setup, "time", SimpleNamespace(monotonic=mock.Mock(side_effect=[1, 2, 3, 4]))),
-            ):
-                response = session.return_value.__enter__.return_value.get.return_value.__enter__.return_value
-                response.headers = headers
-                response.iter_content.return_value = [b"abc", b"def"]
-                events = []
-                result = developer_setup._download_parts("test", {"Image.dmg": "Image.dmg"}, 120, events.append)
-                self.assertEqual(result, {"Image.dmg": b"abcdef"})
-                self.assertEqual([event.fraction for event in events], expected)
-                self.assertEqual([event.values["received"] for event in events][-3:], ["0 B", "3 B", "6 B"])
-                self.assertEqual(events[-1].values["index"], 1)
-                self.assertEqual(events[-1].values["count"], 1)
+    def test_progress_uses_the_pinned_size(self):
+        events = []
+        with mock.patch.object(developer_setup, "time", SimpleNamespace(
+                monotonic=mock.Mock(side_effect=[0, 1, 2, 3, 4, 5]))):
+            fetch(FakeSession(FakeResponse(body=BODY, headers={"Content-Encoding": "gzip"})), self.staging,
+                  deadline=100, events=events)
+        self.assertEqual([event.fraction for event in events], [0, 0.5, 1])
+        self.assertEqual([event.values["received"] for event in events], ["0 B", "3 B", "6 B"])
+        self.assertEqual(events[-1].values["total"], "6 B")
+
+    def test_interrupted_file_resumes_on_the_next_source(self):
+        session = FakeSession(FakeResponse(body=BODY, fail_after=3),
+                              FakeResponse(206, b"def", {"Content-Range": "bytes 3-5/6"}))
+        events = []
+        stats = fetch(session, self.staging, events=events)
+        self.assertEqual([host(call) for call in session.calls], ["raw.githubusercontent.com", "ghfast.top"])
+        self.assertNotIn("Range", session.calls[0][1]["headers"])
+        self.assertEqual(session.calls[1][1]["headers"]["Range"], "bytes=3-")
+        self.assertEqual((self.staging / "Image.dmg").read_bytes(), BODY)
+        self.assertEqual((stats.resumed, stats.fetched, stats.restarts), (3, 6, 0))
+        self.assertEqual(stats.failures, ["raw.githubusercontent.com:ConnectionError"])
+        self.assertEqual(stats.source, "ghfast.top")
+        switch = [event for event in events if "备用下载源" in event.text]
+        self.assertEqual(len(switch), 1)
+        self.assertEqual(switch[0].fraction, 0.5)  # The bar keeps its place while switching.
+
+    def test_part_left_by_an_earlier_attempt_resumes_with_range(self):
+        self.staging.mkdir()
+        (self.staging / ".ref").write_text(developer_setup.DDI_REF)
+        (self.staging / "Image.dmg.part").write_bytes(b"abcd")
+        session = FakeSession(FakeResponse(206, b"ef", {"Content-Range": "bytes 4-5/6"}))
+        stats = fetch(session, self.staging)
+        self.assertEqual(session.calls[0][1]["headers"]["Range"], "bytes=4-")
+        self.assertEqual((self.staging / "Image.dmg").read_bytes(), BODY)
+        self.assertEqual(stats.resumed, 4)
+
+    def test_tampered_or_oversized_body_moves_to_the_next_source(self):
+        for bad in (b"abcxyz", b"abcdefgh"):
+            with self.subTest(bad=bad):
+                shutil.rmtree(self.staging, ignore_errors=True)
+                session = FakeSession(FakeResponse(body=bad), FakeResponse(body=BODY))
+                stats = fetch(session, self.staging)
+                self.assertEqual((self.staging / "Image.dmg").read_bytes(), BODY)
+                self.assertEqual(stats.failures, ["raw.githubusercontent.com:IntegrityError"])
+                # The bad part is gone, so the next source started from the first byte.
+                self.assertNotIn("Range", session.calls[1][1]["headers"])
+
+    def test_source_without_range_support_sends_the_whole_file(self):
+        self.staging.mkdir()
+        (self.staging / ".ref").write_text(developer_setup.DDI_REF)
+        (self.staging / "Image.dmg.part").write_bytes(b"abc")
+        stats = fetch(FakeSession(FakeResponse(200, BODY)), self.staging)
+        self.assertEqual((self.staging / "Image.dmg").read_bytes(), BODY)
+        self.assertEqual(stats.restarts, 1)
+
+    def test_unusable_range_response_moves_on_and_starts_over(self):
+        for first in (FakeResponse(416), FakeResponse(206, b"f", {"Content-Range": "bytes 5-5/6"})):
+            with self.subTest(status=first.status_code):
+                shutil.rmtree(self.staging, ignore_errors=True)
+                self.staging.mkdir()
+                (self.staging / ".ref").write_text(developer_setup.DDI_REF)
+                (self.staging / "Image.dmg.part").write_bytes(b"abc")
+                session = FakeSession(first, FakeResponse(206, b"def", {"Content-Range": "bytes 3-5/6"}),
+                                      FakeResponse(200, BODY))
+                fetch(session, self.staging)
+                self.assertEqual((self.staging / "Image.dmg").read_bytes(), BODY)
+
+    def test_all_sources_failing_raises_the_last_error(self):
+        session = FakeSession(requests.ConnectionError(), FakeResponse(403),
+                              requests.ConnectionError(ReadTimeoutError(None, None, "slow")))
+        stats = developer_setup.DownloadStats()
+        with self.assertRaises(requests.ConnectionError) as failure:
+            fetch(session, self.staging, stats=stats)
+        self.assertIsInstance(failure.exception.args[0], ReadTimeoutError)
+        self.assertEqual(len(stats.failures), len(developer_setup.SOURCES))
+        self.assertIn("ghfast.top:HTTPError", stats.failures)
+
+    def test_preferred_source_is_tried_first_and_the_working_source_sticks(self):
+        with pin(**{"a": b"aaa", "b": b"bbb"}):
+            session = FakeSession(requests.ConnectionError(), FakeResponse(body=b"aaa"), FakeResponse(body=b"bbb"))
+            fetch(session, self.staging, names={"a": "a", "b": "b"}, preferred="fastly.jsdelivr.net")
+        self.assertEqual([host(call) for call in session.calls],
+                         ["fastly.jsdelivr.net", "raw.githubusercontent.com", "raw.githubusercontent.com"])
+
+    def test_parts_for_another_commit_are_discarded(self):
+        self.staging.mkdir()
+        (self.staging / ".ref").write_text("0" * 40)
+        (self.staging / "Image.dmg").write_bytes(b"old")
+        fetch(FakeSession(FakeResponse(body=BODY)), self.staging)
+        self.assertEqual((self.staging / "Image.dmg").read_bytes(), BODY)
+
+    def test_completed_files_from_an_earlier_attempt_are_not_downloaded_again(self):
+        self.staging.mkdir()
+        (self.staging / ".ref").write_text(developer_setup.DDI_REF)
+        (self.staging / "Image.dmg").write_bytes(BODY)
+        session = FakeSession()
+        fetch(session, self.staging)
+        self.assertEqual(session.calls, [])
+
+    def test_canceled_attempt_stops_reading(self):
+        cancel = threading.Event()
+        cancel.set()
+        with self.assertRaises(developer_setup.DownloadCanceled):
+            fetch(FakeSession(FakeResponse(body=BODY)), self.staging, cancel=cancel)
+
+    def test_overall_deadline_does_not_try_other_sources(self):
+        session = FakeSession(FakeResponse(body=BODY), FakeResponse(body=BODY))
+        with self.assertRaises(TimeoutError):
+            fetch(session, self.staging, deadline=developer_setup.time.monotonic() - 1)
+        self.assertEqual(session.calls, [])
+
+
+class SetupLogTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failure_log_has_stage_bytes_and_types_but_no_exception_text(self):
+        stats = developer_setup.DownloadStats(file="Image.dmg", index=2, count=3, received=4096,
+                                              total=8192, resumed=1024, fetched=3072, http_status=200)
+
+        async def download():
+            raise requests.ConnectionError(ReadTimeoutError(None, None, r"C:\Users\secret-name"))
+
+        with tempfile.TemporaryDirectory() as root, mock.patch.dict(os.environ, {"ICB_DATA_DIR": root}):
+            with self.assertRaises(developer_setup.DeveloperSetupError):
+                await developer_setup._run_stage("download", download(), 1, stats)
+            line = (Path(root) / developer_setup.LOG_NAME).read_text("utf-8")
+        self.assertIn(" download timeout ", line)
+        for field in ("error=ConnectionError", "part=2/3", "received=4096", "total=8192",
+                      "resumed=1024", "fetched=3072", "http=200"):
+            self.assertIn(field, line)
+        self.assertNotIn("secret-name", line)
+
+    async def test_log_failure_does_not_hide_the_setup_error(self):
+        async def fail():
+            raise OSError()
+
+        with tempfile.TemporaryDirectory() as root:
+            blocker = Path(root) / "not-a-folder"
+            blocker.write_bytes(b"")
+            with mock.patch.dict(os.environ, {"ICB_DATA_DIR": str(blocker / "data")}):
+                with self.assertRaises(developer_setup.DeveloperSetupError) as failure:
+                    await developer_setup._run_stage("install", fail(), 1)
+        self.assertEqual(failure.exception.stage, "install")
 
 
 class DeveloperSetupStageTests(unittest.IsolatedAsyncioTestCase):
@@ -231,12 +477,12 @@ class DeveloperSetupStageTests(unittest.IsolatedAsyncioTestCase):
         release = threading.Event()
         finished = threading.Event()
 
-        def slow_download(_source, _names, _deadline, report):
+        def slow_download(_source, _names, staging, _deadline, cancel, _stats, report, _preferred):
             started.set()
             release.wait(timeout=2)
             report(developer_setup.DownloadProgress("late", {}, 1.0))
+            self.assertTrue(cancel.is_set())  # The thread is told to stop reading.
             finished.set()
-            return {developer_setup.MANIFEST: plistlib.dumps({"ProductBuildVersion": "build"})}
 
         with (
             tempfile.TemporaryDirectory() as root,

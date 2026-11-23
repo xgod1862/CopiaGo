@@ -72,15 +72,24 @@ Filename: "{app}\iPhoneClipboard.exe"; Description: "{cm:OpenCopiaGo}"; Flags: p
 [Code]
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  DataDir: String;
+  DataDir, LegacyDir: String;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
-  DataDir := ExpandConstant('{localappdata}\iPhoneClipboardPrototype');
-  // Keep data by default so a reinstall can reuse the pairing.
-  if DirExists(DataDir) and not UninstallSilent then
+  // After 1.1.0 each Windows account keeps its data in {app}\data\<account name>; earlier
+  // versions (and a move that failed) used LOCALAPPDATA. {username} matches the app's folder name.
+  DataDir := ExpandConstant('{app}\data\{username}');
+  LegacyDir := ExpandConstant('{localappdata}\iPhoneClipboardPrototype');
+  // Keep data by default so a reinstall into the same folder can reuse the pairing.
+  if (DirExists(DataDir) or DirExists(LegacyDir)) and not UninstallSilent then
     if MsgBox(CustomMessage('DeleteClipData'),
               mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+    begin
       DelTree(DataDir, True, True, True);
+      DelTree(LegacyDir, True, True, True);
+    end;
+  // The uninstaller skipped these folders while data was still inside. Removed only when empty.
+  RemoveDir(ExpandConstant('{app}\data'));
+  RemoveDir(ExpandConstant('{app}'));
 end;
 

@@ -38,6 +38,10 @@ def main() -> int:
         kernel32.CloseHandle(event)
         return 0
     try:
+        # Before the UI reads any setting, and only while this is the single running copy.
+        from iphone_clip.settings import prepare_data_dir
+        prepare_data_dir()
+
         from iphone_clip.ui import run
         run(minimized=args.minimized, wake=lambda: kernel32.WaitForSingleObject(event, 0) == 0)
     finally:

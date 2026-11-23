@@ -1,20 +1,166 @@
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import sys
 
 from iphone_clip.i18n import LANGUAGE_OPTIONS
+
+LEGACY_DIR_NAME = "iPhoneClipboardPrototype"
+# Disposable copies of received files: up to 2 GB, recreated on demand, so never migrated.
+NOT_MIGRATED = frozenset({"received"})
+
+_active: Path | None = None  # chosen once at startup by prepare_data_dir()
+
+
+def legacy_data_dir() -> Path:
+    """Where versions up to 1.1.0 kept installed-mode data, and where source runs still do."""
+    return Path(os.environ["LOCALAPPDATA"]) / LEGACY_DIR_NAME
+
+
+def account_folder_name() -> str:
+    """The current Windows account name as a folder name.
+
+    Matches Inno Setup's {username} (both come from GetUserName) so the uninstaller finds the
+    same folder. Renaming the account therefore starts a fresh, empty data folder.
+    """
+    try:
+        import win32api
+
+        name = win32api.GetUserName()
+    except Exception:
+        name = os.environ.get("USERNAME", "")
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).rstrip(" .")
+    return name or "user"
+
+
+def default_data_dir() -> Path:
+    """The data folder this build should use, before any fallback.
+
+    Installed builds keep one folder per Windows account under the install folder, so data
+    follows the drive chosen at install time. A portable build keeps its flat ``data`` folder.
+    Running from source keeps using LOCALAPPDATA.
+    """
+    if getattr(sys, "frozen", False):
+        app = Path(sys.executable).parent
+        if (app / "portable-data").is_file():
+            return app / "data"
+        return app / "data" / account_folder_name()
+    return legacy_data_dir()
 
 
 def data_dir() -> Path:
     override = os.environ.get("ICB_DATA_DIR")
     if override:
         return Path(override)
-    if getattr(sys, "frozen", False):
-        app = Path(sys.executable).parent
-        if (app / "portable-data").is_file():
-            return app / "data"
-    return Path(os.environ["LOCALAPPDATA"]) / "iPhoneClipboardPrototype"
+    return _active if _active is not None else default_data_dir()
+
+
+def restrict_to_current_user(folder: Path) -> None:
+    """Give only this Windows account (and SYSTEM) access to ``folder`` and everything below it.
+
+    A folder on a drive other than C: usually inherits the drive root's permissions, which let
+    every signed-in account read it. received/ holds plaintext copies of phone files, so the
+    inherited permissions are replaced by a protected DACL that existing children also inherit.
+    """
+    import ntsecuritycon as con
+    import win32api
+    import win32security
+
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32security.TOKEN_QUERY)
+    user = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    system = win32security.CreateWellKnownSid(win32security.WinLocalSystemSid)
+    inherit = con.OBJECT_INHERIT_ACE | con.CONTAINER_INHERIT_ACE
+    dacl = win32security.ACL()
+    for sid in (user, system):
+        dacl.AddAccessAllowedAceEx(win32security.ACL_REVISION, inherit, con.FILE_ALL_ACCESS, sid)
+    win32security.SetNamedSecurityInfo(
+        str(folder), win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        None, None, dacl, None)
+
+
+def _same_folder(first: Path, second: Path) -> bool:
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def _has_entries(folder: Path) -> bool:
+    try:
+        return any(folder.iterdir())
+    except OSError:
+        return False
+
+
+def _migrate(legacy: Path, target: Path) -> None:
+    """Copy legacy data into an empty ``target``, then remove the legacy folder.
+
+    The copy goes to a sibling staging folder that is renamed into place only when complete, so
+    an interrupted copy (full disk, crash) leaves the legacy folder intact for the next start.
+    Files copied into the staging folder inherit its restricted permissions.
+    """
+    staging = target.with_name(target.name + ".migrating")
+    shutil.rmtree(staging, ignore_errors=True)  # a previous attempt that did not finish
+    staging.mkdir(parents=True)
+    try:
+        restrict_to_current_user(staging)
+        for entry in legacy.iterdir():
+            if entry.name in NOT_MIGRATED or entry.suffix == ".tmp":
+                continue
+            if entry.is_dir():
+                shutil.copytree(entry, staging / entry.name)
+            else:
+                shutil.copy2(entry, staging / entry.name)
+        if target.exists():
+            target.rmdir()  # empty, checked by the caller
+        staging.rename(target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    # The data is safe in its new place. A leftover legacy file only costs space.
+    shutil.rmtree(legacy, ignore_errors=True)
+
+
+def prepare_data_dir() -> Path:
+    """Choose the data folder for this run, moving data from the legacy location if needed.
+
+    Call once at startup, after the single-instance mutex is held and before anything reads
+    settings. Data already in the new folder is never overwritten. When the new folder cannot
+    be created or the move fails, this run uses the legacy folder so nothing appears lost, and
+    the move is retried at the next start.
+    """
+    global _active
+    if os.environ.get("ICB_DATA_DIR"):
+        return data_dir()
+    target = default_data_dir()
+    legacy = legacy_data_dir()
+    # Source runs already use the legacy folder; portable builds never used it.
+    if _same_folder(target, legacy) or _is_portable(target):
+        _active = target
+        return target
+    try:
+        if legacy.is_dir() and not _has_entries(target):
+            _migrate(legacy, target)
+        elif not target.is_dir():
+            target.mkdir(parents=True)
+            restrict_to_current_user(target)
+    except Exception:
+        # An empty folder left without restricted permissions would be reused as-is next time.
+        try:
+            if target.is_dir() and not _has_entries(target):
+                target.rmdir()
+        except OSError:
+            pass
+        _active = legacy
+        return legacy
+    _active = target
+    return target
+
+
+def _is_portable(target: Path) -> bool:
+    return target.name == "data" and (target.parent / "portable-data").is_file()
 
 
 def _load() -> dict:

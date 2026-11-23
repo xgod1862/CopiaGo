@@ -235,7 +235,7 @@ EMPTY_TEXT = {  # tab: ((title, hint) when on, (title, hint) when off, button)
 STEPS = (
     ("用数据线连接并解锁 iPhone", "使用 USB 数据线连接这台电脑，并保持手机解锁。"),
     ("点「连接 iPhone」并信任此电脑", "手机弹出提示时点「信任」，并输入锁屏密码。"),
-    ("准备开发者服务", "首次需要下载文件，可能要几分钟，请保持联网和手机解锁。"),
+    ("准备开发者服务", "请保持电脑联网、iPhone 解锁和数据线连接。"),
     ("拔掉数据线，开始使用", "之后 iPhone 和电脑在同一 Wi-Fi 下会自动连接。"),
 )
 PHASE_STEP = {"idle": 0, "pairing": 1, "preparing": 2, "developer": 2, "retry": 2}

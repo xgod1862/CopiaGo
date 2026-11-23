@@ -800,7 +800,7 @@ class Window:
         elapsed = time.monotonic() - self.disconnected_at
         if elapsed >= ICON_GRACE:
             self.set_icon(False)
-        if elapsed >= DISCONNECT_NOTICE and not self.disconnect_notified:
+        if elapsed >= DISCONNECT_NOTICE and not self.disconnect_notified and self.bridge_state not in ("developer", "hold"):
             self.disconnect_notified = True
             self.notify(message("iPhone 已断开 {minutes} 分钟，正在自动重连。请确认手机已解锁并在同一局域网",
                                 minutes=DISCONNECT_NOTICE // 60))
@@ -862,7 +862,7 @@ class Window:
                         self.refresh()
                     else:
                         self.notify(event)
-                if state in ("error", "sync_error", "push_error") or (state == "developer" and self.paired):
+                if state in ("error", "sync_error", "push_error") or (state in ("developer", "hold") and self.paired):
                     self.notify(event, alert=True)
                 if state == "pushed_manual" and not self.popup.visible:
                     self.notify(event)

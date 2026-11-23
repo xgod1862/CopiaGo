@@ -12,6 +12,8 @@
 | M2 · 配对、文件、历史和图片 | 2,465,280 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
 | M3 · 镜像下载、签名及挂载 `76463e3` | 2,748,416 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
 | M4 · 正式托盘 `0294ce2` | 3,227,648 字节 | 未测 | 未测 | 2,392,064 字节（断线夹具峰值） | 12,939,264 字节（历史／设置两页峰值） | 未测 |
+| M5 · T-QA-01 审查前构建 `79c16b3` | 3,308,032 字节 | 3,642,571 字节 | 7,785,968 字节（TestId 全新实装） | 2,334,720 字节（断线峰值） | 13,025,280 字节（历史／设置峰值） | 未测，探针未建立会话 |
+| M5 · 审查后最终构建 `6340eb5` | 3,418,112 字节 | 3,688,692 字节 | 7,896,320 字节（TestId 实装） | 2,949,120 字节（连机） | 12,238,848 字节（两组峰值） | 1,818.91–2,250.59 ms，中位 2,148.69 ms（5 次） |
 
 ## 测量方法
 
@@ -333,3 +335,186 @@ Measure-CopiaGo $process.Id
 ```
 
 托盘菜单打开「连接与设置」后再次采样。关闭弹窗，等待收起动画再采样。通过托盘菜单的「退出」结束进程，诊断文件中应出现 `event=stopped`。真机步骤使用单独的受控测试设备和已知合成剪贴板数据。
+
+## M5 · T-QA-01 审查前的稳定性与指标回归
+
+2026-11-24，Windows 11 Pro 26H2 build 26300.9974 x64，20 个逻辑处理器，Rust 1.100.0，Inno Setup 6.7.4。被测构建为 `79c16b3` 的 x64 Release `2.0.0-beta`。MB 按 1,000,000 字节计算，文件传输上限按 `MAX_FILE_BYTES` 的 512 MiB（536,870,912 字节）计算。[验收指标](../docs/rust-rewrite/REQUIREMENTS.md) · [文件上限](crates/copiago-core/src/files.rs)
+
+| 指标 | 验收线 | 最终构建实测 | 判定 |
+| --- | --- | --- | --- |
+| EXE 大小 | ≤ 6 MB | 3,308,032 字节 | 通过 |
+| x64 正式安装包 | ≤ 6 MB | 3,642,571 字节 | 通过 |
+| x64 便携 ZIP | 有 EXE 和 `portable-data` | 1,839,959 字节，已验目录和标记 | 通过 |
+| 安装后大小 | ≤ 12 MB，排除运行时 DDI | 7,785,968 字节，TestId 全新实装，含卸载器及许可证 | 通过 |
+| 托盘空闲专用工作集 | ≤ 10 MB | 峰值 2,334,720 字节，假配对断线 | 本机通过，连机未测 |
+| 打开弹窗专用工作集 | ≤ 20 MB | 历史页峰值 12,808,192，设置页峰值 13,025,280 字节，断线 | 本机通过，连机未测 |
+| 瞬时专用工作集 | ≤ 30 MB | 正式 EXE 常规四状态的 1 s 采样最大值 13,025,280 字节。当前源码的独立 Debug 渐进 JPEG 缩略图探针最高 146,251,776 字节 | 缩略图路径有超线复现，正式 EXE 端到端峰值未测 |
+| Wi‑Fi 冷启动至连上 | ≤ 3 s，已解锁、同一局域网 | 最终 EXE 无成功会话样本。断线场景从发起启动到观察到 `event=ready` 为 86.53 ms（1 次） | 待真机 |
+| N-3 已连接空闲 CPU | 平均 < 0.1%，排除 2 s 元数据轮询 | 断线短测 109.375 ms CPU / 122.813 s，折合单逻辑核 0.089058%，整机 0.004453% | 待真机 |
+| N-4 24 h 内存 | 每小时采样，增长 < 2 MB 且无持续增长 | 断线收起后连续 61 点，首末样本相距 120.743 s。专用工作集变化 −139,264 字节，Private Bytes 变化 +77,824 字节 | 待 24 h 真机 |
+
+正式包以 `scripts/build.ps1 -IsccPath` 重新构建。隔离 TestId 实装和卸载均以退出码 0 完成。Release EXE、便携 ZIP 内 EXE 和 TestId 安装的 EXE 三者的 SHA-256 一致，为 `0F14A4012610A726B9358F5B2126D29D907AA688952411E7CD1D4B99C0741792`。ZIP 包括零字节 `portable-data`、`LICENSE` 及三份附带许可证。正式安装包只编译。安装体积为七个文件的 `Length` 之和。[构建和安装说明](README.md#安装包与便携版) · [构建脚本](scripts/build.ps1)
+
+### 最终 EXE 的本机断线采样
+
+被测 PID 22616。隔离夹具含虚构配对记录、Python 写入的 DPAPI 合成历史（手机、电脑各 50 条）。关闭两侧自动同步、历史保存、系统通知和更新。以相同 `Get-Counter` 样本内的 `ID Process` 选中 PID，再按实例读取 `Working Set - Private`、`Private Bytes` 和 `Thread Count`。四个状态各 9 点、间隔 1 s，短测设为 2 s。CPU 取短测开始和结束的进程累计 CPU 时间差。一秒计数器采样只说明观测点的峰值。[Microsoft Get-Counter](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.diagnostics/get-counter?view=powershell-7.5)
+
+| 正式 EXE 状态 | 专用工作集（字节） | Private Bytes（字节） | 线程 | 样本 |
+| --- | ---: | ---: | ---: | ---: |
+| 初始托盘 | 2,330,624–2,334,720 | 3,047,424–3,051,520 | 8 | 9 |
+| 历史弹窗 | 10,022,912–12,808,192 | 16,130,048–19,562,496 | 16 | 9 |
+| 设置弹窗 | 12,963,840–13,025,280 | 19,677,184–19,738,624 | 16 | 9 |
+| 弹窗隐藏后 | 4,767,744–5,152,768 | 6,856,704–7,823,360 | 15–16 | 9 |
+| 隐藏后的断线短测 | 4,628,480–4,825,088 | 6,787,072–7,213,056 | 5–15 | 61 |
+
+第二次 `--minimized` 静默退出，普通实例启动至原 PID 的历史页可见为 124.25 ms。定向消息打开设置页、收起弹窗并退出，诊断写出 `event=stopped`，退出码 0。独立空数据根以 `--minimized` 启动，出现 `event=ready paired=false`、可见的配对引导和 `state=Setup`，正常退出。两次复验前后，前台窗口和 Windows 剪贴板序列号分别一致。另在本机运行自有托盘图标恢复探针（3.331 ms）、双屏定位（实际均 96 DPI，另模拟 144/192 DPI）和键盘焦点绘制探针。[宿主](crates/copiago-app/src/gui.rs) · [托盘探针](crates/copiago-win/src/tray/tests.rs) · [双屏探针](crates/copiago-ui/src/composition/position/tests/live.rs)
+
+`cargo fmt --check`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked` 通过。默认 248 项通过、10 项按原标记忽略。另定向执行 512 MiB 合成文件、Python/Rust 双向历史和上述三个 Windows 实机探针，均通过。512 MiB 合成文件用现行 Debug 测试经分帧、验证、刷盘、发布并读回校验，接收至发布 6,748 ms，含校验 14,104 ms。[文件接收测试](crates/copiago-device/src/pasteboard/file_receive/tests.rs) · [历史互通测试](crates/copiago-core/src/history/tests.rs)
+
+### 真机只读复验
+
+仅将真实 Python 1.2.0 同账户的一个 `remote_*.plist` 和 `device-info.bin` 副本置于受保护的临时 `ICB_DATA_DIR`，ACL 只允许当前账户和 SYSTEM。Wi‑Fi 探针未使用 `--write-identifier`，连接探针也未传数据保存、自动挂载或文件请求选项。Apple Mobile Device Service 运行中。原目录的 DDI 缓存存在，手机上的挂载状态本轮未知。[Wi‑Fi 探针](crates/copiago-device/examples/wifi_probe.rs) · [USB 探针](crates/copiago-device/examples/usb_probe.rs) · [连接探针](crates/copiago-device/examples/connection_probe.rs)
+
+| 本轮探针 | 结果 |
+| --- | --- |
+| `wifi_probe` | 486 ms 返回 `could not connect to the RemotePairing endpoint`，无 pair-verify/RSD 成功证据 |
+| `usb_probe` | 2 ms 返回 `no USB device found` |
+| `connection_probe --seconds 25` | 在 `Connecting` 和 `Waiting` 间重试，25 s 内没有 `Connected` 事件 |
+
+从 `copiago-rs` 运行。先将 `ICB_DATA_DIR` 指向当前账户可解密的受保护配对副本。
+
+```powershell
+cargo run --release --locked -p copiago-device --example wifi_probe
+cargo run --release --locked -p copiago-device --example usb_probe
+cargo run --release --locked -p copiago-device --example connection_probe -- --seconds 25
+```
+
+### 需求第 8 节核对
+
+复验用专用 Windows 测试会话和测试手机，剪贴板样本用合成数据。以 Wi‑Fi 为优先验收链路，USB 用于配对、信任、回退与对应协议步骤。未完成验收的使用场景继续用 Python 1.2.0。[需求第 8 节](../docs/rust-rewrite/REQUIREMENTS.md#8-验收清单与-python-120-对照) · [Python 行为](../source/iphone_clip/)
+
+| 核对项 | 本轮合成或自动化 | 本轮本机 | 此前阶段实机 | 待验 |
+| --- | --- | --- | --- | --- |
+| 全新安装、托盘、USB 信任、拔线后 Wi‑Fi | 配对阶段、多台 USB 筛选、拒绝信任文案与配对记录保存 | TestId 实装、自有托盘和空目录配对引导 | M1 从已有记录完成 Wi‑Fi pair-verify | 新设备点信任并输入密码，配对后拔线连 Wi‑Fi，补测拒绝信任 |
+| 接线保留 Wi‑Fi、回退同一设备 USB、恢复 Wi‑Fi | 状态机复验优先级、同一设备约束和重连 | 无会话 | M1 建立过 Wi‑Fi 会话 | 接线确认仍为 Wi‑Fi。无线失效时确认同一设备走 USB，恢复无线并拔线后回到 Wi‑Fi |
+| 手机文字 ≤ 1 s 到电脑剪贴板和历史 | 通知、2 s 轮询、文本处理和 DPAPI 历史 | — | M1 Wi‑Fi 监听过自然发生的手机文字变化并暂存 | 开启拉取及手机历史，测复制到电脑可粘贴和历史出现的时间 |
+| HEIC 照片、PNG 截图、Safari 和 Notes 图片 | PNG、同条目 JPEG/PNG 替代、webarchive 和 Notes 超时 | 独立 HEIC 样本返回 `0xc00d5212` | — | 逐项复制粘贴四类来源，核对尺寸和透明度，覆盖仅有 HEIC 的样本 |
+| 「文件」App 小文件自动、大文件询问、超过 512 MiB 拒绝 | 阈值、过期、失败清理、超限拒绝。合成 512 MiB 发布后校验通过 | — | — | 复制 <256 KiB、1 MiB、100 MiB、512 MiB 和超限样本，核对阈值确认、资源管理器粘贴及内容 |
+| 视频等不支持类型提示 | 类型识别、跳过正文和提示文案 | — | — | 复制受控视频，核对提示及两侧历史 |
+| Windows 文字、PNG 推到手机及回声抑制 | SET、120 s 指纹、变更标识和 Windows 自写标记 | — | 原型验证实际中文和 emoji 的 SET/读回。T-WIN-01 在 Windows runner 验证剪贴板格式 | 开启推送，验证手机粘贴中文、emoji 和透明 PNG，确认两端无回推 |
+| 断线期间复制、重连托盘菜单可用 | 拉取关闭和 Windows 已更新时的暂存，菜单命令与无条目时隐藏 | — | M1 验证实际 Wi‑Fi 恢复，另观察到文字暂存 | 关闭自动拉取，断线复制再重连，核对菜单和执行后的 Windows 剪贴板 |
+| 手机重启后重新挂载镜像 | Cryptex 合成传输、签名请求对照、错误和进度 | 原目录有 DDI 缓存，手机挂载状态未知 | M3 下载并核对两个镜像，Apple TLS 冒烟通过 | 用测试手机重启，分别记录下载或热缓存、签名、挂载和首次重连 |
+| Windows 睡眠、换 Wi‑Fi、开关 VPN 恢复 | 信号合并和连接状态重置 | — | M1 注入唤醒和网络变化后恢复真机 Wi‑Fi。M4 验证正式宿主的模拟唤醒和合并 | 用专用测试机逐项执行实际切换，记录各自恢复耗时 |
+| 全部设置生效、重启保留、即时语言切换 | 十个 JSON 键、类型开关、即时语言和重读 | 最终 EXE 设置页可见 | M4 隔离 UIA 验证重启、即时语言、历史和拉取开关、文件阈值 | 最终 EXE 在连机时逐项验证设置实际效果并重启 |
+| 忘记后需要重新 USB 配对 | 确认、删除记录、失败保留和退回 Setup | — | M4 隔离宿主从 UI 忘记合成配对，锁文件失败及释放后成功 | 用测试手机验证忘记后需重新信任和配对，再转 Wi‑Fi |
+| 两历史列表、上限、删除、清空及停用保存 | 两来源 50 条／128 MiB、单条 32 MiB、去重、Python/Rust 双向 DPAPI 互通 | 正式 EXE 用双侧各 50 条的合成库打开历史页 | M4 隔离 UIA 验证删除、独立清空、过期确认和停用保存 | 最终连机复验两边记录及停用后的实际表现 |
+| 开机启动与注册表一致 | Windows 隔离注册表键的值名、格式和状态 | — | T-PKG-02 真实旧安装副本的隔离启动键覆盖规则通过 | 专用账户核对实际 Run 值并重新登录 |
+| 更新提示与跳转 | 定时、取消、Python 纯数字版本解析和发布 URL 白名单 | — | M4 稳定版检查探针发出更新并打开发布页。当前 `2.0.0-beta` 版本字符串无法按 Python 格式比较 | 用低版本稳定测试构建和受控目标复验最终 UI 提示与打开发布页 |
+| 原样接管 Python 1.2.0 | 路径选择、未知键、ACL、DPAPI 与历史迁移 | 只读探针使用真实配对副本，未连上 | T-PKG-02 真实安装副本覆盖保留两账户 7 个文件的哈希和 ACL。10 项设置、14 条历史与配对记录可读 | 专用测试安装在同账户升级并沿用原目录，无需重配即连 Wi‑Fi，核对历史、设置和启动项 |
+| 安装包、安装后、托盘、弹窗及 24 h | 体积门禁与合成图像、文件负载测试 | 最终包、隔离实装、断线内存和短测已记录 | M1 headless 版本真机 Wi‑Fi 30 min 和冷启有实测 | 最终 EXE 连机专用工作集、瞬时峰值、冷启、CPU 及 24 h |
+
+历史证据见本文件各章节、[原型报告](../poc-rust/REPORT.md)、[阶段进度](PROGRESS.md) 与 T-PKG-02 集成提交 `79c16b3`。Python 文件、历史、更新和登录启动口径分别来自 [device.py](../source/iphone_clip/device.py)、[history.py](../source/iphone_clip/history.py)、[updater.py](../source/iphone_clip/updater.py) 和 [ui.py](../source/iphone_clip/ui.py)。
+
+### 问题清单
+
+- **渐进 JPEG 峰值越线。** 同一 Pillow 13.0.0 双色合成图（8000 × 6000，quality 85），用当前源码的独立 Debug 子进程走 `decode_scaled` 并编码为 96 × 72 PNG。基线 JPEG 三次通过，子进程峰值总工作集为 13,058,048–13,066,240 字节。渐进 JPEG 三次均解码成功后触发峰值断言，`K32GetProcessMemoryInfo` 的采样专用工作集为 146,247,680–146,251,776 字节，峰值私有提交为 147,091,456–147,116,032 字节。此场景超 30 MB，最终 GUI 收到真机大图时的峰值待测。[缩略图测试](crates/copiago-win/src/image/tests.rs) · [Microsoft PROCESS_MEMORY_COUNTERS_EX2](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex2)
+- **仅 HEIC 样本在本机无法准备 Windows 剪贴板数据。** 当前测试读取一个 660 字节合成 HEIC 时返回 `0xc00d5212`。若同一手机条目没有可用 PNG/JPEG 替代，还需评估目标电脑的编解码器及实际粘贴路径。[HEIC 样本测试](crates/copiago-win/src/clipboard/tests.rs) · [替代格式请求](crates/copiago-device/src/pasteboard/content.rs)
+- **真机证据缺口。** 本轮没有建立 iPhone 会话。Wi‑Fi 冷启、连机 CPU、连机内存、24 h 和第 8 节所列端到端动作仍待验，包括升级后无须重配的首连。短测中专用工作集比收起后的首样本略降，Private Bytes 略升，持续性待长测。
+
+### Wi‑Fi 冷启动、N-3 与 N-4 复验命令
+
+在专用测试电脑、同一 Windows 账户下，从 `copiago-rs` 开始。测试 iPhone 已配对、解锁、与电脑同一局域网，开发者镜像已挂载。先用前文「GUI 与计数器复验」的步骤创建受保护的 `$fixture` 和对应 `ICB_*` 环境变量。跳过生成虚构配对记录、写断线设置和启动，改为执行下方命令。`$fixture` 应是新建的空测试目录。源路径选择该账户在专用测试机的 Python 1.2.0 测试数据根。采样时保持测试设备在线、托盘模式、无复制或其他交互。每次冷启动测试用一个新隔离命名空间、诊断文件和进程。
+
+```powershell
+$ErrorActionPreference = 'Stop'
+cargo build --release --locked --target x86_64-pc-windows-msvc -p copiago-app
+if ($LASTEXITCODE) { throw 'Release build failed.' }
+$known = (Get-Item -LiteralPath (Read-Host '输入已有配对的 Python 测试数据目录')).FullName
+$device = New-Item -ItemType Directory -Path (Join-Path $fixture 'device-data')
+$records = @(Get-ChildItem -LiteralPath (Join-Path $known 'device-data') -File -Filter 'remote_*.plist')
+if ($records.Count -ne 1) { throw 'Use a fixture for one already-trusted iPhone.' }
+Copy-Item -LiteralPath $records[0].FullName, (Join-Path $known 'device-data\device-info.bin') -Destination $device.FullName
+[IO.File]::WriteAllText((Join-Path $fixture 'settings.json'), '{"pull":false,"push":false,"history":false,"pc_history":false,"notifications":false,"update_check":false}')
+$exe = (Resolve-Path '.\target\x86_64-pc-windows-msvc\release\copiago.exe').Path
+$log = $env:ICB_DIAGNOSTIC_FILE
+$launch = [Diagnostics.Stopwatch]::StartNew()
+$app = Start-Process -FilePath $exe -ArgumentList '--minimized' -PassThru -WindowStyle Hidden
+do {
+    if ($app.HasExited) { throw 'Test process exited before connection.' }
+    $wifi = (Test-Path -LiteralPath $log) -and
+        (Select-String -LiteralPath $log -Quiet -Pattern 'event=connected transport=wifi$')
+    if (!$wifi) { Start-Sleep -Milliseconds 50 }
+} until ($wifi -or $launch.Elapsed.TotalSeconds -ge 30)
+$launch.Stop()
+if (!$wifi) { throw 'No Wi-Fi connection. Exit the isolated test copy.' }
+[pscustomobject]@{ WiFiColdStartMs = $launch.Elapsed.TotalMilliseconds }
+
+$paths = '\Process(copiago*)\ID Process', '\Process(copiago*)\Working Set - Private',
+         '\Process(copiago*)\Private Bytes', '\Process(copiago*)\Thread Count'
+$csv = Join-Path $fixture 'wifi-idle-24h.csv'
+$clock = [Diagnostics.Stopwatch]::new()
+for ($hour = 0; $hour -le 24; $hour++) {
+    $waitMs = 3600000L * $hour - $clock.ElapsedMilliseconds
+    if ($waitMs -gt 0) { Start-Sleep -Milliseconds $waitMs }
+    if ($app.HasExited) { throw 'Original test PID exited.' }
+    $sample = Get-Counter -Counter $paths -MaxSamples 1 -ErrorAction SilentlyContinue
+    $instance = $sample.CounterSamples | Where-Object {
+        $_.Path -like '*\id process' -and $_.Status -in 0,1 -and [int]$_.CookedValue -eq $app.Id
+    } | Select-Object -First 1
+    if (!$instance) { throw 'Missing test PID sample.' }
+    $counters = @($sample.CounterSamples | Where-Object InstanceName -eq $instance.InstanceName)
+    if ($counters.Count -ne 4 -or @($counters | Where-Object Status -notin 0,1).Count) {
+        throw 'Invalid test PID counters.'
+    }
+    if ($hour -eq 0) { $clock.Start() }
+    $app.Refresh()
+    [pscustomobject]@{
+        Hour = $hour
+        UTC = $sample.Timestamp.ToUniversalTime().ToString('o')
+        PID = $app.Id
+        WSPrivate = [long]($counters | Where-Object Path -like '*\working set - private').CookedValue
+        PrivateBytes = [long]($counters | Where-Object Path -like '*\private bytes').CookedValue
+        Threads = [int]($counters | Where-Object Path -like '*\thread count').CookedValue
+        CpuSeconds = $app.TotalProcessorTime.TotalSeconds
+    } | Export-Csv -LiteralPath $csv -NoTypeInformation -Append
+}
+$rows = @(Import-Csv -LiteralPath $csv)
+$seconds = $clock.Elapsed.TotalSeconds
+$events = @(Get-Content -LiteralPath $log)
+$firstWiFi = 0..($events.Count - 1) | Where-Object { $events[$_] -match 'event=connected transport=wifi$' } | Select-Object -First 1
+$lateEvents = @($events | Select-Object -Skip ($firstWiFi + 1) | Where-Object {
+    $_ -match 'event=(connected|status|stopped|popup_shown|pull_held|pull_complete|push_queued|setup_progress)\b'
+})
+[pscustomobject]@{
+    Samples = $rows.Count
+    ElapsedSeconds = $seconds
+    ConnectionOrActivityEventsAfterFirstWiFi = $lateEvents.Count
+    WorkingSetGrowthBytes = [long]$rows[-1].WSPrivate - [long]$rows[0].WSPrivate
+    PrivateBytesGrowth = [long]$rows[-1].PrivateBytes - [long]$rows[0].PrivateBytes
+    CpuOneLogicalProcessorPercent = 100 * ([double]$rows[-1].CpuSeconds - [double]$rows[0].CpuSeconds) / $seconds
+}
+```
+
+冷启动阈值为 3,000 ms，计时包含进程启动和 50 ms 间隔的轮询探测。N-4 核对同一 PID 的 25 个点、采样时段 ≥ 86,400 s、专用工作集末值减初值严格小于 2,000,000 字节，并检查小时序列是否持续上涨。Private Bytes 记录供交叉检查。诊断若显示断线、重连、弹窗或复制活动，按实际条件记录并另取稳定空闲样本。N-3 可先从同一 Wi‑Fi 空闲进程取一段累计 CPU 差值除以实际墙钟时间。命令报告的 CPU 包含 2 s 轮询。若含轮询的平均值已低于 0.1%，可用作上界。若达到或超过阈值，需另测并剔除轮询开销。采样完成后从托盘退出隔离实例，核对诊断中的 `event=stopped`。[需求 N-1、N-3、N-4](../docs/rust-rewrite/REQUIREMENTS.md#5-非功能需求) · [Microsoft Get-Counter](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.diagnostics/get-counter?view=powershell-7.5)
+
+## M5 · 审查后最终 x64 复验
+
+构建提交 `6340eb5`，Windows 11 Pro 26H2 build 26300.9974 x64、Rust 1.100.0、Inno Setup 6.7.4。默认 MSVC 静态链接 CRT，最终 EXE 和安装器经 `dumpbin /IMPORTS` 验证无动态 CRT 导入。编译及正式打包 62.16 s，隔离安装 720.89 ms，实装和卸载退出码 0。构建、ZIP 内、实装以及下述实测 EXE 的 SHA-256 均为 `3C6631DBA9CD7306F47B24ACBF6B6DC7C5601C91CD298395DEBF8A114C6898F9`。便携 ZIP 1,900,112 B，零字节标记验证通过。干净 Windows 虚拟机和 ARM64 未测。 [Rust 链接说明](https://doc.rust-lang.org/reference/linkage.html#static-and-dynamic-c-runtimes)
+
+启动项使用独立 TestId 验证显式启用、取消、重装保留启用和关闭、外目录的命令保留、取消旧 Python 命令，七次安装成功并卸载。生产 Run 值前后一致。 [Inno Setup 注册表规则](https://jrsoftware.org/inno-setup/documentation/topic_registrysection.htm)
+
+真实 Wi-Fi 冷启从 Windows 进程创建到观察到 `event=connected transport=wifi`，五次为 2,241.18、2,250.59、2,148.69、1,818.91、2,068.92 ms，中位 2,148.69 ms。25 ms 查一次诊断文件，每轮先只读核对剪贴板服务可用，再用受保护的已配对副本启动独立最终 EXE。同一 Windows 账户使用真实 Python 1.2.0 覆盖升级保留的数据，另测首次连接 3,177.88 ms，无需重新配对，该次超过 3 秒参考线。两组均关闭自动同步，Windows 剪贴板序列号保持一致。
+
+| 状态 | 样本数 | 专用工作集（B） | Private Bytes（B） | 线程 |
+| --- | ---: | ---: | ---: | ---: |
+| 连机托盘空闲 | 91 | 2,830,336–2,949,120 | 3,686,400–3,895,296 | 3–9 |
+| 连机历史 | 9 | 6,180,864 | 9,699,328 | 13 |
+| 连机设置 | 9 | 6,987,776–6,991,872 | 10,469,376–10,473,472 | 14 |
+| 断线托盘，合成历史 | 9 | 2,347,008 | 3,055,616 | 8 |
+| 断线历史，双来源各 50 条 | 9 | 8,912,896–12,054,528 | 13,787,136–18,063,360 | 12 |
+| 断线设置 | 9 | 12,177,408–12,238,848 | 18,141,184–18,202,624 | 12 |
+| 断线收起后 | 9 | 4,694,016–5,058,560 | 6,746,112–7,675,904 | 12 |
+
+连机托盘 2 s 采样，窗口 1 s 采样。CPU 为 0.171875 s / 184.22 s，单逻辑核 0.0933%，包含 2 s 元数据轮询，本次满足 N-3。连机托盘 91 点首末相隔 181.11 s，专用工作集首末变化 −114,688 B，Private Bytes 变化 −208,896 B，无重连或同步活动。N-4 连续 24 h 未测。 [计数器命令](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.diagnostics/get-counter?view=powershell-7.5)
+
+第 8 节的升级后直接连机、最终 Wi-Fi 冷启、连机内存和空闲 CPU 已补齐。USB、剪贴板收发与文件传输、重启挂载、实际睡眠和 24 小时端到端按 [交付报告](RUN-REPORT.md) 复验。渐进 JPEG 与 HEIC 限制见审查前问题清单。

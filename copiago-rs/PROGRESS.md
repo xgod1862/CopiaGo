@@ -32,6 +32,6 @@
 | T-WIN-02 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | Windows Shell 删除测试图标后由 TaskbarCreated 恢复，双进程只激活原 PID，开机启动隔离验证精确旧 Run 值。Explorer 实际重启、主题和用户登录待联验。 |
 | T-WIN-03 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | 启动 15 s 后单次检查，重新开启立即检查，关闭取消并清提示。真实 GitHub 稳定版提示和发布页跳转通过。2.0.0-beta 沿用 Python 规则无提示，正式 UI 随 T-APP-02 验收。 |
 | T-APP-02 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/13 | 正式托盘、两页、配对与传输联动完成；双进程、原生 UIA、设置和隔离旧记录通过。空闲 2.39 MB、弹窗最高 12.94 MB。真机及实际睡眠/VPN 待测。 |
-| T-PKG-01 | 待办 | — | |
-| T-PKG-02 | 待办 | — | |
-| T-QA-01 | 待办 | — | |
+| T-PKG-01 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/14 | 最终安装包 3,688,692 B，ZIP 1,900,112 B，隔离实装 7,896,320 B。静态 CRT、安装卸载及重复安装启动项通过。 |
+| T-PKG-02 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/14 | 真实 Python 1.2.0 副本覆盖及数据互通通过。最终包使用保留配对在 3,177.88 ms 连上 Wi-Fi，无需重新配对。 |
+| T-QA-01 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/14 | 最终 Wi-Fi 冷启 5/5，1,818.91–2,250.59 ms。连机托盘 2,949,120 B，弹窗最高 12,238,848 B。CPU 短测通过，24 小时及端到端待验。 |

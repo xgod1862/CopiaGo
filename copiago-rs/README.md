@@ -17,6 +17,42 @@ cargo build --release
 
 产物位于 `target/release/copiago.exe`。
 
+默认 MSVC 构建静态链接 C 运行库，安装版和便携版均无需另外安装 Visual C++ Redistributable。
+
+## 安装包与便携版
+
+在仓库根目录运行以下命令。使用 Inno Setup 6.5 或更新的 6.x 版本，按本机路径设置 `-IsccPath`。
+
+```powershell
+.\copiago-rs\scripts\build.ps1 -IsccPath 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+```
+
+默认在 `copiago-rs\target\packages` 输出 x64 安装包和便携 ZIP。可用 `-OutputDir` 指定输出目录。安装包沿用 `%LOCALAPPDATA%\Programs\iPhoneClipboard`，便携版解压后在 `copiago.exe` 旁保留 `portable-data` 文件。两个包的版本取自同一个 Release EXE。`-SignToolCommand` 接收 Inno 签名工具命令模板，后续可由维护者配置证书。模板用 `$f` 指定待签文件。
+
+本机复验时，在 `%TEMP%` 下选用独立路径，传入 `-TestId` 和 `-TestInstallDir` 生成测试安装器。复测同一次升级时，两次编译使用同一测试 ID 和路径。Inno 脚本直接编译时对应 `/DTestId=<32 位十六进制 GUID>` 和 `/DTestDir=<绝对路径>`。测试包使用独立应用 ID 和登录启动测试键，省略开始菜单快捷方式和安装后启动。
+
+```powershell
+$testId = [guid]::NewGuid().ToString('N')
+$testDir = Join-Path $env:TEMP "CopiaGo-$testId\app"
+.\copiago-rs\scripts\build.ps1 -IsccPath 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' -TestId $testId -TestInstallDir $testDir
+```
+
+运行生成的 `CopiaGo-Test-*.exe` 后，按 `Get-ChildItem -LiteralPath $testDir -File -Recurse | Measure-Object Length -Sum` 的 `Sum` 核对安装占用，包含卸载器，预算 12,000,000 字节。测试应用在独立 `ICB_DATA_DIR` 和 `ICB_INSTANCE_NAMESPACE` 下启动。
+
+### 从 Python 1.2.0 覆盖升级
+
+在原 Windows 账户下运行 Rust 安装包，沿用安装器识别到的原安装目录。安装器关闭该目录中的 CopiaGo，装好新程序后清理旧的 `iPhoneClipboard.exe` 和 `_internal`，保留 `data` 中各账户的数据。登录启动选项默认采用该账户当前的开关状态。
+
+如果 Python 仍在使用 `%LOCALAPPDATA%\iPhoneClipboardPrototype`，且当前账户的安装目录数据为空，Rust 首次启动时会迁移设置、历史和配对记录，并尝试把源目录保留为 `iPhoneClipboardPrototype.before-rust-upgrade` 备份。迁移失败时继续使用原数据目录。卸载时默认保留数据，选择同时删除数据会清理当前账户的备份。
+
+真机复验时，在测试电脑的同一账户用 Python 1.2.0 完成配对并保存设置和两侧历史，保持手机解锁、拔掉 USB，并确认电脑与手机处于同一局域网。从仓库根目录启动已构建的安装器。
+
+```powershell
+Start-Process -FilePath '.\copiago-rs\target\packages\CopiaGo-Setup-2.0.0-beta-x64.exe' -ArgumentList ('/LOG="{0}"' -f (Join-Path $env:TEMP 'CopiaGo-upgrade.log')) -Wait
+```
+
+安装后首次打开 CopiaGo，确认直接显示「已连接（无线）」且未出现配对引导。核对 iPhone 和电脑两侧的历史、设置及登录启动开关，再确认旧程序和运行时已清理。
+
 ## USB 配对真机复验
 
 在 `copiago-rs` 中选用专用测试 iPhone 和测试电脑，确认测试机运行 Apple Mobile Device Service，并为每个场景指定新的临时数据目录。CopiaGo 在初次写入时为目录设置仅当前用户和 SYSTEM 可访问的 ACL。`ICB_DATA_DIR` 隔离 CopiaGo 文件，首次信任和无线开关仍作用于测试设备。

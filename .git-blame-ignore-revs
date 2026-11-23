@@ -1,0 +1,6 @@
+# Commits that only reformat files. Hide them from git blame with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub reads this file automatically.
+
+# chore: 按 .gitattributes 规范化行尾（只改行尾）
+50330aca5aef68f5962e2f70622c00d0815b840b

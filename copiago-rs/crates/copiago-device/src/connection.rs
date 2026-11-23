@@ -66,13 +66,15 @@ impl HostSignals for () {
     }
 }
 
-/// Language and data persistence for the device worker.
+/// Language and setup options for the device worker.
 #[derive(Clone, Copy, Debug)]
 pub struct DeviceRunOptions {
     pub language: Language,
     /// Allows pairing, forgetting, saving device details and migrating existing records.
     /// Set false for a read-only probe.
     pub persist_device_data: bool,
+    /// Allows automatic image downloads and mounting when persistent device data is enabled.
+    pub allow_developer_setup: bool,
 }
 
 impl Default for DeviceRunOptions {
@@ -80,6 +82,7 @@ impl Default for DeviceRunOptions {
         Self {
             language: LanguagePreference::System.resolve(),
             persist_device_data: true,
+            allow_developer_setup: true,
         }
     }
 }
@@ -147,21 +150,41 @@ enum Failure {
     Wifi(WifiProbeError),
     Usb(UsbProbeError),
     Session,
-    Setup(DdiStage),
+    DeveloperModeRequired,
+    Setup { stage: DdiStage, timed_out: bool },
 }
 
 impl Failure {
+    const fn setup(stage: DdiStage) -> Self {
+        Self::Setup {
+            stage,
+            timed_out: false,
+        }
+    }
+
     fn allows_usb(self) -> bool {
-        !matches!(self, Self::Setup(DdiStage::Download | DdiStage::Sign))
+        !matches!(
+            self,
+            Self::Setup {
+                stage: DdiStage::Download | DdiStage::Sign,
+                ..
+            }
+        )
     }
 
     fn after_usb(self, usb: Self) -> Self {
-        if self == Self::Setup(DdiStage::Install)
-            && !matches!(
-                usb,
-                Self::Setup(_) | Self::Usb(UsbProbeError::DeveloperModeRequired)
-            )
-        {
+        if matches!(
+            self,
+            Self::Setup {
+                stage: DdiStage::Install,
+                ..
+            }
+        ) && !matches!(
+            usb,
+            Self::Setup { .. }
+                | Self::DeveloperModeRequired
+                | Self::Usb(UsbProbeError::DeveloperModeRequired)
+        ) {
             return self;
         }
         usb
@@ -169,23 +192,30 @@ impl Failure {
 
     fn wait(self, first_setup: bool) -> Wait {
         let (mode, state, message) = match self {
-            Self::Usb(UsbProbeError::DeveloperModeRequired) => (
+            Self::DeveloperModeRequired | Self::Usb(UsbProbeError::DeveloperModeRequired) => (
                 WaitMode::User,
                 ConnState::Developer,
                 message!(
                     "需要开启开发者模式：在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启并重启手机，解锁后点「继续连接」"
                 ),
             ),
-            Self::Setup(stage) => (
+            Self::Setup { stage, timed_out } => (
                 WaitMode::User,
                 ConnState::Hold,
-                Message::new(match stage {
-                    DdiStage::Download => {
+                Message::new(match (stage, timed_out) {
+                    (DdiStage::Download, false) => {
                         "下载 iPhone 开发组件失败。已下载的部分会保留，请检查电脑网络后点「继续连接」。"
                     }
-                    DdiStage::Sign => "Apple 签名失败。请稍后重试。",
-                    DdiStage::Install => {
+                    (DdiStage::Download, true) => {
+                        "下载 iPhone 开发组件超时。已下载的部分会保留，请检查电脑网络后点「继续连接」。"
+                    }
+                    (DdiStage::Sign, false) => "Apple 签名失败。请稍后重试。",
+                    (DdiStage::Sign, true) => "请求 Apple 签名超时。请检查电脑网络后重试。",
+                    (DdiStage::Install, false) => {
                         "无法在 iPhone 上安装开发组件。请保持手机解锁并连着数据线后重试。"
+                    }
+                    (DdiStage::Install, true) => {
+                        "安装 iPhone 开发组件超时。请保持手机解锁并连着数据线后重试。"
                     }
                 }),
             ),

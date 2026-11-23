@@ -1,4 +1,4 @@
-//! Atomic replacement of a file within its existing parent directory.
+//! Atomic file replacement on the same volume.
 
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -20,22 +20,32 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Writes and flushes a sibling temporary file, then replaces the destination.
 pub fn write(path: &Path, data: &[u8]) -> io::Result<()> {
-    install(path, data, |source, destination| {
-        let source = wide_path(source)?;
-        let destination = wide_path(destination)?;
-        // SAFETY: Both buffers are live, NUL-terminated paths on the same volume.
-        let moved = unsafe {
-            MoveFileExW(
-                source.as_ptr(),
-                destination.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if moved == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    })
+    install(path, data, move_resolved_file)
+}
+
+/// Atomically moves an already flushed file into place on the same volume.
+pub fn move_file(source: &Path, destination: &Path) -> io::Result<()> {
+    move_resolved_file(
+        &resolve_file_path(source)?,
+        &resolve_file_path(destination)?,
+    )
+}
+
+fn move_resolved_file(source: &Path, destination: &Path) -> io::Result<()> {
+    let source = wide_path(source)?;
+    let destination = wide_path(destination)?;
+    // SAFETY: Both buffers are live, NUL-terminated paths. Cross-volume moves are disallowed.
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Replaces an existing file after comparing its contents with the prepared snapshot.
@@ -85,20 +95,27 @@ fn install(
     data: &[u8],
     replace: impl FnOnce(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
+    let destination = resolve_file_path(path)?;
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing file name"))?;
-    // On Windows, canonicalize returns an extended-length path for the Win32 call.
-    let parent = fs::canonicalize(parent_dir(path))?;
-    let (mut temporary, mut file) = TemporaryFile::create(&parent, name)?;
+    let (mut temporary, mut file) = TemporaryFile::create(parent_dir(&destination), name)?;
 
     let result = file.write_all(data).and_then(|()| file.sync_all());
     drop(file);
     result?;
 
-    replace(&temporary.path, &parent.join(name))?;
+    replace(&temporary.path, &destination)?;
     temporary.delete_on_drop = false;
     Ok(())
+}
+
+fn resolve_file_path(path: &Path) -> io::Result<PathBuf> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing file name"))?;
+    // Canonicalizing the parent gives Win32 an extended-length path without following the file.
+    Ok(fs::canonicalize(parent_dir(path))?.join(name))
 }
 
 struct TemporaryFile {

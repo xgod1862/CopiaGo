@@ -55,6 +55,7 @@
 - 来自手机的图片只按 iPhone 会使用的格式（PNG、JPEG、HEIF、TIFF、GIF、WebP、BMP）解码，超过 64 MB 或 5000 万像素的图片不会同步。
 - Windows 系统剪贴板仍可正常粘贴。应用为同步内容写入 Windows 系统历史及云同步排除标记。
 - 常规安装的配对及历史数据在 `%LOCALAPPDATA%\iPhoneClipboardPrototype`。便携版在程序目录下的 `data`。卸载时会询问是否一并删除这些数据（默认保留）。
+- 托盘异常记录在同一数据目录下的 `tray-errors.log`，包含发生时间、异常类型和调用位置。
 
 ## 开发与来源
 

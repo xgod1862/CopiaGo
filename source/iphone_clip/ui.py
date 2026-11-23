@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 import winreg
 
 from PIL import Image, ImageOps
@@ -42,8 +43,30 @@ RUN_VALUE = "iPhoneClipboardPrototype"
 MUTED, ACCENT, WARN = "muted", "ok", "warn"
 ICON_GRACE = 30  # seconds before a dropped connection turns the tray icon grey
 DISCONNECT_NOTICE = 5 * 60
+MAX_TRAY_LOG_BYTES = 512 * 1024
 STORE_SEARCH = "ms-windows-store://search/?query=Apple%20Devices"
 NOTIFY_ICONS = r"Control Panel\NotifyIconSettings"  # Windows 11 per-app tray icon settings
+
+
+def log_tray_error(operation: str, error: Exception) -> None:
+    """Keep a short local traceback without exception text, locals or clipboard data."""
+    try:
+        path = data_dir() / "tray-errors.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size >= MAX_TRAY_LOG_BYTES:
+            path.replace(path.with_suffix(".log.1"))
+        os_code = getattr(error, "winerror", None)
+        if os_code is None and isinstance(error, OSError):
+            os_code = error.errno
+        code = f" (OS error {os_code})" if os_code is not None else ""
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        # This file does not use the Python logger because the bridge disables library logging.
+        with path.open("a", encoding="utf-8") as log:
+            log.write(f"{timestamp} {operation}: {type(error).__name__}{code}\n")
+            for frame, line in traceback.walk_tb(error.__traceback__):
+                log.write(f"  {Path(frame.f_code.co_filename).name}:{line} in {frame.f_code.co_name}\n")
+    except OSError:
+        pass  # A read-only or full data directory must not interrupt the tray.
 
 
 def startup_command() -> str | None:
@@ -806,6 +829,16 @@ class Window:
                                 minutes=DISCONNECT_NOTICE // 60))
 
     def drain(self):
+        """Keep consuming queued actions after an individual poll fails."""
+        try:
+            self._drain_tick()
+        except Exception as error:
+            log_tray_error("drain", error)
+        finally:
+            if not self.closed:
+                self.root.after(100, self.drain)
+
+    def _drain_tick(self):
         if self.wake():
             self.show()
         while True:
@@ -889,7 +922,6 @@ class Window:
         self.watch_ticks += 1
         if self.watch_ticks % 5 == 0:
             self.check_pc_clipboard()
-        self.root.after(100, self.drain)
 
     def show(self, page="history"):
         if not self.paired or self.just_paired:
@@ -909,8 +941,11 @@ class Window:
 
     def quit(self):
         self.closed = True
-        self.bridge.stop()
-        self.tray.stop()
+        for operation, stop in (("bridge.stop", self.bridge.stop), ("tray.stop", self.tray.stop)):
+            try:
+                stop()
+            except Exception as error:
+                log_tray_error(operation, error)
         self.root.destroy()
 
 

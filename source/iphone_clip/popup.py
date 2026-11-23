@@ -215,7 +215,8 @@ SECTIONS = (
                      ("types", "ask_limit", "大文件先询问"), ("switch", "history", "保留 iPhone 剪贴板历史"))),
     ("电脑 → iPhone", (("switch", "push", "自动同步到 iPhone"), ("types", "push_types", "同步内容"),
                      ("switch", "pc_history", "保留电脑剪贴板历史"))),
-    ("通用", (("switch", "startup", "登录 Windows 时启动"), ("switch", "notify", "显示同步、断开和错误通知"))),
+    ("通用", (("switch", "startup", "登录 Windows 时启动"), ("switch", "notify", "显示同步、断开和错误通知"),
+            ("switch", "update_check", "启动时检查新版本"))),
 )
 CHOICES = {  # chip rows: key -> (value, label)
     "language": (("system", "跟随系统"), ("zh-CN", "简体中文"), ("en", "English")),
@@ -259,6 +260,7 @@ class HistoryPopup:
                  on_install_driver: Callable[[], None] = lambda: None, on_open_store: Callable[[], None] = lambda: None,
                  on_finish: Callable[[], None] = lambda: None,                  on_send_item: Callable[[int], None] = lambda _: None,
                  on_offer: Callable[[bool], None] = lambda accept: None,
+                 on_open_update: Callable[[], None] = lambda: None,
                  version: str = "") -> None:
         self.scale = scale
         self.on_copy, self.on_delete, self.on_clear = on_copy, on_delete, on_clear
@@ -273,6 +275,8 @@ class HistoryPopup:
         self.lists: dict[str, tuple[list, bool]] = {"phone": ([], False), "pc": ([], False)}
         self.sent_id = None
         self.version = version
+        self.on_open_update = on_open_update
+        self.update: str | None = None  # a newer release's version, e.g. "1.2.0"
         self.page = "history"
         self.back_page = "history"
         self.onboarding = {"phase": "idle", "driver": "ok", "retry": False}
@@ -371,6 +375,12 @@ class HistoryPopup:
         """Name the paired phone in the header chip and on the settings page; empty when none is paired."""
         if (name, summary) != (self.device_name, self.device_summary):
             self.device_name, self.device_summary = name, summary
+            self.render()
+
+    def set_update(self, version: str | None) -> None:
+        """Offer a newer release in the footer of the history and settings pages; None removes it."""
+        if version != self.update:
+            self.update = version
             self.render()
 
     def animate_progress(self) -> None:
@@ -497,6 +507,8 @@ class HistoryPopup:
             self.on_type(action[1], action[2])
         elif name == "offer":
             self.on_offer(action[1])
+        elif name == "update":
+            self.on_open_update()
         elif name == "close":
             self.hide()
         elif name == "pair":
@@ -718,6 +730,11 @@ class HistoryPopup:
         note_font = font(px(12))
         if settings:
             note = f"{APP_NAME} {self.version}".strip()
+            if self.update:
+                note += " · " + tr("发现新版本 {version}", version=self.update)
+        elif self.update:
+            # Takes the place of the history note until the user updates or turns the check off.
+            note = tr("发现新版本 {version}，点击查看", version=self.update)
         elif self.history_on:
             note = (tr("{count} 条 · 加密保存在本机", count=len(self.entries)) if self.entries else
                     tr("已开启 · 加密保存在本机"))
@@ -738,8 +755,14 @@ class HistoryPopup:
                       anchor="mm")
             self.hits.append((button_x, footer_y, button_x + button_width, footer_y + px(32), ("clear",)))
             right = button_x - px(8)
-        draw.text((pad + px(4), footer_y + px(16)), fit(note, note_font, right - pad - px(4)), font=note_font,
-                  fill=MUTED, anchor="lm")
+        note = fit(note, note_font, right - pad - px(4))
+        color = MUTED
+        if self.update:
+            hovered = self.hover == ("update",)
+            color = ACCENT_HOVER if hovered else ACCENT
+            note_right = pad + px(4) + round(note_font.getlength(note))
+            self.hits.append((pad, footer_y, note_right + px(4), footer_y + px(32), ("update",)))
+        draw.text((pad + px(4), footer_y + px(16)), note, font=note_font, fill=color, anchor="lm")
         return frame
 
     def draw_offer(self, layer: Image.Image, list_top: int) -> None:

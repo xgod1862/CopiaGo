@@ -209,6 +209,15 @@ def set_notifications_enabled(value: bool) -> None:
     _save("notifications", value)
 
 
+def update_check_enabled() -> bool:
+    """Whether to ask GitHub for a newer release at startup. On unless the user turned it off."""
+    return _load().get("update_check") is not False
+
+
+def set_update_check_enabled(value: bool) -> None:
+    _save("update_check", value)
+
+
 def push_enabled() -> bool:
     # Writing to the phone is opt-in: a compromised PC could otherwise tamper with its clipboard.
     return _load().get("push") is True

@@ -43,6 +43,7 @@ These screenshots show CopiaGo 1.1.0 with a sample connection and clipboard hist
 - Wireless sync uses an encrypted tunnel to the paired iPhone. Clipboard contents do not go through a cloud relay.
 - [Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata) protects pairing records and, when history is enabled, saved clipboard contents and previews. Received files are temporarily stored in the data directory's `received` folder.
 - Pair only with Windows computers you trust. When you stop using CopiaGo on a computer, select **Forget this iPhone** (「忘记此 iPhone」) in the tray settings.
+- About 15 seconds after each start, CopiaGo asks GitHub once for the latest release and shows a notice at the bottom of the tray panel when a newer version exists. Nothing is downloaded or installed automatically. GitHub sees this computer's IP address and the CopiaGo version. Turn off **Check for updates at startup** (「启动时检查新版本」) in settings to stop the check.
 
 ## Run or build from source
 

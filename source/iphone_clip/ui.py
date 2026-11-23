@@ -24,7 +24,7 @@ import win32con
 
 from iphone_clip import APP_NAME, __version__
 from iphone_clip.clipboard import ClipboardWriter, Clip, ClipTooLarge, fingerprint
-from iphone_clip import files
+from iphone_clip import files, updater
 from iphone_clip.developer_setup import DownloadProgress, PROGRESS
 from iphone_clip.device_info import DeviceInfo, load_device_info
 from iphone_clip.device import (Bridge, CONNECTED_WIFI, FileTooLarge, IDLE_PROMPT, OfferExpired,
@@ -37,7 +37,8 @@ from iphone_clip.settings import (data_dir, history_enabled, language_preference
                                   pc_history_enabled, set_language_preference,
                                   pull_enabled, push_enabled, set_history_enabled, set_notifications_enabled,
                                   set_pc_history_enabled, set_pull_enabled, set_push_enabled, set_sync_types,
-                                  sync_types, file_ask_mb, set_file_ask_mb)
+                                  sync_types, file_ask_mb, set_file_ask_mb, set_update_check_enabled,
+                                  update_check_enabled)
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "iPhoneClipboardPrototype"
@@ -48,6 +49,8 @@ DISCONNECT_NOTICE = 5 * 60
 MAX_TRAY_LOG_BYTES = 512 * 1024
 STORE_SEARCH = "ms-windows-store://search/?query=Apple%20Devices"
 NOTIFY_ICONS = r"Control Panel\NotifyIconSettings"  # Windows 11 per-app tray icon settings
+# Let the tray, the bridge and a login-time network settle before asking GitHub for a new release.
+UPDATE_CHECK_DELAY_MS = 15_000
 
 
 def log_tray_error(operation: str, error: Exception) -> None:
@@ -189,6 +192,8 @@ class Window:
         self.startup_var = tk.BooleanVar(value=startup_enabled())
         self.save_history = tk.BooleanVar(value=history_enabled())
         self.notify_var = tk.BooleanVar(value=notifications_enabled())
+        self.update_check_var = tk.BooleanVar(value=update_check_enabled())
+        self.release = None  # a newer updater.Release, once a check has found one
         self.push_var = tk.BooleanVar(value=push_enabled())
         self.pull_var = tk.BooleanVar(value=pull_enabled())
         # Kinds of content each direction syncs automatically; read from the bridge thread too.
@@ -244,7 +249,7 @@ class Window:
                                   on_type=self.toggle_type, on_offer=self.answer_offer,
                                   on_pair=self.start_pairing, on_install_driver=self.install_driver,
                                   on_open_store=self.open_store, on_finish=self.finish_onboarding,
-                                  on_send_item=self.send_item,
+                                  on_send_item=self.send_item, on_open_update=self.open_release,
                                   version=__version__)
         self.update_popup_status()
         self.tray = pystray.Icon("iPhoneClipboardPrototype", tray_icon(False), APP_NAME, self.tray_menu())
@@ -255,6 +260,7 @@ class Window:
         if not self.paired or not minimized:
             self.show()
         self.root.after(100, self.drain)
+        self.root.after(UPDATE_CHECK_DELAY_MS, self.check_for_update)
 
     def tray_menu(self) -> pystray.Menu:
         return pystray.Menu(
@@ -428,6 +434,7 @@ class Window:
                 "pull": (self.pull_var.get(), True),
                 "pull_types": self.types["pull"], "push_types": self.types["push"], "ask_limit": self.ask_mb,
                 "notify": (self.notify_var.get(), True),
+                "update_check": (self.update_check_var.get(), True),
                 "push": (self.push_var.get(), True)}
 
     def toggle_setting(self, name):
@@ -436,6 +443,7 @@ class Window:
                            "pc_history": (self.pc_history_var, self.change_pc_history),
                            "pull": (self.pull_var, self.change_pull),
                            "notify": (self.notify_var, self.change_notifications),
+                           "update_check": (self.update_check_var, self.change_update_check),
                            "push": (self.push_var, self.change_push)}[name]
         variable.set(not variable.get())
         apply()  # Reverts the variable when the change cannot be saved.
@@ -549,6 +557,41 @@ class Window:
         except OSError:
             self.notify_var.set(not self.notify_var.get())
             self.set_status(message("无法保存通知设置"))
+
+    def change_update_check(self):
+        try:
+            set_update_check_enabled(self.update_check_var.get())
+        except OSError:
+            self.update_check_var.set(not self.update_check_var.get())
+            self.set_status(message("无法保存更新设置"))
+            return
+        if self.update_check_var.get():
+            self.check_for_update()  # turning it on checks now instead of waiting for the next start
+        else:
+            self.show_release(None)
+
+    def check_for_update(self):
+        """Ask GitHub for a newer release on a worker thread; the answer comes back through the event queue."""
+        if self.closed or not self.update_check_var.get():
+            return
+
+        def check():
+            self.events.put(("update", updater.latest_release(__version__)))
+
+        threading.Thread(target=check, name="update-check", daemon=True).start()
+
+    def show_release(self, release):
+        # A check that was already running when the user turned the switch off must not bring the notice back.
+        self.release = release if self.update_check_var.get() else None
+        self.popup.set_update(self.release.version if self.release else None)
+
+    def open_release(self):
+        if self.release is None:
+            return
+        try:
+            os.startfile(self.release.url)  # only github.com release pages pass updater.newer_release
+        except OSError:
+            self.set_status(message("无法打开浏览器"))
 
     def change_push(self):
         try:
@@ -876,6 +919,8 @@ class Window:
                 self.popup.sent(int(event))
             elif state == "offer":
                 self.handle_offer(event)
+            elif state == "update":
+                self.show_release(event)
             elif state == "file_ready":
                 self.file_ready(*event)
             elif state == "file_error":

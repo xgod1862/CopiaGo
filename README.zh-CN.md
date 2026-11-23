@@ -43,6 +43,7 @@
 - 无线传输走已配对设备的加密隧道。CopiaGo 不使用云端中转剪贴板。
 - 配对记录及启用后的历史正文与预览由 [Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata) 保护。接收的文件会暂存在数据目录的 `received` 文件夹。
 - 仅在可信的 Windows 电脑上配对。停用时可在托盘设置中选「忘记此 iPhone」。
+- 每次启动约 15 秒后，CopiaGo 会向 GitHub 查询一次最新版本，有新版时在托盘面板底部提示，不会自动下载或安装。GitHub 会看到这台电脑的 IP 地址和 CopiaGo 版本号。可在设置中关闭「启动时检查新版本」。
 
 ## 从源码运行或构建
 

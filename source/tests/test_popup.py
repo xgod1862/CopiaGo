@@ -75,6 +75,50 @@ class PopupRenderTests(unittest.TestCase):
         self.assertNotIn(("toggle", "startup"), actions)  # cannot change outside the installed app
         self.assertNotIn(("forget",), actions)  # scrolled out of view
 
+    def test_newer_release_is_a_footer_link_on_both_pages(self):
+        opened = mock.Mock()
+        noop = lambda *_: None
+        popup = HistoryPopup(self.root, 1.0, on_copy=noop, on_delete=noop, on_clear=noop, on_enable_history=noop,
+                             on_toggle=noop, on_forget=noop, on_open_update=opened, version="1.1.0")
+        popup.frame()
+        self.assertNotIn(("update",), [hit[4] for hit in popup.hits])
+        popup.update = "1.2.0"
+        for page in ("history", "settings"):
+            with self.subTest(page=page):
+                popup.page = page
+                popup.frame()
+                hit = next(hit for hit in popup.hits if hit[4] == ("update",))
+                popup.release(mock.Mock(x=hit[0] + 2, y=hit[1] + 2))
+        self.assertEqual(opened.call_count, 2)
+        popup.page = "settings"
+        popup.settings = {"update_check": (True, True)}
+        popup.settings_scroll = 10_000
+        popup.frame()
+        self.assertIn(("toggle", "update_check"), [hit[4] for hit in popup.hits])
+
+    def test_connected_chip_names_the_phone_without_covering_the_title(self):
+        popup = self.popup()
+        popup.set_status("已连接（无线）", "ok", "ok", "已连接（无线）")
+        plain = popup.frame()
+        popup.set_device("张三丰的工作用 iPhone 15 Pro Max（公司配发）" * 2, "iPhone 15 Pro Max · iOS 18.1")
+        named = popup.frame()
+        self.assertEqual(named.size, plain.size)
+        settings_x = [hit[0] for hit in popup.hits if hit[4] == ("settings",)][0]
+        chip_left = next(x for x in range(settings_x) if named.getpixel((x, 34)) == panel.CHIPS["ok"][0])
+        title_right = 18 + round(font(20, True).getlength("剪贴板"))
+        self.assertGreater(chip_left, title_right)
+
+    def test_settings_card_shows_name_status_and_model(self):
+        popup = self.popup()
+        popup.page = "settings"
+        popup.settings = {"paired": True}
+        popup.set_status("已连接（无线）", "ok", "ok", "已连接（无线）")
+        before = popup.frame()
+        popup.set_device("小明的 iPhone", "iPhone 15 Pro · iOS 18.1")
+        after = popup.frame()
+        self.assertEqual(before.size, after.size)  # the card grows inside the scrolling page
+        self.assertIn(("forget",), [hit[4] for hit in popup.hits])
+
     def test_onboarding_page_follows_pairing_phase(self):
         popup = self.popup()
         popup.page = "onboarding"

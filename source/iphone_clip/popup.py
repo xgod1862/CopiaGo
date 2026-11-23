@@ -215,7 +215,8 @@ SECTIONS = (
                      ("types", "ask_limit", "大文件先询问"), ("switch", "history", "保留 iPhone 剪贴板历史"))),
     ("电脑 → iPhone", (("switch", "push", "自动同步到 iPhone"), ("types", "push_types", "同步内容"),
                      ("switch", "pc_history", "保留电脑剪贴板历史"))),
-    ("通用", (("switch", "startup", "登录 Windows 时启动"), ("switch", "notify", "显示同步、断开和错误通知"))),
+    ("通用", (("switch", "startup", "登录 Windows 时启动"), ("switch", "notify", "显示同步、断开和错误通知"),
+            ("switch", "update_check", "启动时检查新版本"))),
 )
 CHOICES = {  # chip rows: key -> (value, label)
     "language": (("system", "跟随系统"), ("zh-CN", "简体中文"), ("en", "English")),
@@ -259,6 +260,7 @@ class HistoryPopup:
                  on_install_driver: Callable[[], None] = lambda: None, on_open_store: Callable[[], None] = lambda: None,
                  on_finish: Callable[[], None] = lambda: None,                  on_send_item: Callable[[int], None] = lambda _: None,
                  on_offer: Callable[[bool], None] = lambda accept: None,
+                 on_open_update: Callable[[], None] = lambda: None,
                  version: str = "") -> None:
         self.scale = scale
         self.on_copy, self.on_delete, self.on_clear = on_copy, on_delete, on_clear
@@ -273,6 +275,8 @@ class HistoryPopup:
         self.lists: dict[str, tuple[list, bool]] = {"phone": ([], False), "pc": ([], False)}
         self.sent_id = None
         self.version = version
+        self.on_open_update = on_open_update
+        self.update: str | None = None  # a newer release's version, e.g. "1.2.0"
         self.page = "history"
         self.back_page = "history"
         self.onboarding = {"phase": "idle", "driver": "ok", "retry": False}
@@ -291,6 +295,7 @@ class HistoryPopup:
         self.confirm_job = None
         self.chip = "busy"
         self.detail, self.tone, self.connection = "", "muted", ""
+        self.device_name, self.device_summary = "", ""  # the paired phone, e.g. "小明的 iPhone", "iPhone 15 Pro · iOS 18.1"
         self.progressing = False
         self.fraction: float | None = None
         self.hits: list[tuple[int, int, int, int, tuple]] = []
@@ -364,6 +369,18 @@ class HistoryPopup:
         status = (detail, chip, tone, connection, progressing, fraction)
         if status != (self.detail, self.chip, self.tone, self.connection, self.progressing, self.fraction):
             self.detail, self.chip, self.tone, self.connection, self.progressing, self.fraction = status
+            self.render()
+
+    def set_device(self, name: str, summary: str = "") -> None:
+        """Name the paired phone in the header chip and on the settings page; empty when none is paired."""
+        if (name, summary) != (self.device_name, self.device_summary):
+            self.device_name, self.device_summary = name, summary
+            self.render()
+
+    def set_update(self, version: str | None) -> None:
+        """Offer a newer release in the footer of the history and settings pages; None removes it."""
+        if version != self.update:
+            self.update = version
             self.render()
 
     def animate_progress(self) -> None:
@@ -490,6 +507,8 @@ class HistoryPopup:
             self.on_type(action[1], action[2])
         elif name == "offer":
             self.on_offer(action[1])
+        elif name == "update":
+            self.on_open_update()
         elif name == "close":
             self.hide()
         elif name == "pair":
@@ -644,7 +663,13 @@ class HistoryPopup:
         background, text_color, dot, label = CHIPS[self.chip]
         label = tr(label)
         chip_font = font(px(12), True)
-        chip_width = px(12) + px(7) + px(6) + round(chip_font.getlength(label)) + px(12)
+        chip_inset = px(12) + px(7) + px(6) + px(12)  # dot, gap and padding around the label
+        if self.chip == "ok" and self.device_name and not settings:
+            # Say which phone is connected; the name gives way before the title would be covered.
+            # The settings page names the phone in its own card, so its chip stays short.
+            title_right = pad + round(font(px(20), True).getlength(tr("剪贴板"))) + px(12)
+            label = fit(f"{label} · {self.device_name}", chip_font, chip_right - title_right - chip_inset)
+        chip_width = chip_inset + round(chip_font.getlength(label))
         chip_x = chip_right - chip_width
         frame.alpha_composite(shape(chip_width, px(28), px(14), background), (chip_x, px(20)))
         draw.ellipse((chip_x + px(12), px(30.5), chip_x + px(19), px(37.5)), fill=dot)
@@ -705,6 +730,11 @@ class HistoryPopup:
         note_font = font(px(12))
         if settings:
             note = f"{APP_NAME} {self.version}".strip()
+            if self.update:
+                note += " · " + tr("发现新版本 {version}", version=self.update)
+        elif self.update:
+            # Takes the place of the history note until the user updates or turns the check off.
+            note = tr("发现新版本 {version}，点击查看", version=self.update)
         elif self.history_on:
             note = (tr("{count} 条 · 加密保存在本机", count=len(self.entries)) if self.entries else
                     tr("已开启 · 加密保存在本机"))
@@ -725,8 +755,14 @@ class HistoryPopup:
                       anchor="mm")
             self.hits.append((button_x, footer_y, button_x + button_width, footer_y + px(32), ("clear",)))
             right = button_x - px(8)
-        draw.text((pad + px(4), footer_y + px(16)), fit(note, note_font, right - pad - px(4)), font=note_font,
-                  fill=MUTED, anchor="lm")
+        note = fit(note, note_font, right - pad - px(4))
+        color = MUTED
+        if self.update:
+            hovered = self.hover == ("update",)
+            color = ACCENT_HOVER if hovered else ACCENT
+            note_right = pad + px(4) + round(note_font.getlength(note))
+            self.hits.append((pad, footer_y, note_right + px(4), footer_y + px(32), ("update",)))
+        draw.text((pad + px(4), footer_y + px(16)), note, font=note_font, fill=color, anchor="lm")
         return frame
 
     def draw_offer(self, layer: Image.Image, list_top: int) -> None:
@@ -887,16 +923,22 @@ class HistoryPopup:
             confirming = self.confirming == "forget"
             label = tr("确认忘记" if confirming else "忘记此 iPhone")
             button_width = round(small_font.getlength(label)) + px(28)
-            lines = wrap(self.connection or self.detail or tr("未连接"), small_font,
-                         card_width - px(60) - button_width - px(24), 2)
-            card_height = max(px(68), px(16) + px(20) + px(6) + len(lines) * px(18) + px(14))
+            text_width = card_width - px(60) - button_width - px(24)
+            lines = wrap(self.connection or self.detail or tr("未连接"), small_font, text_width, 2)
+            # Model and system go last: by then the text is below the button and can use the full width.
+            summary = fit(self.device_summary, small_font, card_width - px(60) - px(16)) if self.device_summary else ""
+            extra = px(18) if summary else 0
+            card_height = max(px(68), px(16) + px(20) + px(6) + extra + len(lines) * px(18) + px(14))
             content.alpha_composite(shape(card_width, card_height, px(16), CARD), (pad, y))
             content.alpha_composite(shape(px(36), px(36), px(10), TINT), (pad + px(12), y + px(14)))
             content.alpha_composite(icon("phone", px(18), ACCENT), (pad + px(21), y + px(23)))
-            draw.text((pad + px(60), y + px(14)), "iPhone", font=title_font, fill=INK)
+            title = fit(self.device_name or "iPhone", title_font, text_width)
+            draw.text((pad + px(60), y + px(14)), title, font=title_font, fill=INK)
             for number, line in enumerate(lines):
                 tone = {"ok": "ok", "warn": "warn"}.get(self.chip, "muted") if self.connection else self.tone
                 draw.text((pad + px(60), y + px(40) + number * px(18)), line, font=small_font, fill=TONES[tone])
+            if summary:
+                draw.text((pad + px(60), y + px(40) + len(lines) * px(18)), summary, font=small_font, fill=MUTED)
             button_x, button_y = pad + card_width - px(12) - button_width, y + px(16)
             hovered = self.hover == ("forget",)
             content.alpha_composite(shape(button_width, px(32), px(16), DANGER_TINT if hovered or confirming else WHITE),

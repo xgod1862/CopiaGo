@@ -39,6 +39,7 @@ class DeveloperSetupRetryTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch.object(device, "usb_identifiers", return_value=["paired-phone"]),
+            mock.patch.object(device, "remember_device"),  # not into the real data folder
             mock.patch.object(lockdown, "create_using_usbmux", side_effect=trust),
             mock.patch.object(tunnel_service.RemotePairingLockdownService, "create", return_value=service),
         ):
@@ -62,6 +63,8 @@ class DeveloperSetupRetryTests(unittest.IsolatedAsyncioTestCase):
         bridge = None
 
         def status(state, event):
+            if state == "device":
+                return  # a DeviceInfo for the panel, not a status message
             messages.append((state, event.text))
             if state == "hold":
                 waiting.set()
@@ -87,6 +90,8 @@ class DeveloperSetupRetryTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(device, "usb_identifiers", mock.AsyncMock(return_value=["paired-phone"])) as usb,
             mock.patch.object(device, "configure_pairing_storage"),
             mock.patch.object(device.logging, "disable"),
+            # Keeps the test from saving device details into the real data folder.
+            mock.patch.object(device, "read_device_info", mock.AsyncMock(return_value=device.DeviceInfo())),
             mock.patch.object(bridge, "_monitor", side_effect=monitor),
             mock.patch.object(userspace_tunnel, "UserspaceRsdTunnel", return_value=tunnel) as open_tunnel,
             mock.patch.object(mobile_image_mounter, "PersonalizedImageMounter", return_value=mounter),

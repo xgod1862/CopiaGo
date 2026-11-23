@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Literal, TypeVar
 from xml.parsers.expat import ExpatError
 
 import requests
-from urllib3.exceptions import ReadTimeoutError
+from urllib3.exceptions import HTTPError as Urllib3Error, ReadTimeoutError
 
 from iphone_clip.files import human_size
 from iphone_clip.i18n import Message, message
@@ -97,7 +97,15 @@ class DownloadCanceled(Exception):
 
 
 class IntegrityError(Exception):
-    """A source returned bytes that do not match the pinned size or SHA-256."""
+    """A source returned bytes that do not match the pinned size or SHA-256.
+
+    ``resumed`` is true when the checked bytes started with a part kept from an earlier source or
+    attempt. The fault may lie in that prefix, so the current source deserves one clean retry.
+    """
+
+    def __init__(self, text: str, *, resumed: bool = False):
+        super().__init__(text)
+        self.resumed = resumed
 
 
 @dataclass(frozen=True)
@@ -202,6 +210,33 @@ def _content_range(value: str) -> tuple[int, int] | None:
     return int(start), int(total) if total.isdecimal() else 0
 
 
+CHUNK_SIZE = 64 * 1024
+
+
+def _iter_body(response) -> Iterator[bytes]:
+    """Yield body bytes as soon as any arrive.
+
+    ``iter_content`` reads until a whole chunk is buffered, so a server that trickles bytes just
+    faster than the read timeout could hold the thread past the deadline and past cancellation,
+    keeping ``_download_lock`` from the next attempt. ``read1`` returns whatever one socket read
+    delivers, so the caller checks the deadline after every read and a silent link still fails
+    after STALL_TIMEOUT.
+    """
+    read1 = getattr(getattr(response, "raw", None), "read1", None)
+    if not callable(read1):
+        yield from response.iter_content(chunk_size=CHUNK_SIZE)
+        return
+    while True:
+        try:
+            data = read1(CHUNK_SIZE, decode_content=True)
+        except Urllib3Error as exc:
+            # Match what requests raises from iter_content, so timeouts are still reported as such.
+            raise requests.ConnectionError(exc) from exc
+        if not data:
+            return
+        yield data
+
+
 def _prepare_staging(staging: Path) -> None:
     """Keep parts only when they were downloaded for the same pinned commit."""
     marker = staging / ".ref"
@@ -264,7 +299,7 @@ def _fetch_file(session: requests.Session, url: str, target: Path, expected: tup
             report(received, size)
             last_report, reported = time.monotonic(), received
             with part.open("ab" if offset else "wb") as stream:
-                for chunk in response.iter_content(chunk_size=64 * 1024):
+                for chunk in _iter_body(response):
                     if cancel.is_set():
                         raise DownloadCanceled()
                     now = time.monotonic()
@@ -283,7 +318,7 @@ def _fetch_file(session: requests.Session, url: str, target: Path, expected: tup
                         last_report, reported = now, received
         if oversized:
             part.unlink(missing_ok=True)
-            raise IntegrityError("Developer image file is larger than pinned")
+            raise IntegrityError("Developer image file is larger than pinned", resumed=offset > 0)
         if received != size:
             # The server closed the body early. Keep the part so another source or attempt resumes it.
             raise requests.ConnectionError("Incomplete developer image payload")
@@ -291,7 +326,7 @@ def _fetch_file(session: requests.Session, url: str, target: Path, expected: tup
             report(received, size)
     if hasher.hexdigest() != digest:
         part.unlink(missing_ok=True)
-        raise IntegrityError("Developer image file does not match its pinned hash")
+        raise IntegrityError("Developer image file does not match its pinned hash", resumed=offset > 0)
     part.replace(target)
 
 
@@ -337,7 +372,15 @@ def _download_parts(directory: str, names: dict[str, str], staging: Path, deadli
                     url = template.format(repo=DDI_REPO, ref=DDI_REF, path=f"{directory}/{remote}")
                     before = stats.fetched
                     try:
-                        _fetch_file(session, url, target, pinned[remote], deadline, cancel, stats, report)
+                        try:
+                            _fetch_file(session, url, target, pinned[remote], deadline, cancel, stats, report)
+                        except IntegrityError as exc:
+                            if not exc.resumed:
+                                raise
+                            # The discarded prefix may have been the bad part. Retry this source
+                            # from byte zero before giving up on it.
+                            stats.failures.append(f"{name}:IntegrityError(resumed)")
+                            _fetch_file(session, url, target, pinned[remote], deadline, cancel, stats, report)
                     except (DownloadCanceled, TimeoutError):
                         raise
                     except (requests.RequestException, IntegrityError) as exc:

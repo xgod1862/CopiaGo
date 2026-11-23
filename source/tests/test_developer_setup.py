@@ -369,6 +369,51 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(developer_setup.DownloadCanceled):
             fetch(FakeSession(FakeResponse(body=BODY)), self.staging, cancel=cancel)
 
+    def test_trickled_body_cannot_hold_the_thread_past_the_deadline(self):
+        class TrickleRaw:
+            calls = 0
+
+            def read1(self, amt, decode_content=None):
+                TrickleRaw.calls += 1
+                developer_setup.time.sleep(0.01)
+                return b"a"  # Always just in time for the socket timeout, never a full chunk.
+
+        response = FakeResponse(body=BODY)
+        response.raw = TrickleRaw()
+        started = developer_setup.time.monotonic()
+        with pin(**{"Image.dmg": b"a" * 10_000_000}), self.assertRaises(TimeoutError):
+            fetch(FakeSession(response), self.staging, deadline=started + 0.1)
+        self.assertLess(developer_setup.time.monotonic() - started, 1)
+        self.assertGreater(TrickleRaw.calls, 1)
+
+    def test_socket_timeout_from_read1_is_reported_as_a_timeout(self):
+        class SilentRaw:
+            def read1(self, amt, decode_content=None):
+                raise ReadTimeoutError(None, None, "read timed out")
+
+        responses = []
+        for _ in developer_setup.SOURCES:
+            response = FakeResponse(body=BODY)
+            response.raw = SilentRaw()
+            responses.append(response)
+        with self.assertRaises(requests.ConnectionError) as failure:
+            fetch(FakeSession(*responses), self.staging)
+        self.assertIsInstance(failure.exception.args[0], ReadTimeoutError)
+
+    def test_bad_prefix_from_one_source_does_not_waste_the_next_source(self):
+        session = FakeSession(
+            FakeResponse(200, b"abX"),  # short and wrong: kept as a part, then resumed
+            FakeResponse(206, b"def", {"Content-Range": "bytes 3-5/6"}),  # correct suffix
+            FakeResponse(200, BODY),  # same source again, from byte zero
+        )
+        stats = fetch(session, self.staging)
+        self.assertEqual((self.staging / "Image.dmg").read_bytes(), BODY)
+        self.assertEqual([host(call) for call in session.calls],
+                         ["raw.githubusercontent.com", "ghfast.top", "ghfast.top"])
+        self.assertNotIn("Range", session.calls[2][1]["headers"])
+        self.assertEqual(stats.failures, ["raw.githubusercontent.com:ConnectionError",
+                                          "ghfast.top:IntegrityError(resumed)"])
+
     def test_overall_deadline_does_not_try_other_sources(self):
         session = FakeSession(FakeResponse(body=BODY), FakeResponse(body=BODY))
         with self.assertRaises(TimeoutError):

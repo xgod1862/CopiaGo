@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 import io
 import os
+import time
 import tkinter as tk
 from typing import Callable
 
@@ -290,6 +291,8 @@ class HistoryPopup:
         self.confirm_job = None
         self.chip = "busy"
         self.detail, self.tone, self.connection = "", "muted", ""
+        self.progressing = False
+        self.fraction: float | None = None
         self.hits: list[tuple[int, int, int, int, tuple]] = []
         top = self.window.top
         top.bind("<Motion>", self.motion)
@@ -355,11 +358,29 @@ class HistoryPopup:
         self.sent_id = item_id
         self.render()
 
-    def set_status(self, detail: str, chip: str, tone: str, connection: str = "") -> None:
-        """``detail`` is the latest message of any kind; ``connection`` only the connection's own."""
-        if (detail, chip, tone, connection) != (self.detail, self.chip, self.tone, self.connection):
-            self.detail, self.chip, self.tone, self.connection = detail, chip, tone, connection
+    def set_status(self, detail: str, chip: str, tone: str, connection: str = "", *,
+                   progressing: bool = False, fraction: float | None = None) -> None:
+        """Update status text and the optional progress bar. An unknown fraction animates."""
+        status = (detail, chip, tone, connection, progressing, fraction)
+        if status != (self.detail, self.chip, self.tone, self.connection, self.progressing, self.fraction):
+            self.detail, self.chip, self.tone, self.connection, self.progressing, self.fraction = status
             self.render()
+
+    def animate_progress(self) -> None:
+        if self.progressing and self.fraction is None and self.page in ("onboarding", "history"):
+            self.render()
+
+    def draw_progress(self, frame: Image.Image, x: int, y: int, width: int) -> None:
+        height = self.px(5)
+        frame.alpha_composite(shape(width, height, height / 2, TINT), (x, y))
+        if self.fraction is None:
+            fill = width // 4
+            cycle = time.monotonic() % 3 / 1.5
+            x += round((width - fill) * (1 - abs(cycle - 1)))
+        else:
+            fill = round(width * self.fraction)
+        if fill:
+            frame.alpha_composite(shape(fill, height, height / 2, ACCENT), (x, y))
 
     def set_settings(self, values: dict) -> None:
         if values != self.settings:
@@ -594,6 +615,8 @@ class HistoryPopup:
         settings = self.page == "settings"
         detail_lines = self.detail_lines() if not settings else []
         tabs_top = px(64) + (len(detail_lines) * px(18) + px(6) if detail_lines else 0)
+        if not settings and self.progressing:
+            tabs_top += px(16)
         list_top = tabs_top + (0 if settings else px(TAB_SPACE))
         viewport = px(LIST_HEIGHT) + (px(TAB_SPACE) if settings else 0)  # same window size on both pages
         height = list_top + viewport + px(12) + px(32) + px(18)
@@ -637,6 +660,8 @@ class HistoryPopup:
         # The two lists: what came from the iPhone, and what was copied on this computer.
         if not settings:
             inner = width - pad * 2
+            if self.progressing:
+                self.draw_progress(frame, pad, tabs_top - px(15), inner)
             frame.alpha_composite(shape(inner, px(32), px(16), CONTROL), (pad, tabs_top))
             half = inner // 2
             for index, (key, label) in enumerate(TABS):
@@ -1074,6 +1099,10 @@ class HistoryPopup:
                     draw.text((pad + px(4), y + px(9)), line, font=small_font, fill=TONES[self.tone], anchor="lm")
                     y += px(20)
                 y += px(8)
+
+            if self.progressing:
+                self.draw_progress(canvas, pad, y, inner)
+                y += px(17)
 
             # Apple's device service, when it is missing.
             if driver != "ok":

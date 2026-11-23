@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 import plistlib
 import time
@@ -12,6 +13,7 @@ from xml.parsers.expat import ExpatError
 import requests
 from urllib3.exceptions import ReadTimeoutError
 
+from iphone_clip.files import human_size
 from iphone_clip.i18n import Message, message
 
 if TYPE_CHECKING:
@@ -27,7 +29,7 @@ MANIFEST = "BuildManifest.plist"
 PROGRESS = {
     "download": "正在下载 iPhone 开发组件…",
     "sign": "正在请求 Apple 签名…",
-    "install": "正在将开发组件安装到 iPhone…",
+    "install": "正在将开发者镜像安装到 iPhone…",
 }
 FAILURES = {
     "download": ("下载 iPhone 开发组件失败。请检查电脑网络后重试。",
@@ -47,6 +49,13 @@ class DeveloperSetupError(Exception):
         super().__init__(stage)
 
 
+@dataclass(frozen=True)
+class DownloadProgress(Message):
+    """Report the current file's byte fraction when the server supplies its size."""
+
+    fraction: float | None
+
+
 async def _run_stage(stage: Stage, operation: Awaitable[T], timeout: float) -> T:
     from pymobiledevice3.exceptions import AlreadyMountedError, DeveloperModeIsNotEnabledError
 
@@ -62,30 +71,60 @@ async def _run_stage(stage: Stage, operation: Awaitable[T], timeout: float) -> T
         raise DeveloperSetupError(stage, timed_out=timed_out) from exc
 
 
-def _download_parts(directory: str, names: dict[str, str], deadline: float) -> dict[str, bytes]:
+def _download_progress(index: int, count: int, received: int, total: int) -> DownloadProgress:
+    values: dict[str, object] = {"index": index, "count": count, "received": human_size(received)}
+    if 0 < total and received <= total:
+        values["total"] = human_size(total)
+        return DownloadProgress("正在下载文件 {index}/{count} · {received} / {total}", values, received / total)
+    return DownloadProgress("正在下载文件 {index}/{count} · 已收到 {received}", values, None)
+
+
+def _download_parts(directory: str, names: dict[str, str], deadline: float,
+                    progress: Callable[[DownloadProgress], None] | None = None) -> dict[str, bytes]:
     from developer_disk_image.repo import DEFAULT_REF, DEVELOPER_DISK_IMAGE_REPO_RAW_URL_FORMAT
 
     parts = {}
+    count = len(names)
     with requests.Session() as session:
-        for local, remote in names.items():
+        for index, (local, remote) in enumerate(names.items(), 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError()
             url = DEVELOPER_DISK_IMAGE_REPO_RAW_URL_FORMAT.format(ref=DEFAULT_REF, path=f"{directory}/{remote}")
-            with session.get(url, stream=True, timeout=tuple(min(limit, remaining) for limit in HTTP_TIMEOUT)) as response:
+            if progress is not None:
+                progress(_download_progress(index, count, 0, 0))
+            with session.get(url, stream=True, headers={"Accept-Encoding": "identity"},
+                             timeout=tuple(min(limit, remaining) for limit in HTTP_TIMEOUT)) as response:
                 response.raise_for_status()
+                total = 0
+                if progress is not None:
+                    # Requests reports decoded bytes. An encoded or chunked length is not their total.
+                    length = response.headers.get("Content-Length", "")
+                    if (response.headers.get("Content-Encoding", "identity").lower() == "identity"
+                            and not response.headers.get("Transfer-Encoding") and length.isascii() and length.isdecimal()):
+                        total = int(length)
+                    if total:
+                        progress(_download_progress(index, count, 0, total))
+                last_report, reported_size = time.monotonic(), 0
                 payload = bytearray()
                 for chunk in response.iter_content(chunk_size=64 * 1024):
-                    if time.monotonic() >= deadline:
+                    now = time.monotonic()
+                    if now >= deadline:
                         raise TimeoutError()
                     payload.extend(chunk)
+                    if progress is not None and chunk and now - last_report >= 0.25:
+                        reported_size = len(payload)
+                        progress(_download_progress(index, count, reported_size, total))
+                        last_report = now
                 if not payload:
                     raise ValueError("Empty developer image payload")
+                if progress is not None and reported_size != len(payload):
+                    progress(_download_progress(index, count, len(payload), total))
                 parts[local] = bytes(payload)
     return parts
 
 
-async def load_image(cryptex: bool) -> Path:
+async def load_image(cryptex: bool, progress: Callable[[Message], None] | None = None) -> Path:
     """Reuse the library's cache. A canceled download never writes to it."""
     from developer_disk_image.repo import CRYPTEX_IMAGE_PAYLOADS, CRYPTEX_IMAGE_ROOT
     from pymobiledevice3.common import get_home_folder
@@ -107,7 +146,22 @@ async def load_image(cryptex: bool) -> Path:
         except (plistlib.InvalidFileException, ValueError, ExpatError):
             pass  # Refresh a partial or corrupt cache from an interrupted setup.
 
-    parts = await asyncio.to_thread(_download_parts, source, names, time.monotonic() + DOWNLOAD_TIMEOUT)
+    loop = asyncio.get_running_loop()
+    active = True
+
+    def report(event: DownloadProgress) -> None:
+        # The download thread may still be unwinding after this attempt times out.
+        if active and progress is not None:
+            progress(event)
+
+    if progress is not None:
+        progress(message(PROGRESS["download"]))
+    try:
+        parts = await asyncio.to_thread(
+            _download_parts, source, names, time.monotonic() + DOWNLOAD_TIMEOUT,
+            None if progress is None else lambda event: loop.call_soon_threadsafe(report, event))
+    finally:
+        active = False
     if not plistlib.loads(parts[MANIFEST]).get("ProductBuildVersion"):
         raise ValueError("Missing developer image build")
     folder.mkdir(parents=True, exist_ok=True)
@@ -151,7 +205,8 @@ async def _install_image(rsd: RemoteServiceDiscoveryService, folder: Path, crypt
             progress(message(PROGRESS["sign"]))
             result = await _run_stage("sign", asyncio.to_thread(
                 _request_apple_signature, plistlib.dumps(self._request), ticket_key), SIGN_TIMEOUT)
-            progress(message(PROGRESS["install"]))
+            if cryptex:
+                progress(message(PROGRESS["install"]))
             return result
 
     # The pinned library has no signer callback. CopiaGo has one bridge and serializes setup
@@ -162,6 +217,14 @@ async def _install_image(rsd: RemoteServiceDiscoveryService, folder: Path, crypt
             await cryptexd.CryptexdService(rsd).auto_install_ddi(folder)
         else:
             async with mobile_image_mounter.PersonalizedImageMounter(lockdown=rsd) as mounter:
+                upload_image = mounter.upload_image
+
+                async def upload(*args, **kwargs):
+                    # A ticket cached on the phone skips signing but still uploads the image.
+                    progress(message(PROGRESS["install"]))
+                    return await upload_image(*args, **kwargs)
+
+                mounter.upload_image = upload
                 await mounter.mount(folder / "Image.dmg", folder / MANIFEST, folder / "Image.trustcache")
     finally:
         service_module.TSSRequest = original_request
@@ -176,9 +239,9 @@ async def prepare_developer_services(rsd: RemoteServiceDiscoveryService,
         async with PersonalizedImageMounter(lockdown=rsd) as mounter:
             await mounter.raise_if_cannot_mount()
 
+    progress(message("正在检查 iPhone 开发者服务…"))
     await _run_stage("install", check_device(), INSTALL_TIMEOUT)
     cryptex = uses_cryptex_image(rsd)
-    progress(message(PROGRESS["download"]))
-    folder = await _run_stage("download", load_image(cryptex), DOWNLOAD_TIMEOUT)
-    progress(message(PROGRESS["install"]))
+    folder = await _run_stage("download", load_image(cryptex, progress), DOWNLOAD_TIMEOUT)
+    progress(message("正在准备安装开发者镜像…"))
     await _run_stage("install", _install_image(rsd, folder, cryptex, progress), INSTALL_TIMEOUT)

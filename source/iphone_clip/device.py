@@ -103,7 +103,7 @@ class USBPairingError(RuntimeError):
     """Pairing could not start because the USB device selection was invalid."""
 
 
-async def pair_over_usb() -> str:
+async def pair_over_usb(progress: Callable[[Message], None] | None = None) -> str:
     """Set up one explicitly trusted device for wireless RemotePairing."""
     from pymobiledevice3.exceptions import RemotePairingCompletedError
     from pymobiledevice3.lockdown import create_using_usbmux
@@ -114,8 +114,12 @@ async def pair_over_usb() -> str:
         raise USBPairingError(message("未找到 USB 连接的 iPhone。请用数据线连接并解锁后重试"))
     if len(identifiers) != 1:
         raise USBPairingError(message("请暂时只连接一台 iPhone"))
+    if progress is not None:
+        progress(message("正在等待 iPhone 信任此电脑。请解锁手机，按提示点「信任」并输入锁屏密码。"))
     lockdown = await create_using_usbmux(serial=identifiers[0], autopair=True)
     try:
+        if progress is not None:
+            progress(message("已确认 iPhone 信任，正在准备无线配对…"))
         if not await lockdown.get_enable_wifi_connections():
             await lockdown.set_enable_wifi_connections(True)
         service = await RemotePairingLockdownService.create(lockdown)
@@ -432,8 +436,8 @@ class Bridge:
                             continue
                     self.pair_requested.clear()
                     pairing = True
-                    self.status("pairing", message("正在配对：请解锁 iPhone，出现提示时点「信任」并输入锁屏密码…"))
-                    await asyncio.wait_for(pair_over_usb(), timeout=120)
+                    self.status("pairing", message("正在查找通过 USB 连接的 iPhone…"))
+                    await asyncio.wait_for(pair_over_usb(lambda event: self.status("pairing", event)), timeout=120)
                     pairing = False
                     configure_pairing_storage()  # seals the record just written, whichever path wrote it
                     records = paired_identifiers()
@@ -511,6 +515,7 @@ class Bridge:
                         await prepare_developer_services(rsd, lambda event: self.status("connecting", event))
                     except AlreadyMountedError:
                         pass
+                    self.status("connecting", message("正在重新连接并验证剪贴板服务…"))
                     continue  # Refresh the advertised service table after mounting.
                 await self._monitor(rsd, wireless=wireless)
                 return

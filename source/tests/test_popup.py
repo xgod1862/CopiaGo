@@ -1,8 +1,10 @@
 import tkinter as tk
 import unittest
 from datetime import datetime
+from unittest import mock
 
 from iphone_clip.history import Entry
+from iphone_clip import popup as panel
 from iphone_clip.popup import HistoryPopup, fit, font, wrap
 
 
@@ -96,6 +98,39 @@ class PopupRenderTests(unittest.TestCase):
         popup.history_on = True
         popup.frame()
         self.assertNotIn(("enable",), [hit[4] for hit in popup.hits])
+
+
+class ConnectionProgressRenderTests(unittest.TestCase):
+    def test_progress_draws_current_fraction_or_animates_and_clears_on_failure(self):
+        with mock.patch.object(panel, "LayeredWindow") as window:
+            window.return_value.visible = False
+            noop = lambda *_: None
+            popup = HistoryPopup(mock.Mock(), 1.0, on_copy=noop, on_delete=noop, on_clear=noop,
+                                 on_enable_history=noop, on_toggle=noop, on_forget=noop, version="0.3.0")
+
+        for page in ("onboarding", "history"):
+            with self.subTest(page=page):
+                popup.page = page
+                popup.set_onboarding("preparing", "ok")
+                popup.set_status("Downloading", "busy", "muted", progressing=True, fraction=0.5)
+                with mock.patch.object(popup, "draw_progress", wraps=popup.draw_progress) as bar:
+                    frame = popup.frame()
+                    _, x, y, width = bar.call_args.args
+                    self.assertEqual(frame.getpixel((x + width // 4, y + 2)), panel.ACCENT)
+                    self.assertEqual(frame.getpixel((x + width * 3 // 4, y + 2)), panel.TINT)
+
+                    popup.set_status("Signing", "busy", "muted", progressing=True)
+                    with mock.patch.object(panel.time, "monotonic", side_effect=[0, 1.5]):
+                        start, end = popup.frame(), popup.frame()
+                    self.assertEqual(start.getpixel((x + 20, y + 2)), panel.ACCENT)
+                    self.assertEqual(end.getpixel((x + 20, y + 2)), panel.TINT)
+
+                    popup.set_status("Signing failed", "warn", "warn")
+                    popup.set_onboarding("retry", "ok", retry=True)
+                    bar.reset_mock()
+                    popup.frame()
+                    bar.assert_not_called()
+                    self.assertIn(("pair",), [hit[4] for hit in popup.hits])
 
 
 if __name__ == "__main__":

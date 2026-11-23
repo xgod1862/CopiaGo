@@ -12,14 +12,45 @@ from urllib3.exceptions import ReadTimeoutError
 
 from iphone_clip import developer_setup, device
 from iphone_clip.device import Bridge
-from pymobiledevice3 import common
+from pymobiledevice3 import common, lockdown
 from pymobiledevice3.exceptions import AlreadyMountedError, DeveloperModeIsNotEnabledError
 from pymobiledevice3.remote.core_device.pasteboard_service import PasteboardService
-from pymobiledevice3.remote import userspace_tunnel
+from pymobiledevice3.remote import tunnel_service, userspace_tunnel
 from pymobiledevice3.services import cryptexd, mobile_image_mounter
 
 
 class DeveloperSetupRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_usb_pairing_reports_when_the_phone_confirms_trust(self):
+        events = []
+        waiting = asyncio.Event()
+        confirmed = asyncio.Event()
+        client = mock.AsyncMock(udid="paired-phone")
+        client.get_enable_wifi_connections.return_value = True
+        service = mock.AsyncMock()
+
+        async def trust(**_):
+            waiting.set()
+            await confirmed.wait()
+            return client
+
+        with (
+            mock.patch.object(device, "usb_identifiers", return_value=["paired-phone"]),
+            mock.patch.object(lockdown, "create_using_usbmux", side_effect=trust),
+            mock.patch.object(tunnel_service.RemotePairingLockdownService, "create", return_value=service),
+        ):
+            task = asyncio.create_task(device.pair_over_usb(events.append))
+            try:
+                await asyncio.wait_for(waiting.wait(), timeout=1)
+                self.assertEqual(len(events), 1)
+                self.assertIn("正在等待 iPhone 信任", events[0].text)
+                service.connect.assert_not_awaited()
+            finally:
+                confirmed.set()
+                result = await asyncio.wait_for(task, timeout=1)
+            self.assertEqual(result, "paired-phone")
+            self.assertIn("已确认 iPhone 信任", events[1].text)
+            service.connect.assert_awaited_once_with(autopair=True)
+
     async def test_download_timeout_keeps_pairing_and_waits_for_retry(self):
         messages = []
         waiting = asyncio.Event()
@@ -91,7 +122,9 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
                     await developer_setup.load_image(False)
                 self.assertFalse((folder / "Image.dmg").exists())
                 self.assertEqual(await developer_setup.load_image(False), folder)
-                self.assertEqual(await developer_setup.load_image(False), folder)
+                progress = mock.Mock()
+                self.assertEqual(await developer_setup.load_image(False, progress), folder)
+                progress.assert_not_called()
                 self.assertEqual(download.call_count, 2)
 
     def test_download_sets_connection_and_read_timeouts(self):
@@ -104,6 +137,28 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
                 "PersonalizedImages/test", {"Image.dmg": "Image.dmg"}, developer_setup.time.monotonic() + 120)
         self.assertEqual(result, {"Image.dmg": b"image"})
         self.assertEqual(get.call_args.kwargs["timeout"], developer_setup.HTTP_TIMEOUT)
+
+    def test_streamed_download_reports_bytes_with_or_without_a_reliable_total(self):
+        for headers, expected in (
+            ({"Content-Length": "6"}, [None, 0, 0.5, 1]),
+            ({}, [None, None, None]),
+            ({"Content-Length": "6", "Content-Encoding": "gzip"}, [None, None, None]),
+        ):
+            with (
+                self.subTest(headers=headers),
+                mock.patch.object(developer_setup.requests, "Session") as session,
+                mock.patch.object(developer_setup, "time", SimpleNamespace(monotonic=mock.Mock(side_effect=[1, 2, 3, 4]))),
+            ):
+                response = session.return_value.__enter__.return_value.get.return_value.__enter__.return_value
+                response.headers = headers
+                response.iter_content.return_value = [b"abc", b"def"]
+                events = []
+                result = developer_setup._download_parts("test", {"Image.dmg": "Image.dmg"}, 120, events.append)
+                self.assertEqual(result, {"Image.dmg": b"abcdef"})
+                self.assertEqual([event.fraction for event in events], expected)
+                self.assertEqual([event.values["received"] for event in events][-3:], ["0 B", "3 B", "6 B"])
+                self.assertEqual(events[-1].values["index"], 1)
+                self.assertEqual(events[-1].values["count"], 1)
 
 
 class DeveloperSetupStageTests(unittest.IsolatedAsyncioTestCase):
@@ -121,6 +176,8 @@ class DeveloperSetupStageTests(unittest.IsolatedAsyncioTestCase):
                     async def install(*_):
                         request = service_module.TSSRequest()
                         await request.send_receive()
+                        if not cryptex:
+                            await device_service.upload_image()
                         raise OSError("device disconnected")
 
                     installer = mock.Mock(auto_install_ddi=mock.AsyncMock(side_effect=install))
@@ -139,7 +196,11 @@ class DeveloperSetupStageTests(unittest.IsolatedAsyncioTestCase):
                     ):
                         await developer_setup.prepare_developer_services(mock.Mock(), lambda event: statuses.append(event.text))
                     self.assertEqual(failure.exception.stage, "sign" if refused else "install")
-                    self.assertIn(developer_setup.PROGRESS["sign"], statuses)
+                    signing = statuses.index(developer_setup.PROGRESS["sign"])
+                    if refused:
+                        self.assertNotIn(developer_setup.PROGRESS["install"], statuses)
+                    else:
+                        self.assertEqual(statuses[signing + 1], developer_setup.PROGRESS["install"])
                     self.assertEqual(post.call_args.kwargs["timeout"], developer_setup.HTTP_TIMEOUT)
                     self.assertIs(service_module.TSSRequest, real_request)
 
@@ -165,14 +226,15 @@ class DeveloperSetupStageTests(unittest.IsolatedAsyncioTestCase):
             await developer_setup._run_stage("download", download(), 1)
         self.assertEqual(failure.exception.status.text, developer_setup.FAILURES["download"][1])
 
-    async def test_late_download_does_not_write_cache_after_deadline(self):
+    async def test_late_download_does_not_report_progress_or_write_cache_after_deadline(self):
         started = threading.Event()
         release = threading.Event()
         finished = threading.Event()
 
-        def slow_download(*_):
+        def slow_download(_source, _names, _deadline, report):
             started.set()
             release.wait(timeout=2)
+            report(developer_setup.DownloadProgress("late", {}, 1.0))
             finished.set()
             return {developer_setup.MANIFEST: plistlib.dumps({"ProductBuildVersion": "build"})}
 
@@ -181,7 +243,8 @@ class DeveloperSetupStageTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(common, "get_home_folder", return_value=Path(root)),
             mock.patch.object(developer_setup, "_download_parts", side_effect=slow_download),
         ):
-            task = asyncio.create_task(developer_setup.load_image(True))
+            events = []
+            task = asyncio.create_task(developer_setup.load_image(True, events.append))
             try:
                 self.assertTrue(await asyncio.to_thread(started.wait, 1))
                 with self.assertRaises(developer_setup.DeveloperSetupError) as failure:
@@ -190,4 +253,5 @@ class DeveloperSetupStageTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
                 self.assertTrue(await asyncio.to_thread(finished.wait, 1))
+            self.assertEqual([event.text for event in events], [developer_setup.PROGRESS["download"]])
             self.assertEqual(list(Path(root).iterdir()), [])

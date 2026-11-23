@@ -18,12 +18,36 @@ class TrayLoopTests(unittest.TestCase):
         self.window.root = mock.Mock()
         self.window.bridge = mock.Mock()
         self.window.tray = mock.Mock()
+        self.window.popup = mock.Mock()
         self.window.events = queue.SimpleQueue()
         self.window.wake = mock.Mock(return_value=False)
         self.window.show = mock.Mock()
         self.window.check_connection = mock.Mock()
         self.window.check_pc_clipboard = mock.Mock()
         self.window.watch_ticks = 0
+
+    def test_connection_progress_reaches_the_panel_and_stops_on_failure(self):
+        from iphone_clip.developer_setup import DownloadProgress
+        from iphone_clip.i18n import message
+
+        self.window.connected = False
+        self.window.paired = False
+        self.window.last_connected = "10:42"
+        self.window.update_onboarding = mock.Mock()
+        event = DownloadProgress("Downloading", {}, 0.5)
+        self.window.events.put(("connecting", event))
+
+        self.window.drain()
+
+        self.assertEqual(self.window.popup.set_status.call_args.kwargs, {"progressing": True, "fraction": 0.5})
+        self.assertIn("Downloading", self.window.popup.set_status.call_args.args[0])
+
+        self.window.events.put(("hold", message("Download timed out")))
+        self.window.root.after.call_args.args[1]()
+
+        self.window.popup.set_status.assert_called_with("Download timed out", "warn", "warn", "Download timed out",
+                                                      progressing=False, fraction=None)
+        self.window.popup.animate_progress.assert_called_once()
 
     def test_next_tick_can_open_and_quit_after_one_callback_fails(self):
         self.window.events.put(("show", ""))

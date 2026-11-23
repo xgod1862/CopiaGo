@@ -25,6 +25,7 @@ import win32con
 from iphone_clip import APP_NAME, __version__
 from iphone_clip.clipboard import ClipboardWriter, Clip, ClipTooLarge, fingerprint
 from iphone_clip import files
+from iphone_clip.developer_setup import DownloadProgress, PROGRESS
 from iphone_clip.device import (Bridge, CONNECTED_WIFI, FileTooLarge, IDLE_PROMPT, OfferExpired,
                                 configure_pairing_storage,
                                 forget_paired_devices, paired_identifiers)
@@ -330,6 +331,7 @@ class Window:
         self.pending_clip = None
         self.tray.update_menu()
         self.set_icon(False)
+        self.bridge_state, self.connection_message = "setup", IDLE_PROMPT
         self.set_status(message("已忘记 iPhone。请用数据线连接后重新配对"))
         return True
 
@@ -481,7 +483,12 @@ class Window:
         self.update_tray_title()
 
     def update_tray_title(self) -> None:
-        self.tray.title = f"{APP_NAME} · {self.status}"[:127]
+        status = self.status
+        if isinstance(self.connection_message, DownloadProgress) and self.bridge_state == "connecting":
+            status = message(PROGRESS["download"])
+        title = f"{APP_NAME} · {status}"[:127]
+        if self.tray.title != title:
+            self.tray.title = title
 
     def update_popup_status(self):
         if self.connected:
@@ -490,7 +497,10 @@ class Window:
             chip = "warn"
         else:
             chip = "busy"
-        self.popup.set_status(str(self.status), chip, self.status_color, str(self.connection_message))
+        connection = self.connection_message
+        fraction = connection.fraction if isinstance(connection, DownloadProgress) else None
+        self.popup.set_status(str(self.status), chip, self.status_color, str(connection),
+                              progressing=self.bridge_state in ("pairing", "connecting"), fraction=fraction)
 
     def change_history(self):
         enabled = self.save_history.get()
@@ -922,6 +932,8 @@ class Window:
         self.watch_ticks += 1
         if self.watch_ticks % 5 == 0:
             self.check_pc_clipboard()
+        if self.watch_ticks % 2 == 0:
+            self.popup.animate_progress()
 
     def show(self, page="history"):
         if not self.paired or self.just_paired:

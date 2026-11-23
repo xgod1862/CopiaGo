@@ -4,6 +4,8 @@
 依据：`poc-rust/REPORT.md`（协议原型与动画演示的实测结论）、Python 版 1.2.0 源码（`source/iphone_clip/`）
 配套：`docs/rust-rewrite/TASKS.md`（可直接分派给编码代理的任务卡）
 
+现有功能的行为以 Python 1.2.0 源码为准。遇到差异时按 `source/iphone_clip/` 调整实现和验收。
+
 ---
 
 ## 1. 背景与目标
@@ -149,14 +151,14 @@ copiago-rs/
 | F-DEV-1 | **USB 发现**：usbmux 列设备，只取 `Connection::Usb`。配对时有多台 USB 设备，提示"请暂时只连接一台 iPhone"。 |
 | F-DEV-2 | **USB 配对**（与 `device.py::pair_over_usb` 一致）：lockdown 自动配对（手机弹"信任"），读取 DeviceName/ProductType/ProductVersion 存入 device-info；若 `EnableWifiConnections` 为假则打开；通过 `RemotePairingLockdownService` 完成 RPPairing，保存 `remote_<udid>.plist`（DPAPI，含 `identifier`）。各阶段通过 `PairingPrompt` 推送提示文案。整体超时 120 s。 |
 | F-DEV-3 | lockdown 配对记录优先从 usbmuxd 取，失败时回落到 `device-data\<udid>.plist`（原型 `Provider` 已实现）。 |
-| F-DEV-4 | **连接策略**：有 USB 设备走 CoreDeviceProxy；否则走 Wi‑Fi（mDNS → pair‑verify → createListener → TLS‑PSK）。连接后状态文案："已连接（USB） · 可以拔掉数据线，之后将通过无线连接" / "已连接（无线）"。 |
-| F-DEV-5 | **断线重连**：隧道断开、通知流结束、或连续 3 次元数据拉取失败（每 2 s 一次）时判定断线；退避重试（1 s、2 s、5 s、10 s 封顶）；USB 插拔事件立即触发重连（usbmux `listen`）。 |
+| F-DEV-4 | **连接策略**（同 `device.py` 的连接主循环）：已配对时先走 Wi‑Fi（mDNS → pair‑verify → createListener → TLS‑PSK）。无线连接失败时，若同一已配对手机在 USB 上可用，再试 CoreDeviceProxy。中止、重置或镜像流程的下载/签名错误按原状态处理。无线安装阶段错误允许尝试 USB，普通 USB 失败仍保留已知的安装错误。连接后状态文案："已连接（USB） · 可以拔掉数据线，之后将通过无线连接" / "已连接（无线）"。 |
+| F-DEV-5 | **断线重连**：隧道断开、通知流结束、或连续 3 次元数据拉取失败（每 2 s 一次）时判定断线。普通连接失败等待 4 s 后重试。已配对时，开发者模式、镜像流程或首次配置的挂起错误保留提示并等待用户重试。USB 插拔更新回退资格，正常无线会话保持连接。 |
 | F-DEV-6 | **睡眠/唤醒**：收到 `WM_POWERBROADCAST(PBT_APMRESUMEAUTOMATIC)` 或网络变化（`NotifyIpInterfaceChange`）时主动重建连接。 |
 | F-DEV-7 | **RP 控制连接**必须在隧道生命周期内持有（原型用 `mem::forget` 只是权宜），隧道关闭时一并关闭。 |
 | F-DEV-8 | 服务列表中没有 `com.apple.coredevice.pasteboardservice` 时进入开发者镜像流程（F-DDI），完成后重连一次；仍没有则报"install"类错误（与 `DeveloperSetupError("install")` 对应）。 |
 | F-DEV-9 | 连接后读取设备信息：RSD 的 ProductType/ProductVersion + 隧道内 lockdown 的 DeviceName（3 s 超时，失败用已保存的名字），发出 `DeviceInfo` 事件并保存。机型名映射表从 `device_info.py::model_name` 迁移。 |
 | F-DEV-10 | **忘记设备**：删除所有 `remote_*.plist` 和 device-info，断开当前连接，回到 `Setup`。 |
-| F-DEV-11 | **Wi‑Fi 发现**用 `DnsServiceBrowse` + `DnsServiceResolve`，在每块 IPv4 网卡上查询（排除 127./169.254./0.），IPv4 优先；同时按 TXT `authTag` 和配对记录校验是哪台设备（idevice `mdns::txt_record_matches`）。5 s 内没有应答视为未找到，30 s 后再试。 |
+| F-DEV-11 | **Wi‑Fi 发现**用 `DnsServiceBrowse` + `DnsServiceResolve`，在每块 IPv4 网卡上查询（排除 127./169.254./0.），IPv4 优先。自动连接沿用 Python 的匹配顺序，用 idevice `remote_pairing::PeerDevice::validate_auth_tag` 校验配对记录的 `peer_alt_irk` 和 `_remotepairing._tcp` 广播 TXT 的 `identifier`、`authTag`，仅对命中的地址拨号并执行 `pair-verify`。没有匹配时按 F-DEV-4 尝试同一台手机的 USB。显式 `wifi_probe --addr` 用于诊断，默认只读，仍须通过 `pair-verify`。每轮发现最多等待 5 s，连接重试按 F-DEV-5。 |
 
 ### 4.6 剪贴板同步（device + win）
 
@@ -165,10 +167,10 @@ copiago-rs/
 | F-CLIP-1 | **变化检测**（与 `device.py::_watch` 一致）：notification proxy 订阅 `com.apple.pasteboard.notify.changed`、`com.apple.springboard.lockstate`、`com.apple.mobile.keybagd.lock_status`；另外每 2 s 用 `PULL allPromised` 拉一次元数据兜底；用 `(nonce, changeCount)` 作为变化标识。 |
 | F-CLIP-2 | **拉取策略**（与 `read_clip` 一致）：先 `allPromised` 只取类型（8 s 超时）→ 是文件且有内容类型 → 走文件描述（F-FILE）；没有文本/图片类型 → 判定为不支持，按 `unsupported_kind` 提示；否则 `promiseSecondary`（15 s）；主类型不是图片但声明了图片类型时再 `allResolved`（30 s）。超时只跳过这次复制，不断开连接。 |
 | F-CLIP-3 | 文本过滤：去掉 `￼`、空白后为空的文本不算内容；图片优先级 PNG > JPEG > HEIC > TIFF > GIF > WebP；Notes/Safari 的 `com.apple.webarchive` 里的首张图片作为兜底。 |
-| F-CLIP-4 | **断线期间的复制**：重连后发现 changeCount 与上次不同，以 `while_disconnected = true` 投递，UI 不自动写入系统剪贴板，而是在托盘菜单"使用 iPhone 上最新复制的内容"中提供。 |
+| F-CLIP-4 | **断线期间的复制**：重连后发现 `(nonce, changeCount)` 与上次不同，以 `while_disconnected = true` 投递。宿主按 `pull_types` 过滤。关闭拉取，或旧首包遇到电脑剪贴板已被其他程序更新时，保存给托盘菜单"使用 iPhone 上最新复制的内容"。拉取开启且电脑剪贴板未被其他程序更新时，旧首包照常同步。 |
 | F-CLIP-5 | **推送**（电脑 → iPhone）：监听 Windows 剪贴板（`AddClipboardFormatListener`），`push` 开启且类型在 `push_types` 中时 SET 到手机；文本用 `public.utf8-plain-text`/`public.plain-text`/`public.text` 三个 UTI；图片转 PNG 以 `public.png` 发送。SET 超时 20 s。 |
 | F-CLIP-6 | **回声抑制**：本机推送后 120 s 内，若手机回来的内容指纹（`clipboard.py::fingerprint`）与刚推送的相同则丢弃；推送回复中的 changeCount 记为 `last_change`。同理，写入 Windows 剪贴板时要打标记，避免被自己的监听再推回手机。 |
-| F-CLIP-7 | **写入 Windows 剪贴板**：文本 `CF_UNICODETEXT`；图片同时提供 `CF_DIBV5`（含透明）和 `PNG` 注册格式；文件见 F-FILE-4。打开剪贴板失败时重试 10 次、每次间隔 20 ms（与 `_SafeWin32Clipboard` 一致）。 |
+| F-CLIP-7 | **写入 Windows 剪贴板**：文本 `CF_UNICODETEXT`；图片同时提供 `CF_DIBV5`（含透明）和 `PNG` 注册格式；文件见 F-FILE-4。打开剪贴板按 `clipboard.py::_open` 最多尝试 8 次，失败后依次等待 50、100、150、200、250、300、350 ms。 |
 | F-CLIP-8 | 图片限制：编码后 ≤ 64 MB、像素 ≤ 5000 万（48MP 照片可通过），超出则提示并跳过。 |
 | F-CLIP-9 | 同一时刻对剪贴板服务的请求串行化（Python 用 `rsd_lock`）。可以像 pymobiledevice3 `PasteboardMonitor` 那样每个请求单独开一条服务连接，避免一个慢回复阻塞其他请求。 |
 
@@ -310,7 +312,7 @@ copiago-rs/
 - `copiago-device`：USB/Wi‑Fi 连接、隧道、RSD、剪贴板拉取（F-CLIP-1~3）、推送（F-CLIP-5/6）、通知、断线重连（F-DEV-4~7）、设备信息（F-DEV-9）、`DnsServiceBrowse` 发现（F-DEV-11）、RP 记录写回 identifier（F-DATA-4）。
 - `copiago-win`：Windows 剪贴板读写和监听（F-CLIP-7）。
 - 一个临时的命令行宿主 `copiago-app --headless`：双向同步文本和图片，打日志。
-- **退出条件**：用 Python 版已配对的手机，USB 和 Wi‑Fi 都能双向同步文本/PNG；拔线后自动切 Wi‑Fi；手机锁屏/解锁、电脑睡眠/唤醒后自动恢复；空闲 30 min 内存 ≤ 5 MB。
+- **退出条件**：用 Python 版已配对的手机，USB 和 Wi‑Fi 都能双向同步文本/PNG。接线且无线可用时保持 Wi‑Fi，无线失败时回退同一台手机的 USB，回退会话断开后在 Wi‑Fi 可用时恢复无线连接。手机锁屏/解锁、电脑睡眠/唤醒后自动恢复，空闲 30 min 内存 ≤ 5 MB。
 
 ### M2 · 配对、文件、历史（6–8 人日）
 - USB 配对流程（F-DEV-1~3）、忘记设备（F-DEV-10）。
@@ -354,6 +356,7 @@ copiago-rs/
 每项都要在真机上手工验证一次，自动化测试能覆盖的部分也要有测试。
 
 - [ ] 首次安装 → 托盘出现 → 弹窗提示连接 USB → 手机点"信任"并输入密码 → 配对成功 → 拔线后无线连接成功
+- [ ] 接线且 Wi‑Fi 可用时走无线。无线失败后回退同一已配对手机的 USB，断开回退会话后在 Wi‑Fi 可用时恢复无线。
 - [ ] iPhone 复制文字 → 1 s 内出现在电脑剪贴板和历史
 - [ ] iPhone 复制照片（HEIC 来源）、截图（PNG）、Safari 图片、Notes 里的图片 → 电脑可粘贴
 - [ ] "文件"App 复制小文件（< 256 KB）自动接收；大文件按 `file_ask_mb` 询问；512 MB 以上拒绝并提示

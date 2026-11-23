@@ -7,14 +7,14 @@
 | T-CORE-02 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/9 | 四种数据目录、DPAPI、原子写和原生 ACL 继承通过。实际 Python device-info 只读解析通过 |
 | T-CORE-03 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/9 | 10 项设置，非法值回落、未知键和原子更新测试通过。真实 Python 设置只读验证通过 |
 | T-CORE-04 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/9 | 170 组翻译逐项核对，命名占位符、延迟渲染和系统语言测试通过 |
-| T-DEV-01 | 待办 | — | |
-| T-DEV-02 | 待办 | — | |
-| T-DEV-03 | 待办 | — | |
-| T-DEV-04 | 待办 | — | |
-| T-DEV-05 | 待办 | — | |
-| T-DEV-06 | 待办 | — | |
-| T-WIN-01 | 待办 | — | |
-| T-APP-01 | 待办 | — | |
+| T-DEV-01 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/10 | USB 隧道和设备公共接口已集成。本机 usbmuxd 可用，待接单台已信任 iPhone 验证 RSD |
+| T-DEV-02 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/10 | 通知、2 秒轮询及剪贴板拉取的 20 项单测通过，待 USB 真机验证事件延迟与 Notes |
+| T-DEV-03 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/10 | 模拟中文、emoji、PNG、120 秒回声和 SET 变更标识通过，真机往返待安全复验 |
+| T-DEV-04 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/10 | 真机自动发现和显式 IPv4 均完成 pair-verify/RSD。临时 DPAPI 写回和 Python 互通通过。迁移拒绝覆盖检查时已变化的记录，目标已删除时不会重建。 |
+| T-DEV-05 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/10 | Wi-Fi 优先、同设备 USB 回退及断线恢复已集成。Wi-Fi 与模拟唤醒通过，慢请求后的连续推送按序。USB、锁屏、实际休眠待测。 |
+| T-DEV-06 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/10 | 多网卡原生 mDNS 真机匹配 8/8，正常间隔均 < 1 s。自动路径只连接与 Python 的 peer_alt_irk/TXT 匹配的地址；无匹配时由连接管理器回退。 |
+| T-WIN-01 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/10 | 真实 Windows runner 剪贴板通过文本、透明 PNG、DIB、文件及监听与隐私标记验收 |
+| T-APP-01 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/10 | 真机 Wi-Fi 基线 30 分钟，121 个样本，峰值专用工作集 2.18 MB。集成候选冷启中位 1.92 s，注入消息恢复通过；双向文本/PNG、USB 和系统睡眠待验。 |
 | T-DEV-07 | 待办 | — | |
 | T-DEV-08 | 待办 | — | |
 | T-DEV-09 | 待办 | — | |

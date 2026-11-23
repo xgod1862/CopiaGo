@@ -2,6 +2,8 @@
 
 #[cfg(windows)]
 pub mod atomic;
+pub mod clip;
+pub mod ddi;
 #[cfg(windows)]
 pub mod device_info;
 #[cfg(windows)]

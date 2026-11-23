@@ -48,6 +48,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      - name: Test native Windows clipboard
+        run: cargo test -p copiago-win --locked clipboard::tests::native_clipboard_round_trip -- --ignored --exact --nocapture
+
       - name: Build release
         run: cargo build --workspace --release --locked
 

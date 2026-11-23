@@ -1,0 +1,27 @@
+[graph]
+all-features = true
+
+[licenses]
+include-dev = true
+unused-allowed-license = "allow"
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unicode-DFS-2015",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+# CopiaGo's own workspace crates inherit the repository license.
+exceptions = [
+    { crate = "copiago-app", allow = ["GPL-3.0-or-later"] },
+    { crate = "copiago-core", allow = ["GPL-3.0-or-later"] },
+    { crate = "copiago-ddi", allow = ["GPL-3.0-or-later"] },
+    { crate = "copiago-device", allow = ["GPL-3.0-or-later"] },
+    { crate = "copiago-ui", allow = ["GPL-3.0-or-later"] },
+    { crate = "copiago-win", allow = ["GPL-3.0-or-later"] },
+]

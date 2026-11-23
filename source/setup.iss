@@ -2,7 +2,7 @@
   #define Root ".."
 #endif
 #define Name "CopiaGo"
-#define Version "1.1.0"
+#define Version "1.2.0"
 #ifndef DistDir
   #define DistDir Root + "\build\dist\iPhoneClipboard"
 #endif

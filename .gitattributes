@@ -1,0 +1,33 @@
+# Line endings for a repository edited on both macOS and Windows.
+#
+# Text files are stored with LF in the repository and checked out with LF on every platform,
+# whatever core.autocrlf says. Python, PowerShell 5.1+/7, and Inno Setup 6 all read LF files.
+
+* text=auto eol=lf
+
+# Windows build inputs. They were already LF before this file existed, and CI builds them as LF,
+# so they follow the default rule above. Their encoding is not touched: setup.iss and
+# ChineseSimplified.isl are UTF-8 without a BOM. Add "eol=crlf" here only if a tool proves to need it.
+#   *.ps1  *.iss  *.isl
+
+# Batch files are parsed line by line by cmd.exe, which misreads LF-only files in some cases
+# (labels and GOTO). None exist yet; this keeps future ones safe.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets. Never convert or diff them as text.
+*.ico binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.ttf binary
+*.ttc binary
+*.otf binary
+*.exe binary
+*.dll binary
+*.pyd binary
+*.zip binary
+
+# Third-party license texts are kept byte-for-byte as shipped upstream, CRLF and mixed endings
+# included. They are bundled with the installer and must not be rewritten.
+source/licenses/** -text

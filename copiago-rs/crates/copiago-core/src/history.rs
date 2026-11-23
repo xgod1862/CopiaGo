@@ -2,15 +2,16 @@
 
 use std::ffi::CStr;
 use std::fs;
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Read};
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::{Foundation::SYSTEMTIME, System::SystemInformation::GetLocalTime};
 use zeroize::Zeroizing;
 
-use crate::clip::Clip;
+use crate::clip::{Clip, FileOffer};
 use crate::dpapi::{protect_history, unprotect_history};
+use crate::files::ReceivedFile;
 use crate::settings::SyncKind;
 use crate::win32::parent_dir;
 
@@ -123,6 +124,31 @@ impl History {
             prune(db, source)?;
             Ok(true)
         })
+    }
+
+    /// Record a published file, checking the per-item limit before reading it from disk.
+    pub fn add_received(&self, name: String, received: &ReceivedFile) -> io::Result<bool> {
+        if received.bytes() > MAX_ITEM_BYTES as u64 {
+            return Ok(false);
+        }
+        let mut bytes = Vec::with_capacity(received.bytes() as usize);
+        fs::File::open(received.path())?
+            .take(received.bytes() + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != received.bytes() {
+            return Err(ErrorKind::InvalidData.into());
+        }
+        self.add(
+            Source::Phone,
+            &Clip::File(FileOffer {
+                name,
+                uti: String::new(),
+                size: received.bytes(),
+                change: None,
+                data: Some(bytes),
+            }),
+            |_, _, _| unreachable!("history requests thumbnails only for images"),
+        )
     }
 
     /// Lists the selected source newest first, skipping previews DPAPI cannot decrypt.

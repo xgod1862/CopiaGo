@@ -275,6 +275,18 @@ pub(crate) fn png_payload(data: &[u8]) -> Result<&[u8]> {
     }
 }
 
+/// Reuse a PNG from PC history or convert an older encoded image for SET.
+pub fn png_for_device(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    if bytes.starts_with(PNG_SIGNATURE) {
+        let length = png_payload(&bytes)?.len();
+        validate_png(&bytes[..length])?;
+        let mut bytes = bytes;
+        bytes.truncate(length);
+        return Ok(bytes);
+    }
+    encode_png(&decode_scaled(&bytes, u32::MAX, u32::MAX)?)
+}
+
 pub(crate) fn validate_png(png: &[u8]) -> Result<()> {
     with_frame(png, &GUID_ContainerFormatPng, |_, _, _| Ok(()))
 }

@@ -165,7 +165,7 @@ async fn watch(
     backend: &mut impl PasteboardBackend,
     receive: impl AsyncFnMut() -> Result<String, PasteboardError>,
     wireless: bool,
-    language: Language,
+    language: impl Fn() -> Language,
     state: &mut PasteboardState,
     next_command: impl AsyncFnMut() -> Option<DeviceCommand>,
     emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
@@ -195,12 +195,13 @@ async fn watch_updates(
     backend: &mut impl PasteboardBackend,
     changed: &Notify,
     wireless: bool,
-    language: Language,
+    language: impl Fn() -> Language,
     state: &mut PasteboardState,
     mut next_command: impl AsyncFnMut() -> Option<DeviceCommand>,
     mut emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
 ) -> Result<Option<DeviceCommand>, PasteboardError> {
     let initial = pull(backend, PullPolicy::AllPromised).await?.change;
+    copiago_core::diagnostic::event(format_args!("monitor_ready"));
     let mut stale = state.reconnect(initial);
     if stale {
         changed.notify_one();
@@ -228,9 +229,9 @@ async fn watch_updates(
         tokio::select! {
             command = next_command() => {
                 match command {
-                    Some(DeviceCommand::Push(clip)) => {
+                    Some(DeviceCommand::Push(clip, id)) => {
                         let result = state.push(backend, clip).await;
-                        if emit(DeviceEvent::PushResult(result)).is_break() {
+                        if emit(DeviceEvent::PushResult(id, result)).is_break() {
                             return Ok(None);
                         }
                     }
@@ -265,6 +266,7 @@ async fn watch_updates(
                 let listing = match pull(backend, PullPolicy::AllPromised).await {
                     Ok(listing) => listing,
                     Err(PasteboardError::RequestTimeout) => {
+                        copiago_core::diagnostic::event(format_args!("pull timeout types=unknown"));
                         retry = Some(Instant::now() + LISTING_RETRY);
                         continue;
                     }
@@ -275,7 +277,7 @@ async fn watch_updates(
                     stale = false;
                     continue;
                 }
-                let Update { change, mut event, skipped } = read_clip(backend, listing, language).await?;
+                let Update { change, mut event, skipped } = read_clip(backend, listing, &language).await?;
                 let duplicate = already_seen(change.as_ref(), state.last_change.as_ref());
                 if change.is_some() {
                     state.last_change = change;

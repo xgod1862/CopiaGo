@@ -171,3 +171,8 @@ Apple 签名失败。请稍后重试。	Could not get a signature from Apple. Tr
 已连接（USB） · 可以拔掉数据线，之后将通过无线连接	Connected (USB) · Unplug the cable to continue wirelessly
 iPhone 上复制了{kind}，目前只同步文字、图片和「文件」App 里的文件	Unsupported item ({kind}). CopiaGo syncs text, images, and files from the Files app.
 iPhone 文件 {timestamp}.{extension}	iPhone file {timestamp}.{extension}
+返回	Back
+关闭	Close
+复制	Copy
+删除	Delete
+发送到 iPhone	Send to iPhone

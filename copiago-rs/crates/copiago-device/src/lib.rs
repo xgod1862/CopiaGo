@@ -29,6 +29,6 @@ pub use usb::{
 };
 #[cfg(windows)]
 pub use wifi::{
-    IdentifierMigration, WifiProbe, WifiProbeError, WifiProbeOptions, probe_wifi,
-    probe_wifi_pasteboard_types,
+    IdentifierMigration, WifiProbe, WifiProbeError, WifiProbeOptions, has_pairing_records,
+    probe_wifi, probe_wifi_pasteboard_types,
 };

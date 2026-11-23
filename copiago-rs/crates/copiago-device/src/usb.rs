@@ -184,6 +184,7 @@ async fn run_usb(
             data_dir,
             wireless: false,
             language,
+            follow_saved_language: false,
         },
         &mut PasteboardState::default(),
         async || match &mut commands {

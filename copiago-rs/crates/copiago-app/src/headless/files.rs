@@ -6,7 +6,7 @@ use std::{
 
 use copiago_core::clip::FileOffer;
 
-use super::window::WindowWaker;
+use crate::window::WindowWaker;
 
 #[derive(Default)]
 pub(super) struct PendingOffer {

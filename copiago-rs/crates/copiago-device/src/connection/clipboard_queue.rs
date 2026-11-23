@@ -27,13 +27,13 @@ impl ClipboardQueue {
         }
     }
 
-    pub(super) fn send_push(&self, clip: Clip) -> Result<(), PasteboardError> {
+    pub(super) fn send_push(&self, clip: Clip, id: Option<u64>) -> Result<(), PasteboardError> {
         let bytes = charge(&clip);
         let mut pending = self.pending.borrow_mut();
         if bytes > self.limit - pending.bytes {
             return Err(PasteboardError::PushBusy);
         }
-        pending.commands.push_back(DeviceCommand::Push(clip));
+        pending.commands.push_back(DeviceCommand::Push(clip, id));
         pending.bytes += bytes;
         self.incoming.notify_one();
         Ok(())
@@ -60,7 +60,7 @@ impl ClipboardQueue {
     fn pop(&self) -> Option<DeviceCommand> {
         let mut pending = self.pending.borrow_mut();
         let command = pending.commands.pop_front()?;
-        if let DeviceCommand::Push(clip) = &command {
+        if let DeviceCommand::Push(clip, _) = &command {
             // The active SET owns this item, so its storage is no longer queued.
             pending.bytes -= charge(clip);
         }
@@ -101,17 +101,17 @@ mod tests {
             bytes,
             uti: "public.png".into(),
         };
-        queue.send_push(image).unwrap();
+        queue.send_push(image, None).unwrap();
         assert_eq!(
-            queue.send_push(Clip::Text("next".into())),
+            queue.send_push(Clip::Text("next".into()), None),
             Err(PasteboardError::PushBusy),
         );
         assert!(
-            matches!(queue.recv().await, DeviceCommand::Push(Clip::Image { bytes, .. }) if bytes == [1])
+            matches!(queue.recv().await, DeviceCommand::Push(Clip::Image { bytes, .. }, None) if bytes == [1])
         );
-        queue.send_push(Clip::Text("next".into())).unwrap();
+        queue.send_push(Clip::Text("next".into()), None).unwrap();
         assert!(
-            matches!(queue.recv().await, DeviceCommand::Push(Clip::Text(text)) if text == "next")
+            matches!(queue.recv().await, DeviceCommand::Push(Clip::Text(text), None) if text == "next")
         );
     }
 }

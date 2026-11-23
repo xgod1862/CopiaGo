@@ -5,7 +5,8 @@ use std::ops::ControlFlow;
 use std::time::Duration;
 
 use copiago_core::{
-    clip::{Clip, PasteboardChange},
+    clip::{Clip, FileOffer, PasteboardChange},
+    files::ReceivedFile,
     i18n::{Language, Message},
 };
 use tokio::{
@@ -17,13 +18,16 @@ use crate::{ConnState, DeviceCommand, DeviceEvent};
 
 mod content;
 mod file_offer;
+mod file_receive;
+pub(crate) mod file_transfer;
 mod rsd;
 
 #[cfg(test)]
 pub(crate) use rsd::verify_push_round_trip;
-pub(crate) use rsd::{PASTEBOARD_SERVICE, watch_rsd};
+pub(crate) use rsd::{PASTEBOARD_SERVICE, WatchOptions, read_rsd_types, watch_rsd};
 
 use content::{PNG_UTI, Snapshot, Update, read_clip};
+pub use file_transfer::FileTransferError;
 
 const NOTIFICATIONS: [&str; 3] = [
     "com.apple.pasteboard.notify.changed",
@@ -31,6 +35,8 @@ const NOTIFICATIONS: [&str; 3] = [
     "com.apple.mobile.keybagd.lock_status",
 ];
 const METADATA_TIMEOUT: Duration = Duration::from_secs(8);
+// Matches copiago_win::image::MAX_IMAGE_BYTES for the optional RESOLVE path.
+const MAX_ALTERNATE_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const SET_TIMEOUT: Duration = Duration::from_secs(20);
 const ECHO_WINDOW: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -79,7 +85,14 @@ enum PullPolicy {
 
 trait PasteboardBackend {
     async fn pull(&mut self, policy: PullPolicy) -> Result<Snapshot, PasteboardError>;
+    async fn alternate_listing(&mut self) -> Result<Snapshot, PasteboardError>;
+    async fn resolve_alternate(
+        &mut self,
+        item_index: usize,
+        uti: &str,
+    ) -> Result<Vec<u8>, PasteboardError>;
     async fn set(&mut self, item: SetItem) -> Result<Option<PasteboardChange>, PasteboardError>;
+    async fn fetch_file(&mut self, offer: FileOffer) -> Result<ReceivedFile, FileTransferError>;
 }
 
 #[derive(PartialEq, Eq)]
@@ -221,6 +234,12 @@ async fn watch_updates(
                             return Ok(None);
                         }
                     }
+                    Some(DeviceCommand::FetchOffer(offer)) => {
+                        let result = backend.fetch_file(offer).await;
+                        if emit(DeviceEvent::FileResult(result)).is_break() {
+                            return Ok(None);
+                        }
+                    }
                     // The connection manager owns lifecycle commands.
                     other => return Ok(other),
                 }
@@ -256,13 +275,13 @@ async fn watch_updates(
                     stale = false;
                     continue;
                 }
-                let Update { change, mut event, timed_out } = read_clip(backend, listing, language).await?;
+                let Update { change, mut event, skipped } = read_clip(backend, listing, language).await?;
                 let duplicate = already_seen(change.as_ref(), state.last_change.as_ref());
                 if change.is_some() {
                     state.last_change = change;
                 }
-                // A slow payload is skipped without consuming the reconnect marker.
-                if timed_out {
+                // An abandoned pull leaves the reconnect marker available.
+                if skipped {
                     continue;
                 }
                 let was_stale = std::mem::take(&mut stale);

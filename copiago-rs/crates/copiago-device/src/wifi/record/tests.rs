@@ -73,6 +73,71 @@ fn automatic_discovery_requires_the_python_peer_irk_field() {
 }
 
 #[test]
+fn new_usb_record_is_sealed_in_the_format_used_for_automatic_wifi() {
+    let fixture = TestRecord::new();
+    let signing_key = SigningKey::from_bytes(&[7; 32]);
+    let pairing = RpPairingFile {
+        e_public_key: signing_key.verifying_key(),
+        e_private_key: signing_key,
+        identifier: "USBTestHost".into(),
+        alt_irk: Some(vec![3; 16]),
+    };
+    save_remote_record(&fixture.path, pairing, "fixture-key".into()).unwrap();
+    let sealed = fs::read(&fixture.path).unwrap();
+    assert!(sealed.starts_with(dpapi::MAGIC));
+    let mut record = RemoteRecord::read(&fixture.path).unwrap();
+    assert_eq!(record.peer_alt_irk(), Some(&[3; 16]));
+    assert_eq!(record.pairing.identifier(), "USBTestHost");
+    assert_eq!(
+        record.persist_identifier(false),
+        IdentifierMigration::AlreadyPresent
+    );
+    let fields = record.fields.0.as_dictionary().unwrap();
+    assert_eq!(
+        fields["remote_unlock_host_key"].as_string(),
+        Some("fixture-key")
+    );
+    assert!(fields.get("alt_irk").is_none());
+}
+
+#[test]
+fn forgetting_removes_all_remote_records_and_cached_info_only() {
+    let fixture = TestRecord::new();
+    let directory = fixture.path.parent().unwrap();
+    let another = directory.join("REMOTE_another.PLIST");
+    let other_file = directory.join("00008030-001234567890ABCD.plist");
+    let assets = directory.join("Xcode_iOS_DDI_Cryptex");
+    fixture.write_sealed(sample_record());
+    fs::write(&another, b"invalid remote record").unwrap();
+    fs::write(&other_file, b"lockdown test fixture").unwrap();
+    fs::create_dir(&assets).unwrap();
+    DeviceInfo {
+        model: "iPhone".into(),
+        ..DeviceInfo::default()
+    }
+    .save(&fixture.root)
+    .unwrap();
+    assert!(matches!(
+        find_paired_device(&fixture.root),
+        Err(WifiProbeError::MultiplePairingRecords)
+    ));
+
+    forget_remote_records(&fixture.root).unwrap();
+    forget_remote_records(&fixture.root).unwrap();
+    assert!(matches!(
+        find_paired_device(&fixture.root),
+        Err(WifiProbeError::NoPairingRecord)
+    ));
+    assert!(!fixture.path.exists());
+    assert!(!another.exists());
+    assert!(!directory.join("device-info.bin").exists());
+    assert_eq!(fs::read(&other_file).unwrap(), b"lockdown test fixture");
+    assert!(assets.is_dir());
+    fs::remove_file(other_file).unwrap();
+    fs::remove_dir(assets).unwrap();
+}
+
+#[test]
 fn refreshed_or_removed_record_is_preserved() {
     let fixture = TestRecord::new();
     fixture.write_sealed(sample_record());

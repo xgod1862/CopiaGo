@@ -9,27 +9,35 @@ use std::{
 };
 
 use copiago_core::{
-    clip::Clip,
+    DeviceInfo,
+    clip::{Clip, FileOffer},
     ddi::DdiStage,
     i18n::{Language, LanguagePreference, Message, message},
 };
 use idevice::usbmuxd::UsbmuxdAddr;
-use tokio::{sync::mpsc, time::sleep};
-
-use crate::{
-    ConnState, DeviceCommand, DeviceEvent, PasteboardError, UsbProbeError, WifiProbeError,
-    pasteboard::PasteboardState, usb::listen_usb_detach, wifi::PairedDevice,
+use tokio::{
+    sync::mpsc,
+    time::{sleep, timeout},
 };
 
+use crate::{
+    ConnState, DeviceCommand, DeviceEvent, FileTransferError, PasteboardError, UsbProbeError,
+    WifiProbeError,
+    pasteboard::PasteboardState,
+    usb::{PairingError, listen_usb_detach},
+    wifi::PairedDevice,
+};
+
+mod clipboard_queue;
 mod native;
-mod push_queue;
 #[cfg(test)]
 mod tests;
 
-use push_queue::PushQueue;
+use clipboard_queue::ClipboardQueue;
 
 const RETRY_DELAY: Duration = Duration::from_secs(4);
 const MULTIPLE_RECORDS_DELAY: Duration = Duration::from_secs(5);
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
 // Budget a maximum-size Windows PNG plus room for queue entries and small copies.
 const MAX_QUEUED_PUSH_BYTES: usize = 64 * 1024 * 1024 + 64 * 1024;
 
@@ -58,12 +66,12 @@ impl HostSignals for () {
     }
 }
 
-/// Language and data persistence for the paired-phone worker.
+/// Language and data persistence for the device worker.
 #[derive(Clone, Copy, Debug)]
 pub struct DeviceRunOptions {
     pub language: Language,
-    /// Saves device details and migrates the RemotePairing identifier when needed.
-    /// Enabled by default for the desktop host.
+    /// Allows pairing, forgetting, saving device details and migrating existing records.
+    /// Set false for a read-only probe.
     pub persist_device_data: bool,
 }
 
@@ -76,14 +84,15 @@ impl Default for DeviceRunOptions {
     }
 }
 
-/// Runs the paired-phone worker on a Tokio runtime with I/O and time enabled.
+/// Runs the device worker on a Tokio runtime with I/O and time enabled.
 ///
 /// Pass the CopiaGo data root. The worker owns one session at a time and resumes
 /// discovery after a transport failure, desktop resume or network change.
 /// Shutdown, a closed command channel, or a callback break stops the worker.
-/// Pairing, persistent forgetting and file downloads are handled outside this worker.
+/// The worker handles USB pairing and forgetting in command order.
 /// Pending pushes are processed in order. If their byte budget is exhausted,
 /// new pushes receive a `PushResult` with `PasteboardError::PushBusy`.
+/// A file download runs only on an explicit `FetchOffer` command.
 pub async fn run_device(
     data_dir: &Path,
     options: DeviceRunOptions,
@@ -117,13 +126,18 @@ enum Transport {
 
 trait Backend {
     fn paired_device(&self) -> Result<PairedDevice, WifiProbeError>;
+    async fn pair(
+        &self,
+        prompt: impl Fn(Message) -> ControlFlow<()>,
+    ) -> Result<DeviceInfo, PairingError>;
+    fn forget(&self) -> std::io::Result<()>;
     async fn usb_id(&self, device: &PairedDevice) -> Result<Option<u32>, UsbProbeError>;
     async fn session(
         &self,
         device: &PairedDevice,
         transport: Transport,
         clipboard: &mut PasteboardState,
-        pushes: &PushQueue,
+        commands: &ClipboardQueue,
         emit: impl Fn(DeviceEvent) -> ControlFlow<()>,
     ) -> Result<(), Failure>;
 }
@@ -227,6 +241,7 @@ struct Wait {
 enum Interrupted {
     Stop,
     Forget,
+    Pair,
     Reconnect,
     UsbDetached,
 }
@@ -263,8 +278,19 @@ async fn run(
     loop {
         match connect_or_wait(backend, inputs, emit, &mut state).await {
             Ok(()) | Err(Interrupted::Reconnect) => {}
-            Err(Interrupted::Forget) => state.forget(),
+            Err(Interrupted::Forget) => {
+                let event = if backend.forget().is_ok() {
+                    state.forget();
+                    DeviceEvent::DeviceInfo(DeviceInfo::default())
+                } else {
+                    DeviceEvent::Error(message!("无法删除配对记录"))
+                };
+                if emit(event).is_break() {
+                    return;
+                }
+            }
             Err(Interrupted::Stop) => return,
+            Err(Interrupted::Pair) => unreachable!("pair requests handled during setup"),
             Err(Interrupted::UsbDetached) => unreachable!("USB detach handled by its session"),
         }
     }
@@ -283,14 +309,8 @@ async fn connect_or_wait(
             error.wait(state.first_setup)
         }
         Err(WifiProbeError::NoPairingRecord) => {
-            if state.serial.is_none() {
-                state.first_setup = true;
-            }
-            Wait {
-                mode: WaitMode::Setup,
-                state: ConnState::Setup,
-                message: message!("连接并信任你的 iPhone"),
-            }
+            state.forget();
+            return setup(backend, inputs, emit).await;
         }
         Err(WifiProbeError::MultiplePairingRecords) => Wait {
             mode: WaitMode::MultipleRecords,
@@ -306,6 +326,51 @@ async fn connect_or_wait(
     inputs
         .drive(wait.mode.timer(), Phase::Waiting(wait.mode), emit)
         .await
+}
+
+async fn setup(
+    backend: &impl Backend,
+    inputs: &mut Inputs<'_, impl HostSignals>,
+    emit: &impl Fn(DeviceEvent) -> ControlFlow<()>,
+) -> Result<(), Interrupted> {
+    let mut message = message!("连接并信任你的 iPhone");
+    loop {
+        emit_event(emit, DeviceEvent::Status(ConnState::Setup, message))?;
+        match inputs
+            .drive(
+                WaitMode::Setup.timer(),
+                Phase::Waiting(WaitMode::Setup),
+                emit,
+            )
+            .await
+        {
+            Err(Interrupted::Pair) => {}
+            result => return result,
+        }
+        // A record may have appeared while setup waited. Preserve it and connect normally.
+        if !matches!(
+            backend.paired_device(),
+            Err(WifiProbeError::NoPairingRecord)
+        ) {
+            return Ok(());
+        }
+        let search = message!("正在查找通过 USB 连接的 iPhone…");
+        emit_event(
+            emit,
+            DeviceEvent::Status(ConnState::Pairing, search.clone()),
+        )?;
+        emit_event(emit, DeviceEvent::PairingPrompt(search))?;
+        let operation = backend.pair(|prompt| emit(DeviceEvent::PairingPrompt(prompt)));
+        let result = inputs
+            .drive(timeout(PAIRING_TIMEOUT, operation), Phase::Pairing, emit)
+            .await?
+            .unwrap_or(Err(PairingError::Pending));
+        match result {
+            Ok(info) => return emit_event(emit, DeviceEvent::DeviceInfo(info)),
+            Err(PairingError::Stopped) => return Err(Interrupted::Stop),
+            Err(error) => message = error.message(),
+        }
+    }
 }
 
 async fn connect_cycle(
@@ -349,19 +414,21 @@ async fn attempt(
         transport,
         ready: Cell::new(false),
         outstanding_pushes: Cell::new(0),
-        pushes: PushQueue::new(MAX_QUEUED_PUSH_BYTES),
+        outstanding_file: Cell::new(false),
+        commands: ClipboardQueue::new(MAX_QUEUED_PUSH_BYTES),
     };
     let session = backend.session(
         device,
         transport,
         &mut state.clipboard,
-        &active.pushes,
+        &active.commands,
         |event| {
             match &event {
                 DeviceEvent::Status(ConnState::Connected { .. }, _) => active.ready.set(true),
                 DeviceEvent::PushResult(_) => active
                     .outstanding_pushes
                     .set(active.outstanding_pushes.get() - 1),
+                DeviceEvent::FileResult(_) => active.outstanding_file.set(false),
                 _ => {}
             }
             emit(event)
@@ -383,6 +450,12 @@ async fn attempt(
             DeviceEvent::PushResult(Err(PasteboardError::Disconnected)),
         )?;
     }
+    if active.outstanding_file.get() {
+        emit_event(
+            emit,
+            DeviceEvent::FileResult(Err(FileTransferError::Disconnected)),
+        )?;
+    }
     ended
 }
 
@@ -390,7 +463,8 @@ struct ActiveSession {
     transport: Transport,
     ready: Cell<bool>,
     outstanding_pushes: Cell<usize>,
-    pushes: PushQueue,
+    outstanding_file: Cell<bool>,
+    commands: ClipboardQueue,
 }
 
 impl ActiveSession {
@@ -398,15 +472,27 @@ impl ActiveSession {
         if !self.ready.get() {
             return Err(PasteboardError::Disconnected);
         }
-        self.pushes.send(clip)?;
+        self.commands.send_push(clip)?;
         self.outstanding_pushes
             .set(self.outstanding_pushes.get() + 1);
+        Ok(())
+    }
+
+    fn queue_file(&self, offer: FileOffer) -> Result<(), FileTransferError> {
+        if !self.ready.get() {
+            return Err(FileTransferError::Disconnected);
+        }
+        if self.outstanding_file.replace(true) {
+            return Err(FileTransferError::Busy);
+        }
+        self.commands.send_offer(offer);
         Ok(())
     }
 }
 
 enum Phase<'a> {
     Lookup,
+    Pairing,
     Session(&'a ActiveSession),
     Waiting(WaitMode),
 }
@@ -478,6 +564,11 @@ impl Phase<'_> {
         match input {
             Input::Command(DeviceCommand::Shutdown) => return Err(Interrupted::Stop),
             Input::Command(DeviceCommand::Forget) => return Err(Interrupted::Forget),
+            Input::Command(DeviceCommand::RequestPair)
+                if matches!(self, Self::Waiting(WaitMode::Setup)) =>
+            {
+                return Err(Interrupted::Pair);
+            }
             Input::Command(DeviceCommand::Retry | DeviceCommand::RequestPair)
                 if matches!(self, Self::Waiting(WaitMode::Setup | WaitMode::User)) =>
             {
@@ -502,6 +593,15 @@ impl Phase<'_> {
                 };
                 if result.is_err() {
                     emit_event(emit, DeviceEvent::PushResult(result))?;
+                }
+            }
+            Input::Command(DeviceCommand::FetchOffer(offer)) => {
+                let result = match self {
+                    Self::Session(active) => active.queue_file(offer),
+                    _ => Err(FileTransferError::Disconnected),
+                };
+                if let Err(error) = result {
+                    emit_event(emit, DeviceEvent::FileResult(Err(error)))?;
                 }
             }
             _ => {}

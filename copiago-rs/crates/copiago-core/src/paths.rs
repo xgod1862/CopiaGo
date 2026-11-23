@@ -12,6 +12,7 @@ mod acl;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use acl::create_private_dir;
 pub use acl::ensure_data_dir;
 
 const LEGACY_DIR_NAME: &str = "iPhoneClipboardPrototype";

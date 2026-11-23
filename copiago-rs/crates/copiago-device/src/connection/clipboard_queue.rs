@@ -1,12 +1,12 @@
 use std::{cell::RefCell, collections::VecDeque, mem::size_of};
 
-use copiago_core::clip::Clip;
+use copiago_core::clip::{Clip, FileOffer};
 use tokio::sync::Notify;
 
-use crate::PasteboardError;
+use crate::{DeviceCommand, PasteboardError};
 
-/// Session-local FIFO for copies waiting behind active pasteboard I/O.
-pub(super) struct PushQueue {
+/// Session-local FIFO for clipboard commands waiting behind active pasteboard I/O.
+pub(super) struct ClipboardQueue {
     limit: usize,
     pending: RefCell<Pending>,
     incoming: Notify,
@@ -14,11 +14,11 @@ pub(super) struct PushQueue {
 
 #[derive(Default)]
 struct Pending {
-    clips: VecDeque<Clip>,
+    commands: VecDeque<DeviceCommand>,
     bytes: usize,
 }
 
-impl PushQueue {
+impl ClipboardQueue {
     pub(super) fn new(limit: usize) -> Self {
         Self {
             limit,
@@ -27,33 +27,44 @@ impl PushQueue {
         }
     }
 
-    pub(super) fn send(&self, clip: Clip) -> Result<(), PasteboardError> {
+    pub(super) fn send_push(&self, clip: Clip) -> Result<(), PasteboardError> {
         let bytes = charge(&clip);
         let mut pending = self.pending.borrow_mut();
         if bytes > self.limit - pending.bytes {
             return Err(PasteboardError::PushBusy);
         }
-        pending.clips.push_back(clip);
+        pending.commands.push_back(DeviceCommand::Push(clip));
         pending.bytes += bytes;
         self.incoming.notify_one();
         Ok(())
     }
 
-    pub(super) async fn recv(&self) -> Clip {
+    // ActiveSession limits file commands to one outstanding request separately.
+    pub(super) fn send_offer(&self, offer: FileOffer) {
+        self.pending
+            .borrow_mut()
+            .commands
+            .push_back(DeviceCommand::FetchOffer(offer));
+        self.incoming.notify_one();
+    }
+
+    pub(super) async fn recv(&self) -> DeviceCommand {
         loop {
-            if let Some(clip) = self.pop() {
-                return clip;
+            if let Some(command) = self.pop() {
+                return command;
             }
             self.incoming.notified().await;
         }
     }
 
-    fn pop(&self) -> Option<Clip> {
+    fn pop(&self) -> Option<DeviceCommand> {
         let mut pending = self.pending.borrow_mut();
-        let clip = pending.clips.pop_front()?;
-        // The active SET owns this item, so its storage is no longer queued.
-        pending.bytes -= charge(&clip);
-        Some(clip)
+        let command = pending.commands.pop_front()?;
+        if let DeviceCommand::Push(clip) = &command {
+            // The active SET owns this item, so its storage is no longer queued.
+            pending.bytes -= charge(clip);
+        }
+        Some(command)
     }
 }
 
@@ -83,20 +94,24 @@ mod tests {
 
     #[tokio::test]
     async fn enforces_waiting_byte_budget_and_releases_it_when_a_copy_starts() {
-        let queue = PushQueue::new(4096);
+        let queue = ClipboardQueue::new(4096);
         let mut bytes = Vec::with_capacity(3500);
         bytes.push(1);
         let image = Clip::Image {
             bytes,
             uti: "public.png".into(),
         };
-        queue.send(image).unwrap();
+        queue.send_push(image).unwrap();
         assert_eq!(
-            queue.send(Clip::Text("next".into())),
+            queue.send_push(Clip::Text("next".into())),
             Err(PasteboardError::PushBusy),
         );
-        assert!(matches!(queue.recv().await, Clip::Image { bytes, .. } if bytes == [1]));
-        queue.send(Clip::Text("next".into())).unwrap();
-        assert!(matches!(queue.recv().await, Clip::Text(text) if text == "next"));
+        assert!(
+            matches!(queue.recv().await, DeviceCommand::Push(Clip::Image { bytes, .. }) if bytes == [1])
+        );
+        queue.send_push(Clip::Text("next".into())).unwrap();
+        assert!(
+            matches!(queue.recv().await, DeviceCommand::Push(Clip::Text(text)) if text == "next")
+        );
     }
 }

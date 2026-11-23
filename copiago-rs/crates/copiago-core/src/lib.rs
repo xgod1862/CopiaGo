@@ -8,6 +8,10 @@ pub mod ddi;
 pub mod device_info;
 #[cfg(windows)]
 pub mod dpapi;
+#[cfg(windows)]
+pub mod files;
+#[cfg(windows)]
+pub mod history;
 pub mod i18n;
 #[cfg(windows)]
 pub mod paths;

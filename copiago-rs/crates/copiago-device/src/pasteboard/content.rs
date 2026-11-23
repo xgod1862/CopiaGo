@@ -1,18 +1,26 @@
-use std::io::Cursor;
+use std::{io::Cursor, time::Duration};
 
 use copiago_core::{
     clip::{Clip, PasteboardChange},
     i18n::{Language, Message},
 };
 use plist::{Dictionary, Value};
+use tokio::time::timeout;
 
 use crate::DeviceEvent;
 
-use super::{PasteboardBackend, PasteboardError, PullPolicy, file_offer, pull};
+use super::{
+    MAX_ALTERNATE_IMAGE_BYTES, PasteboardBackend, PasteboardError, PullPolicy, file_offer, pull,
+};
 
 pub(super) const INLINE_TEXT: [&str; 3] =
     ["public.utf8-plain-text", "public.plain-text", "public.text"];
 pub(super) const PNG_UTI: &str = "public.png";
+const JPEG_UTI: &str = "public.jpeg";
+const HEIC_UTI: &str = "public.heic";
+const HEIC_ALTERNATIVES: [&str; 2] = [PNG_UTI, JPEG_UTI];
+const ALTERNATE_TIMEOUT: Duration = Duration::from_secs(6);
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
 // These also justify the lightweight content request. The current Python
 // reader still extracts text only from the inline UTF-8 representations.
 const DECLARED_TEXT: [&str; 3] = [
@@ -22,14 +30,14 @@ const DECLARED_TEXT: [&str; 3] = [
 ];
 const IMAGE_FORMATS: [(&str, &str); 6] = [
     (PNG_UTI, "image/png"),
-    ("public.jpeg", "image/jpeg"),
-    ("public.heic", "image/heic"),
+    (JPEG_UTI, "image/jpeg"),
+    (HEIC_UTI, "image/heic"),
     ("public.tiff", "image/tiff"),
     ("com.compuserve.gif", "image/gif"),
     ("org.webmproject.webp", "image/webp"),
 ];
 const WEB_ARCHIVE: &str = "com.apple.webarchive";
-const DESCRIPTION_BYTES: i64 = 256 * 1024;
+pub(super) const DESCRIPTION_BYTES: i64 = 256 * 1024;
 
 #[derive(Default)]
 pub(super) struct Snapshot {
@@ -38,6 +46,7 @@ pub(super) struct Snapshot {
 }
 
 struct Item {
+    index: usize,
     types: Vec<String>,
     entries: Dictionary,
 }
@@ -56,19 +65,24 @@ impl Snapshot {
             .and_then(Value::into_array)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(Value::into_dictionary)
-            .map(|mut item| Item {
-                types: item
-                    .remove("types")
-                    .and_then(Value::into_array)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(Value::into_string)
-                    .collect(),
-                entries: item
-                    .remove("data")
-                    .and_then(Value::into_dictionary)
-                    .unwrap_or_default(),
+            .enumerate()
+            .map(|(index, value)| {
+                // Keep the wire position for comparisons across PULL replies.
+                let mut item = value.into_dictionary().unwrap_or_default();
+                Item {
+                    index,
+                    types: item
+                        .remove("types")
+                        .and_then(Value::into_array)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(Value::into_string)
+                        .collect(),
+                    entries: item
+                        .remove("data")
+                        .and_then(Value::into_dictionary)
+                        .unwrap_or_default(),
+                }
             })
             .collect();
         Ok(Self { change, items })
@@ -78,6 +92,21 @@ impl Snapshot {
         self.items
             .iter()
             .flat_map(|item| item.types.iter().map(String::as_str))
+    }
+
+    pub(super) fn has_different_change(&self, other: &Self) -> bool {
+        matches!((&self.change, &other.change), (Some(left), Some(right)) if left != right)
+    }
+
+    pub(super) fn file_item_index(&self, uti: &str) -> Option<usize> {
+        self.items.iter().find_map(|item| {
+            item.entries.get(uti)?.as_dictionary()?;
+            Some(item.index)
+        })
+    }
+
+    pub(super) fn into_item_types(self) -> Vec<Vec<String>> {
+        self.items.into_iter().map(|item| item.types).collect()
     }
 
     pub(super) fn take_entry(&mut self, uti: &str) -> Option<Dictionary> {
@@ -94,23 +123,23 @@ impl Snapshot {
             .any(|name| INLINE_TEXT.contains(&name) || DECLARED_TEXT.contains(&name))
     }
 
-    fn take_image(&mut self) -> Option<Clip> {
+    fn item_at(&self, index: usize) -> Option<&Item> {
+        self.items.iter().find(|item| item.index == index)
+    }
+
+    fn take_image(&mut self) -> Option<(usize, Clip)> {
         for item in &mut self.items {
-            for (uti, _) in IMAGE_FORMATS {
-                if let Some(bytes) = item.take_inline(uti).and_then(Value::into_data)
-                    && !bytes.is_empty()
-                {
-                    return Some(Clip::Image {
-                        bytes,
-                        uti: uti.to_owned(),
-                    });
-                }
+            if let Some(image) = IMAGE_FORMATS
+                .into_iter()
+                .find_map(|(uti, _)| item.take_image(uti))
+            {
+                return Some((item.index, image));
             }
         }
 
         self.items.iter_mut().find_map(|item| {
             let archive = item.take_inline(WEB_ARCHIVE)?.into_data()?;
-            archive_image(archive)
+            Some((item.index, archive_image(archive)?))
         })
     }
 
@@ -155,7 +184,7 @@ impl Snapshot {
         Update {
             change: self.change,
             event,
-            timed_out: false,
+            skipped: false,
         }
     }
 
@@ -163,7 +192,7 @@ impl Snapshot {
         Update {
             change: self.change,
             event: None,
-            timed_out: true,
+            skipped: true,
         }
     }
 }
@@ -176,10 +205,37 @@ impl Item {
     fn take_inline(&mut self, uti: &str) -> Option<Value> {
         self.take_entry(uti)?.remove("data")
     }
+
+    fn take_image(&mut self, uti: &str) -> Option<Clip> {
+        let bytes = self.take_inline(uti)?.into_data()?;
+        (!bytes.is_empty()).then(|| Clip::Image {
+            bytes,
+            uti: uti.to_owned(),
+        })
+    }
+
+    fn declares(&self, uti: &str) -> bool {
+        self.types.iter().any(|ty| ty == uti)
+    }
+
+    fn permits_alternate(&self, uti: &str) -> bool {
+        self.declares(uti)
+            && self
+                .entries
+                .get(uti)
+                .and_then(Value::as_dictionary)
+                .and_then(|entry| entry.get("size"))
+                .and_then(Value::as_unsigned_integer)
+                .is_none_or(|size| size <= MAX_ALTERNATE_IMAGE_BYTES as u64)
+    }
 }
 
 pub(super) fn change_id(board: &Dictionary) -> Option<PasteboardChange> {
     let metadata = board.get("metadata")?.as_dictionary()?;
+    metadata_change_id(metadata)
+}
+
+pub(super) fn metadata_change_id(metadata: &Dictionary) -> Option<PasteboardChange> {
     let count = metadata.get("changeCount")?.as_signed_integer()?;
     // Keep a typed representation: equal-looking text and binary nonces are
     // different. RemoteXPC maps XPC null to an empty plist string.
@@ -223,10 +279,67 @@ fn is_file_like(uti: &str) -> bool {
         || uti.starts_with("public.zip")
 }
 
+async fn heic_alternate(
+    backend: &mut impl PasteboardBackend,
+    item: &Item,
+    change: &PasteboardChange,
+) -> Option<Clip> {
+    let mut candidates = HEIC_ALTERNATIVES
+        .into_iter()
+        .filter(|uti| item.declares(uti))
+        .peekable();
+    candidates.peek()?;
+    timeout(ALTERNATE_TIMEOUT, async {
+        let mut current = backend.alternate_listing().await.ok()?;
+        if current.change.as_ref() != Some(change) {
+            return None;
+        }
+        while let Some(uti) = candidates.next() {
+            if !current.item_at(item.index)?.permits_alternate(uti) {
+                continue;
+            }
+            let bytes = timeout(RESOLVE_TIMEOUT, backend.resolve_alternate(item.index, uti))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .filter(|bytes| looks_like_alternate(uti, bytes));
+            if bytes.is_none() && candidates.peek().is_none() {
+                break;
+            }
+            // A RESOLVE DATA reply does not carry the change ID. Check it again
+            // before accepting these bytes or resolving the next representation.
+            current = backend.alternate_listing().await.ok()?;
+            if current.change.as_ref() != Some(change) {
+                return None;
+            }
+            if let Some(bytes) = bytes
+                && current.item_at(item.index)?.declares(uti)
+            {
+                return Some(Clip::Image {
+                    bytes,
+                    uti: uti.to_owned(),
+                });
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn looks_like_alternate(uti: &str, bytes: &[u8]) -> bool {
+    match uti {
+        PNG_UTI => bytes.len() >= 33 && bytes.starts_with(b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR"),
+        JPEG_UTI => bytes.len() > 3 && bytes.starts_with(b"\xff\xd8\xff"),
+        _ => false,
+    }
+}
+
 pub(super) struct Update {
     pub change: Option<PasteboardChange>,
     pub event: Option<DeviceEvent>,
-    pub timed_out: bool,
+    pub skipped: bool,
 }
 
 pub(super) async fn read_clip(
@@ -236,6 +349,9 @@ pub(super) async fn read_clip(
 ) -> Result<Update, PasteboardError> {
     if let Some(uti) = file_offer::content_type(&listing).map(str::to_owned) {
         return match pull(backend, PullPolicy::Threshold(DESCRIPTION_BYTES)).await {
+            // Remember the listing's ID so the next poll can discover the
+            // newer change and fetch its own description.
+            Ok(described) if listing.has_different_change(&described) => Ok(listing.skip()),
             Ok(described) => {
                 let offer = file_offer::describe(described, uti, listing.change.clone(), language);
                 Ok(listing.into_update(Some(Clip::File(offer))))
@@ -254,7 +370,14 @@ pub(super) async fn read_clip(
         Err(PasteboardError::RequestTimeout) => return Ok(listing.skip()),
         Err(error) => return Err(error),
     };
-    if let Some(image) = secondary.take_image() {
+    if let Some((index, mut image)) = secondary.take_image() {
+        if matches!(&image, Clip::Image { uti, .. } if uti == HEIC_UTI)
+            && let Some(change) = secondary.change.as_ref()
+            && let Some(item) = secondary.item_at(index)
+            && let Some(alternative) = heic_alternate(backend, item, change).await
+        {
+            image = alternative;
+        }
         return Ok(secondary.into_update(Some(image)));
     }
 
@@ -263,7 +386,7 @@ pub(super) async fn read_clip(
     if secondary.declares_image() {
         return match pull(backend, PullPolicy::AllResolved).await {
             Ok(mut resolved) => {
-                let image = resolved.take_image();
+                let image = resolved.take_image().map(|(_, image)| image);
                 Ok(resolved.into_update(image))
             }
             Err(PasteboardError::RequestTimeout) => Ok(secondary.into_update(None)),

@@ -32,10 +32,24 @@ enum Request {
         delay: Duration,
         result: Result<Snapshot, PasteboardError>,
     },
+    AlternateListing {
+        delay: Duration,
+        reply: Snapshot,
+    },
+    Resolve {
+        index: usize,
+        uti: &'static str,
+        delay: Duration,
+        data: Option<Vec<u8>>,
+    },
     Set {
         item: SetItem,
         delay: Duration,
         result: Result<Option<PasteboardChange>, PasteboardError>,
+    },
+    Fetch {
+        offer: FileOffer,
+        error: FileTransferError,
     },
 }
 
@@ -69,6 +83,35 @@ impl FakeBackend {
             policy,
             delay: Duration::ZERO,
             result: Err(PasteboardError::RequestFailed),
+        });
+        self
+    }
+
+    fn alternate_listing(self, reply: Snapshot) -> Self {
+        self.delay_alternate_listing(Duration::ZERO, reply)
+    }
+
+    fn delay_alternate_listing(mut self, delay: Duration, reply: Snapshot) -> Self {
+        self.0.push_back(Request::AlternateListing { delay, reply });
+        self
+    }
+
+    fn resolve(self, index: usize, uti: &'static str, data: Option<&[u8]>) -> Self {
+        self.delay_resolve(index, uti, Duration::ZERO, data)
+    }
+
+    fn delay_resolve(
+        mut self,
+        index: usize,
+        uti: &'static str,
+        delay: Duration,
+        data: Option<&[u8]>,
+    ) -> Self {
+        self.0.push_back(Request::Resolve {
+            index,
+            uti,
+            delay,
+            data: data.map(<[u8]>::to_vec),
         });
         self
     }
@@ -109,6 +152,37 @@ impl PasteboardBackend for FakeBackend {
         result
     }
 
+    async fn alternate_listing(&mut self) -> Result<Snapshot, PasteboardError> {
+        let Some(Request::AlternateListing { delay, reply }) = self.0.pop_front() else {
+            panic!("unexpected alternate metadata request");
+        };
+        if !delay.is_zero() {
+            sleep(delay).await;
+        }
+        Ok(reply)
+    }
+
+    async fn resolve_alternate(
+        &mut self,
+        item_index: usize,
+        uti: &str,
+    ) -> Result<Vec<u8>, PasteboardError> {
+        let Some(Request::Resolve {
+            index,
+            uti: expected,
+            delay,
+            data,
+        }) = self.0.pop_front()
+        else {
+            panic!("unexpected RESOLVE");
+        };
+        assert_eq!((item_index, uti), (index, expected));
+        if !delay.is_zero() {
+            sleep(delay).await;
+        }
+        data.ok_or(PasteboardError::RequestFailed)
+    }
+
     async fn set(&mut self, item: SetItem) -> Result<Option<PasteboardChange>, PasteboardError> {
         let Some(Request::Set {
             item: expected,
@@ -123,6 +197,18 @@ impl PasteboardBackend for FakeBackend {
             sleep(delay).await;
         }
         result
+    }
+
+    async fn fetch_file(&mut self, offer: FileOffer) -> Result<ReceivedFile, FileTransferError> {
+        let Some(Request::Fetch {
+            offer: expected,
+            error,
+        }) = self.0.pop_front()
+        else {
+            panic!("unexpected fetch");
+        };
+        assert!(offer == expected, "unexpected offer");
+        Err(error)
     }
 }
 
@@ -342,26 +428,213 @@ async fn jpeg_wins_when_both_heic_and_jpeg_are_inline() {
 }
 
 #[tokio::test]
-async fn heic_is_used_when_jpeg_is_only_promised() {
+async fn heic_only_skips_the_alternative_request() {
+    let update = next_update(
+        FakeBackend::new()
+            .answer(PullPolicy::AllPromised, snapshot(1, &[HEIC], []))
+            .answer(
+                PullPolicy::PromiseSecondary,
+                snapshot(1, &[HEIC], [(HEIC, inline(b"heic"))]),
+            ),
+    )
+    .await;
+    assert_clip(update.event, test_image(HEIC, b"heic"));
+}
+
+const JPEG_DATA: &[u8] = b"\xff\xd8\xff\xe0synthetic bytes";
+
+#[tokio::test]
+async fn resolves_png_first_at_the_original_wire_index() {
+    let image_types = &[HEIC, JPEG, PNG];
+    let secondary = board(
+        metadata("nonce".into(), 1),
+        vec![
+            "malformed earlier item".into(),
+            item(image_types, dictionary([(HEIC, inline(b"heic"))])),
+        ],
+    );
+    let listed = || {
+        board(
+            metadata("nonce".into(), 1),
+            vec![
+                "malformed earlier item".into(),
+                item(image_types, dictionary([])),
+            ],
+        )
+    };
+    let png = push_png();
+    let update = next_update(
+        FakeBackend::new()
+            .answer(PullPolicy::AllPromised, listed())
+            .answer(PullPolicy::PromiseSecondary, secondary)
+            .alternate_listing(listed())
+            .resolve(1, PNG, Some(&png))
+            .alternate_listing(listed()),
+    )
+    .await;
+    assert_clip(update.event, test_image(PNG, &png));
+}
+
+#[tokio::test(start_paused = true)]
+async fn unavailable_wrong_format_or_slow_png_falls_back_to_jpeg() {
+    for (data, delay) in [
+        (None, Duration::ZERO),
+        (Some(JPEG_DATA), Duration::ZERO),
+        (None, Duration::from_secs(3)),
+    ] {
+        let update = next_update(
+            heic_with_promised_alternatives()
+                .alternate_listing(heic_listing(128))
+                .delay_resolve(0, PNG, delay, data)
+                .alternate_listing(heic_listing(128))
+                .resolve(0, JPEG, Some(JPEG_DATA))
+                .alternate_listing(heic_listing(128)),
+        )
+        .await;
+        assert_clip(update.event, test_image(JPEG, JPEG_DATA));
+    }
+}
+
+#[tokio::test]
+async fn skips_png_advertised_as_oversized() {
+    let listing = || heic_listing(MAX_ALTERNATE_IMAGE_BYTES as i64 + 1);
+    let update = next_update(
+        heic_with_promised_alternatives()
+            .alternate_listing(listing())
+            .resolve(0, JPEG, Some(JPEG_DATA))
+            .alternate_listing(listing()),
+    )
+    .await;
+    assert_clip(update.event, test_image(JPEG, JPEG_DATA));
+}
+
+#[tokio::test(start_paused = true)]
+async fn preserves_original_heic_after_both_attempts_or_at_the_total_deadline() {
+    let unavailable = heic_with_promised_alternatives()
+        .alternate_listing(heic_listing(128))
+        .resolve(0, PNG, None)
+        .alternate_listing(heic_listing(128))
+        .resolve(0, JPEG, None);
+    let slow = heic_with_promised_alternatives()
+        .delay_alternate_listing(Duration::from_millis(1_500), heic_listing(128))
+        .delay_resolve(0, PNG, Duration::from_secs(3), None)
+        .delay_alternate_listing(Duration::from_millis(1_500), heic_listing(128))
+        .delay_resolve(0, JPEG, Duration::from_secs(3), None);
+    for (backend, elapsed) in [
+        (unavailable, Duration::ZERO),
+        (slow, Duration::from_secs(6)),
+    ] {
+        let started = Instant::now();
+        let update = next_update(backend).await;
+        assert_eq!(started.elapsed(), elapsed);
+        assert!(!update.skipped);
+        assert_clip(update.event, test_image(HEIC, b"heic"));
+    }
+}
+
+#[tokio::test]
+async fn confirms_change_and_item_before_trying_alternatives() {
+    for before in [
+        snapshot(2, &[HEIC, JPEG, PNG], []),
+        board(
+            metadata("other nonce".into(), 1),
+            vec![item(&[HEIC, JPEG, PNG], dictionary([]))],
+        ),
+        board(
+            dictionary([]),
+            vec![item(&[HEIC, JPEG, PNG], dictionary([]))],
+        ),
+        board(
+            metadata("nonce".into(), 1),
+            vec![
+                item(&[HEIC], dictionary([])),
+                item(&[JPEG, PNG], dictionary([])),
+            ],
+        ),
+    ] {
+        let update = next_update(heic_with_promised_alternatives().alternate_listing(before)).await;
+        assert_eq!(update.change.unwrap().count, 1);
+        assert_clip(update.event, test_image(HEIC, b"heic"));
+    }
+}
+
+#[tokio::test]
+async fn drops_resolved_bytes_when_the_change_cannot_be_confirmed() {
+    let png = push_png();
+    for after in [snapshot(2, &[HEIC, JPEG, PNG], []), Snapshot::default()] {
+        let update = next_update(
+            heic_with_promised_alternatives()
+                .alternate_listing(heic_listing(128))
+                .resolve(0, PNG, Some(&png))
+                .alternate_listing(after),
+        )
+        .await;
+        assert_eq!(update.change.unwrap().count, 1);
+        assert_clip(update.event, test_image(HEIC, b"heic"));
+    }
+}
+
+#[tokio::test]
+async fn a_different_items_jpeg_does_not_trigger_the_heic_alternative_request() {
     let update = next_update(
         FakeBackend::new()
             .answer(PullPolicy::AllPromised, snapshot(1, &[HEIC, JPEG], []))
             .answer(
                 PullPolicy::PromiseSecondary,
-                snapshot(
-                    1,
-                    &[HEIC, JPEG],
-                    [(HEIC, inline(b"heic")), (JPEG, promised(4))],
+                board(
+                    metadata("nonce".into(), 1),
+                    vec![
+                        item(&[HEIC], dictionary([(HEIC, inline(b"heic"))])),
+                        item(&[JPEG], dictionary([(JPEG, promised(4))])),
+                    ],
                 ),
             ),
     )
     .await;
-    assert_clip(
-        update.event,
-        Clip::Image {
-            bytes: b"heic".to_vec(),
-            uti: HEIC.to_owned(),
-        },
+    assert_clip(update.event, test_image(HEIC, b"heic"));
+}
+
+fn heic_with_promised_alternatives() -> FakeBackend {
+    let types = &[HEIC, JPEG, PNG];
+    FakeBackend::new()
+        .answer(PullPolicy::AllPromised, snapshot(1, types, []))
+        .answer(
+            PullPolicy::PromiseSecondary,
+            snapshot(
+                1,
+                types,
+                [
+                    (HEIC, inline(b"heic")),
+                    (JPEG, promised(4)),
+                    (PNG, promised(3)),
+                ],
+            ),
+        )
+}
+
+fn heic_listing(png_size: i64) -> Snapshot {
+    snapshot(1, &[HEIC, JPEG, PNG], [(PNG, promised(png_size))])
+}
+
+fn test_image(uti: &str, bytes: &[u8]) -> Clip {
+    Clip::Image {
+        bytes: bytes.to_vec(),
+        uti: uti.to_owned(),
+    }
+}
+
+#[test]
+fn metadata_probe_groups_utis_in_item_order() {
+    let listing = board(
+        metadata("nonce".into(), 1),
+        vec![
+            item(&[HEIC, JPEG], dictionary([(HEIC, promised(4096))])),
+            item(&[URL, WEB_ARCHIVE], dictionary([])),
+        ],
+    );
+    assert_eq!(
+        listing.into_item_types(),
+        [vec![HEIC, JPEG], vec![URL, WEB_ARCHIVE]]
     );
 }
 
@@ -499,7 +772,7 @@ async fn files_use_threshold_and_keep_offer_identity() {
                 .answer(
                     PullPolicy::Threshold(256 * 1024),
                     snapshot(
-                        11,
+                        10,
                         types,
                         [(FILE_DESCRIPTOR, inline(&descriptor)), (PDF, payload)],
                     ),
@@ -514,6 +787,129 @@ async fn files_use_threshold_and_keep_offer_identity() {
         assert_eq!(offer.size, expected_size);
         assert!(offer.data == inline_data);
         assert!(offer.change == offer_change && update.change == offer_change);
+    }
+}
+
+#[tokio::test]
+async fn skips_a_description_from_a_newer_clipboard_change() {
+    let types = &[FILE_DESCRIPTOR, "com.adobe.pdf"];
+    let update = next_update(
+        FakeBackend::new()
+            .answer(PullPolicy::AllPromised, snapshot(10, types, []))
+            .answer(
+                PullPolicy::Threshold(256 * 1024),
+                snapshot(11, types, [("com.adobe.pdf", inline(b"newer"))]),
+            ),
+    )
+    .await;
+    assert!(update.event.is_none());
+    assert_eq!(update.change.unwrap().count, 10);
+}
+
+#[tokio::test]
+async fn watcher_dispatches_fetch_offer_and_emits_the_result() {
+    let offer = FileOffer {
+        name: "sample.pdf".to_owned(),
+        uti: "com.adobe.pdf".to_owned(),
+        size: 1,
+        change: None,
+        data: None,
+    };
+    let mut backend = FakeBackend::new().answer(PullPolicy::AllPromised, snapshot(1, &[], []));
+    backend.0.push_back(Request::Fetch {
+        offer: offer.clone(),
+        error: FileTransferError::OfferExpired,
+    });
+    let mut command = Some(DeviceCommand::FetchOffer(offer));
+    let mut expired = false;
+    watch(
+        &mut backend,
+        async || pending().await,
+        true,
+        Language::ZhCn,
+        &mut PasteboardState::default(),
+        async || command.take(),
+        |event| {
+            if matches!(
+                event,
+                DeviceEvent::FileResult(Err(FileTransferError::OfferExpired))
+            ) {
+                expired = true;
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+    )
+    .await
+    .unwrap();
+    backend.verify();
+    assert!(expired);
+}
+
+#[tokio::test(start_paused = true)]
+async fn file_description_races_leave_newer_changes_visible_to_the_next_poll() {
+    const PDF: &str = "com.adobe.pdf";
+    let types = &[FILE_DESCRIPTOR, PDF];
+    let listing = |nonce: &str, count| {
+        board(
+            metadata(nonce.into(), count),
+            vec![item(types, dictionary([]))],
+        )
+    };
+    let described = |nonce: &str, count, data: &[u8]| {
+        board(
+            metadata(nonce.into(), count),
+            vec![item(types, dictionary([(PDF, inline(data))]))],
+        )
+    };
+    for changes in [1, 2] {
+        let mut backend = FakeBackend::new()
+            .answer(PullPolicy::AllPromised, snapshot(9, &[TEXT], []))
+            .answer(PullPolicy::AllPromised, listing("nonce", 10))
+            .answer(PullPolicy::AllPromised, listing("nonce", 10))
+            .answer(
+                PullPolicy::Threshold(256 * 1024),
+                described("nonce", 11, b"too early"),
+            );
+        let nonce = if changes == 2 {
+            backend = backend
+                .answer(PullPolicy::AllPromised, listing("nonce", 11))
+                .answer(PullPolicy::AllPromised, listing("nonce", 11))
+                .answer(
+                    PullPolicy::Threshold(256 * 1024),
+                    described("new nonce", 11, b"also too early"),
+                );
+            "new nonce"
+        } else {
+            "nonce"
+        };
+        let expected_change = listing(nonce, 11).change;
+        let mut backend = backend
+            .answer(PullPolicy::AllPromised, listing(nonce, 11))
+            .answer(PullPolicy::AllPromised, listing(nonce, 11))
+            .answer(
+                PullPolicy::Threshold(256 * 1024),
+                described(nonce, 11, b"matching"),
+            );
+        watch_read_only(
+            &mut backend,
+            pending,
+            false,
+            Language::ZhCn,
+            |event| match event {
+                DeviceEvent::Status(..) => ControlFlow::Continue(()),
+                DeviceEvent::FileOffer(offer) => {
+                    assert!(offer.change == expected_change);
+                    assert_eq!(offer.data.as_deref(), Some(b"matching".as_slice()));
+                    ControlFlow::Break(())
+                }
+                _ => panic!("unexpected clipboard event"),
+            },
+        )
+        .await
+        .unwrap();
+        backend.verify();
     }
 }
 

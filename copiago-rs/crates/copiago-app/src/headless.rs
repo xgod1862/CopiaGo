@@ -1,11 +1,12 @@
 //! Connect the Win32 main loop to the device thread for console operation.
 
 mod clipboard;
+mod files;
 mod window;
 
 use std::{
     fmt,
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     ops::ControlFlow,
     sync::mpsc,
     thread,
@@ -13,19 +14,21 @@ use std::{
 };
 
 use copiago_core::{
-    clip::Clip,
+    clip::{Clip, FileOffer},
+    files::{self as file_storage, Confirmation, OfferDecision, ReceivedFile},
     paths::{self, RunMode},
     settings::Settings,
 };
 use copiago_device::{
-    ConnState, DeviceCommand, DeviceEvent, DeviceRunOptions, HostSignal, PasteboardError,
-    run_device,
+    ConnState, DeviceCommand, DeviceEvent, DeviceRunOptions, FileTransferError, HostSignal,
+    PasteboardError, run_device,
 };
 use copiago_win::clipboard::Clipboard;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use self::{
     clipboard::{ClipboardSync, PhoneClip, PushQueueError},
+    files::{Answer, PendingOffer},
     window::{ConsoleControl, NetworkNotifications, PowerNotifications, Window, WindowEvent},
 };
 
@@ -44,6 +47,12 @@ fn start(log: &Log) -> Result<(), HostError> {
     let data_dir = paths::data_dir(RunMode::Development)
         .map_err(|error| HostError::os("resolve_data_dir", error))?;
     paths::ensure_data_dir(&data_dir).map_err(|error| HostError::os("prepare_data_dir", error))?;
+    if let Err(error) = file_storage::cleanup(&data_dir) {
+        log.event(
+            "file_cleanup_failed",
+            format_args!("{}", HostError::os("cleanup_received", error)),
+        );
+    }
     let settings = Settings::load(&data_dir);
     let options = DeviceRunOptions {
         language: settings.language.resolve(),
@@ -54,6 +63,11 @@ fn start(log: &Log) -> Result<(), HostError> {
     let clipboard =
         Clipboard::new(window.handle()).map_err(|_| HostError::new("listen_clipboard"))?;
     let _console = log.registration("console_control", ConsoleControl::register(&window));
+    let file_answers = if io::stdin().is_terminal() {
+        log.registration("file_confirmation", files::read_answers(window.waker()))
+    } else {
+        None
+    };
     let _power = log.registration("power_notifications", PowerNotifications::register(&window));
     let _network = log.registration(
         "network_notifications",
@@ -100,6 +114,8 @@ fn start(log: &Log) -> Result<(), HostError> {
         commands,
         signals,
         events,
+        file_answers,
+        pending_offer: PendingOffer::default(),
         log,
     };
     let result = host.message_loop(&window);
@@ -120,6 +136,8 @@ struct Host<'a> {
     commands: tokio_mpsc::Sender<DeviceCommand>,
     signals: tokio_mpsc::Sender<HostSignal>,
     events: mpsc::Receiver<DeviceEvent>,
+    file_answers: Option<mpsc::Receiver<Answer>>,
+    pending_offer: PendingOffer,
     log: &'a Log,
 }
 
@@ -151,6 +169,15 @@ impl Host<'_> {
                     }
                 }
                 WindowEvent::WorkerExited => return Err(HostError::new("device_thread_exited")),
+                WindowEvent::FileAnswer => {
+                    if let Some(answer) = self
+                        .file_answers
+                        .as_ref()
+                        .and_then(|answers| answers.try_recv().ok())
+                    {
+                        self.on_file_answer(answer);
+                    }
+                }
             }
         }
         Ok(())
@@ -159,6 +186,7 @@ impl Host<'_> {
     fn signal(&mut self, signal: HostSignal) {
         if self.signals.try_send(signal).is_ok() {
             self.sync.connected(false);
+            self.pending_offer.clear();
             let event = match signal {
                 HostSignal::Resumed => "resume",
                 HostSignal::NetworkChanged => "network_changed",
@@ -208,12 +236,14 @@ impl Host<'_> {
             }
             DeviceEvent::Status(state, _) => {
                 self.sync.connected(false);
+                self.pending_offer.clear();
                 self.log.event("status", format_args!("state={state:?}"));
             }
             DeviceEvent::Clip {
                 clip,
                 while_disconnected,
             } => {
+                self.pending_offer.clear();
                 self.on_phone_clipboard(clip, while_disconnected);
             }
             DeviceEvent::PushResult(Ok(())) => self.log.event("push_complete", format_args!("")),
@@ -224,11 +254,12 @@ impl Host<'_> {
                 self.log
                     .event("push_failed", format_args!("reason={error}"));
             }
-            DeviceEvent::FileOffer(_) if self.sync.offers_files() => {
-                self.log.event("file_offered", format_args!("kind=file"));
+            DeviceEvent::FileOffer(offer) => self.on_file_offer(offer),
+            DeviceEvent::FileResult(result) => self.on_file_result(result),
+            DeviceEvent::Unsupported { .. } => {
+                self.pending_offer.clear();
+                self.log.event("unsupported", format_args!(""));
             }
-            DeviceEvent::FileOffer(_) => {}
-            DeviceEvent::Unsupported { .. } => self.log.event("unsupported", format_args!("")),
             DeviceEvent::DeviceInfo(_) => self.log.event("device_info", format_args!("")),
             DeviceEvent::DeveloperServicesMissing { wireless } => {
                 let transport = if wireless { "wifi" } else { "usb" };
@@ -243,6 +274,99 @@ impl Host<'_> {
             }
             DeviceEvent::PairingPrompt(_) => self.log.event("pairing", format_args!("")),
             DeviceEvent::Error(_) => self.log.event("device_error", format_args!("")),
+        }
+    }
+
+    fn on_file_offer(&mut self, offer: FileOffer) {
+        self.pending_offer.clear();
+        let bytes = offer.size;
+        match self.sync.decide_offer(bytes) {
+            OfferDecision::Ignore => {}
+            OfferDecision::TooLarge => self.log.event(
+                "file_failed",
+                format_args!(
+                    "reason=too_large bytes={bytes} limit={}",
+                    file_storage::MAX_FILE_BYTES
+                ),
+            ),
+            OfferDecision::Receive => self.fetch_offer(offer),
+            OfferDecision::Confirm(reason) => {
+                let id = self.pending_offer.set(offer);
+                let reason = match reason {
+                    Confirmation::AutoSyncOff => "auto_sync_off",
+                    Confirmation::UnknownSize => "unknown_size",
+                    Confirmation::OverThreshold => "over_threshold",
+                };
+                let interactive = self.file_answers.is_some();
+                self.log.event(
+                    "file_waiting",
+                    format_args!("id={id} bytes={bytes} reason={reason} interactive={interactive}"),
+                );
+                if interactive {
+                    self.log.event(
+                        "file_confirmation",
+                        format_args!("accept {id} / ignore {id}"),
+                    );
+                }
+            }
+        }
+    }
+
+    fn on_file_answer(&mut self, answer: Answer) {
+        let Some(offer) = self.pending_offer.take(answer.id) else {
+            self.on_file_result(Err(FileTransferError::OfferExpired));
+            return;
+        };
+        if answer.accept {
+            self.fetch_offer(offer);
+        } else {
+            self.log
+                .event("file_ignored", format_args!("id={}", answer.id));
+        }
+    }
+
+    fn fetch_offer(&self, offer: FileOffer) {
+        let bytes = offer.size;
+        match self.commands.try_send(DeviceCommand::FetchOffer(offer)) {
+            Ok(()) => self
+                .log
+                .event("file_requested", format_args!("bytes={bytes}")),
+            Err(tokio_mpsc::error::TrySendError::Full(_)) => {
+                self.log
+                    .event("file_failed", format_args!("reason=queue_full"));
+            }
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                self.log
+                    .event("file_failed", format_args!("reason=disconnected"));
+            }
+        }
+    }
+
+    fn on_file_result(&mut self, result: Result<ReceivedFile, FileTransferError>) {
+        match result {
+            Ok(file) => match self.clipboard.write_files(&[file.path().to_path_buf()]) {
+                Ok(()) => {
+                    self.sync.mark_written(self.clipboard.sequence_number());
+                    let bytes = file.bytes();
+                    file.keep();
+                    self.log
+                        .event("file_complete", format_args!("bytes={bytes}"));
+                }
+                Err(error) => self.log.event(
+                    "file_failed",
+                    format_args!("reason=clipboard error={error}"),
+                ),
+            },
+            Err(error) => {
+                let reason = match error {
+                    FileTransferError::OfferExpired => "offer_expired",
+                    FileTransferError::TooLarge => "too_large",
+                    FileTransferError::Disconnected => "disconnected",
+                    _ => "transfer_failed",
+                };
+                self.log
+                    .event("file_failed", format_args!("reason={reason} error={error}"));
+            }
         }
     }
 

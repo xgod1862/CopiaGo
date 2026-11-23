@@ -1,18 +1,19 @@
 use std::{ops::ControlFlow, path::Path};
 
-use copiago_core::ddi::DdiStage;
+use copiago_core::{DeviceInfo, ddi::DdiStage, i18n::Message};
 use idevice::{rsd::RsdHandshake, tcp::handle::AdapterHandle, usbmuxd::UsbmuxdAddr};
 
 use crate::{
-    DeviceCommand, DeviceEvent, PasteboardError, UsbProbeError, WifiProbeError,
-    pasteboard::{PASTEBOARD_SERVICE, PasteboardState, watch_rsd},
-    usb::{RsdTunnel, open_paired_usb_tunnel, paired_usb_id},
-    wifi::{PairedDevice, WifiProbeOptions, WifiTunnel, find_paired_device, open_wifi_tunnel},
+    DeviceEvent, PasteboardError, UsbProbeError, WifiProbeError, device_info,
+    pasteboard::{PASTEBOARD_SERVICE, PasteboardState, WatchOptions, watch_rsd},
+    usb::{PairingError, RsdTunnel, open_paired_usb_tunnel, pair_over_usb, paired_usb_id},
+    wifi::{
+        PairedDevice, WifiProbeOptions, WifiTunnel, find_paired_device, forget_remote_records,
+        open_wifi_tunnel,
+    },
 };
 
-use super::{Backend, DeviceRunOptions, Failure, PushQueue, Transport};
-
-mod device_info;
+use super::{Backend, ClipboardQueue, DeviceRunOptions, Failure, Transport};
 
 pub(super) struct NativeDevice<'a> {
     pub data_dir: &'a Path,
@@ -25,6 +26,26 @@ impl Backend for NativeDevice<'_> {
         find_paired_device(self.data_dir)
     }
 
+    async fn pair(
+        &self,
+        prompt: impl Fn(Message) -> ControlFlow<()>,
+    ) -> Result<DeviceInfo, PairingError> {
+        if !self.options.persist_device_data {
+            return Err(PairingError::ReadOnly);
+        }
+        pair_over_usb(self.addr, self.data_dir, prompt).await
+    }
+
+    fn forget(&self) -> std::io::Result<()> {
+        if !self.options.persist_device_data {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "read-only device worker",
+            ));
+        }
+        forget_remote_records(self.data_dir)
+    }
+
     async fn usb_id(&self, device: &PairedDevice) -> Result<Option<u32>, UsbProbeError> {
         paired_usb_id(self.addr, device).await
     }
@@ -34,7 +55,7 @@ impl Backend for NativeDevice<'_> {
         device: &PairedDevice,
         transport: Transport,
         clipboard: &mut PasteboardState,
-        pushes: &PushQueue,
+        commands: &ClipboardQueue,
         emit: impl Fn(DeviceEvent) -> ControlFlow<()>,
     ) -> Result<(), Failure> {
         let mut tunnel = self.open(device, transport).await?;
@@ -46,7 +67,7 @@ impl Backend for NativeDevice<'_> {
                 ControlFlow::Break(()) => Ok(()),
             }
         } else {
-            let info = device_info::read(adapter, rsd, self.data_dir).await;
+            let info = device_info::read_rsd(adapter, rsd, self.data_dir).await;
             if self.options.persist_device_data {
                 let _ = info.save(self.data_dir);
             }
@@ -56,10 +77,13 @@ impl Backend for NativeDevice<'_> {
                 watch_rsd(
                     adapter,
                     rsd,
-                    wireless,
-                    self.options.language,
+                    WatchOptions {
+                        data_dir: self.data_dir,
+                        wireless,
+                        language: self.options.language,
+                    },
                     clipboard,
-                    async || Some(DeviceCommand::Push(pushes.recv().await)),
+                    async || Some(commands.recv().await),
                     emit,
                 )
                 .await

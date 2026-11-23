@@ -28,13 +28,16 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     DeviceCommand, DeviceEvent, PasteboardError,
-    pasteboard::{PASTEBOARD_SERVICE, PasteboardState, watch_rsd},
+    pasteboard::{PASTEBOARD_SERVICE, PasteboardState, WatchOptions, watch_rsd},
     wifi::PairedDevice,
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const USBMUX_PAIR_RECORD_TIMEOUT: Duration = Duration::from_secs(3);
 const LISTEN_RETRY: Duration = Duration::from_secs(4);
+
+mod pairing;
+pub(crate) use pairing::{PairingError, pair_over_usb};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PairingRecordSource {
@@ -148,7 +151,7 @@ pub async fn watch_usb(
 
 /// Synchronize with a single already-paired USB iPhone.
 ///
-/// Handles `DeviceCommand::Push` while connected and emits its result.
+/// Handles `DeviceCommand::Push` and `DeviceCommand::FetchOffer` while connected.
 /// Returns any other command to the caller and closes the session.
 /// A closed command channel or a callback break ends the session with `None`.
 pub async fn sync_usb(
@@ -177,8 +180,11 @@ async fn run_usb(
     let result = watch_rsd(
         &mut tunnel.adapter,
         &mut tunnel.rsd,
-        false,
-        language,
+        WatchOptions {
+            data_dir,
+            wireless: false,
+            language,
+        },
         &mut PasteboardState::default(),
         async || match &mut commands {
             Some(receiver) => receiver.recv().await,
@@ -195,15 +201,17 @@ async fn open_single_usb_tunnel(
     addr: &UsbmuxdAddr,
     data_dir: &Path,
 ) -> Result<(RsdTunnel, PairingRecordSource), UsbProbeError> {
-    let devices = list_usb_devices(addr).await?;
-    let device = match devices.as_slice() {
-        [device] => device,
-        [] => return Err(UsbProbeError::NoUsbDevice),
-        _ => return Err(UsbProbeError::MultipleUsbDevices(devices.len())),
-    };
-
-    let provider = device.to_provider(addr.clone(), "CopiaGo");
+    let provider = single_usb_provider(addr).await?;
     open_usb_tunnel(&provider, data_dir).await
+}
+
+async fn single_usb_provider(addr: &UsbmuxdAddr) -> Result<UsbmuxdProvider, UsbProbeError> {
+    let devices = list_usb_devices(addr).await?;
+    match devices.as_slice() {
+        [device] => Ok(device.to_provider(addr.clone(), "CopiaGo")),
+        [] => Err(UsbProbeError::NoUsbDevice),
+        _ => Err(UsbProbeError::MultipleUsbDevices(devices.len())),
+    }
 }
 
 pub(crate) async fn paired_usb_id(
@@ -305,8 +313,12 @@ async fn pairing_record(
         return Ok((LockdownRecord(record), PairingRecordSource::Usbmuxd));
     }
 
-    let path = local_record_path(data_dir, &provider.udid)
-        .ok_or(UsbProbeError::PairingRecordUnavailable)?;
+    let record = local_pairing_record(data_dir, &provider.udid)?;
+    Ok((record, PairingRecordSource::LocalFile))
+}
+
+fn local_pairing_record(data_dir: &Path, udid: &str) -> Result<LockdownRecord, UsbProbeError> {
+    let path = local_record_path(data_dir, udid).ok_or(UsbProbeError::PairingRecordUnavailable)?;
     let file = Zeroizing::new(fs::read(path).map_err(|_| UsbProbeError::PairingRecordUnavailable)?);
     let record = if file.starts_with(dpapi::MAGIC) {
         let plaintext = Zeroizing::new(
@@ -317,7 +329,7 @@ async fn pairing_record(
         PairingFile::from_bytes(&file)
     }
     .map_err(|_| UsbProbeError::PairingRecordUnavailable)?;
-    Ok((LockdownRecord(record), PairingRecordSource::LocalFile))
+    Ok(LockdownRecord(record))
 }
 
 fn local_record_path(data_dir: &Path, udid: &str) -> Option<PathBuf> {
@@ -332,18 +344,34 @@ fn local_record_path(data_dir: &Path, udid: &str) -> Option<PathBuf> {
     Some(data_dir.join(DEVICE_DATA_DIR).join(format!("{udid}.plist")))
 }
 
+async fn trusted_lockdown(
+    provider: &UsbmuxdProvider,
+    data_dir: &Path,
+) -> Result<(LockdownClient, LockdownRecord, bool, PairingRecordSource), UsbProbeError> {
+    let (mut record, mut source) = pairing_record(provider, data_dir).await?;
+    let mut lockdown = LockdownClient::connect(provider)
+        .await
+        .map_err(|_| UsbProbeError::Lockdown)?;
+    let mut session = lockdown.start_session(&record.0).await;
+    if matches!(session, Err(IdeviceError::InvalidHostID)) && source == PairingRecordSource::Usbmuxd
+    {
+        record = local_pairing_record(data_dir, &provider.udid)
+            .map_err(|_| UsbProbeError::TrustRequired)?;
+        source = PairingRecordSource::LocalFile;
+        lockdown = LockdownClient::connect(provider)
+            .await
+            .map_err(|_| UsbProbeError::Lockdown)?;
+        session = lockdown.start_session(&record.0).await;
+    }
+    let legacy_tls = session.map_err(|error| device_error(error, UsbProbeError::Lockdown))?;
+    Ok((lockdown, record, legacy_tls, source))
+}
+
 async fn open_usb_tunnel(
     provider: &UsbmuxdProvider,
     data_dir: &Path,
 ) -> Result<(RsdTunnel, PairingRecordSource), UsbProbeError> {
-    let (record, source) = pairing_record(provider, data_dir).await?;
-    let mut lockdown = LockdownClient::connect(provider)
-        .await
-        .map_err(|_| UsbProbeError::Lockdown)?;
-    let legacy_tls = lockdown
-        .start_session(&record.0)
-        .await
-        .map_err(|error| device_error(error, UsbProbeError::Lockdown))?;
+    let (mut lockdown, record, legacy_tls, source) = trusted_lockdown(provider, data_dir).await?;
     let (port, use_tls) = lockdown
         .start_service(CoreDeviceProxy::service_name())
         .await
@@ -387,7 +415,7 @@ pub(crate) struct RsdTunnel {
 fn device_error(error: IdeviceError, step: UsbProbeError) -> UsbProbeError {
     match error {
         IdeviceError::InvalidHostID => UsbProbeError::TrustRequired,
-        IdeviceError::DeviceLocked => UsbProbeError::DeviceLocked,
+        IdeviceError::DeviceLocked | IdeviceError::PasswordProtected => UsbProbeError::DeviceLocked,
         IdeviceError::DeveloperModeNotEnabled => UsbProbeError::DeveloperModeRequired,
         _ => step,
     }

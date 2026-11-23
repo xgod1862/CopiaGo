@@ -16,11 +16,13 @@ from typing import Callable
 
 from iphone_clip.clipboard import Clip, fingerprint
 from iphone_clip.developer_setup import DeveloperSetupError, prepare_developer_services
+from iphone_clip.device_info import DeviceInfo, forget_device_info, load_device_info, model_name, save_device_info
 from iphone_clip.files import FILE_DESCRIPTOR, MAX_FILE_BYTES, content_type, name_from_descriptor, safe_name
 from iphone_clip.settings import data_dir
 
 from iphone_clip.i18n import Message, message
 
+# Every state carries a Message, except "device", which carries the connected phone's DeviceInfo.
 StatusCallback = Callable[[str, Message], None]
 IDLE_PROMPT = message("连接并信任你的 iPhone")
 CONNECTED_WIFI = message("已连接（无线）")
@@ -120,6 +122,12 @@ async def pair_over_usb(progress: Callable[[Message], None] | None = None) -> st
     try:
         if progress is not None:
             progress(message("已确认 iPhone 信任，正在准备无线配对…"))
+        # Values read before trust can be the reduced unpaired set, so ask again now.
+        name = lockdown.all_values.get("DeviceName")
+        with contextlib.suppress(Exception):
+            name = await lockdown.get_value(key="DeviceName")
+        remember_device(DeviceInfo(str(name or ""), model_name(lockdown.product_type),
+                                   str(lockdown.product_version or "")))
         if not await lockdown.get_enable_wifi_connections():
             await lockdown.set_enable_wifi_connections(True)
         service = await RemotePairingLockdownService.create(lockdown)
@@ -148,6 +156,33 @@ def forget_paired_devices() -> None:
 
     for record in list(iter_remote_pair_records()):
         record.unlink(missing_ok=True)
+    forget_device_info()
+
+
+def remember_device(info: DeviceInfo) -> DeviceInfo:
+    """Merge fresh details into the saved ones and return the result.
+
+    Saving is best effort: a full disk or a DPAPI failure must not stop pairing or a connection.
+    """
+    known = load_device_info().merged(info)
+    try:
+        save_device_info(known)
+    except Exception as error:
+        diagnostic_event("device_info", error)
+    return known
+
+
+async def read_device_info(rsd) -> DeviceInfo:
+    """Model and system from the tunnel handshake; the phone's name from lockdown when available.
+
+    The name query goes through the tunnel's lockdown service, which not every iOS version
+    offers. Without it the name saved during USB pairing is used instead.
+    """
+    name = ""
+    with contextlib.suppress(Exception):
+        name = str(await asyncio.wait_for(rsd.get_value(key="DeviceName"), 3) or "")
+    return remember_device(DeviceInfo(name, model_name(getattr(rsd, "product_type", "")),
+                                      str(getattr(rsd, "product_version", "") or "")))
 
 
 def change_id(snapshot: dict) -> tuple[object, object] | None:
@@ -517,6 +552,7 @@ class Bridge:
                         pass
                     self.status("connecting", message("正在重新连接并验证剪贴板服务…"))
                     continue  # Refresh the advertised service table after mounting.
+                self.status("device", await read_device_info(rsd))
                 await self._monitor(rsd, wireless=wireless)
                 return
 

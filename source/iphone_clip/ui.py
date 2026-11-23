@@ -26,6 +26,7 @@ from iphone_clip import APP_NAME, __version__
 from iphone_clip.clipboard import ClipboardWriter, Clip, ClipTooLarge, fingerprint
 from iphone_clip import files
 from iphone_clip.developer_setup import DownloadProgress, PROGRESS
+from iphone_clip.device_info import DeviceInfo, load_device_info
 from iphone_clip.device import (Bridge, CONNECTED_WIFI, FileTooLarge, IDLE_PROMPT, OfferExpired,
                                 configure_pairing_storage,
                                 forget_paired_devices, paired_identifiers)
@@ -233,6 +234,8 @@ class Window:
         self.bridge = Bridge(self.post_status, self.receive_clip, lambda offer: self.events.put(("offer", offer)))
         configure_pairing_storage()
         self.paired = bool(paired_identifiers())
+        # Shown from the start so the settings page names the phone even before it reconnects.
+        self.device = load_device_info() if self.paired else DeviceInfo()
         if not self.paired:
             self.bridge.hold_failures.set()
         self.popup = HistoryPopup(self.root, self.scale, on_copy=self.copy_item, on_delete=self.delete_item,
@@ -323,6 +326,7 @@ class Window:
         self.bridge.request_reset()
         self.bridge.hold_failures.set()
         self.paired = False
+        self.device = DeviceInfo()
         self.just_paired = False
         self.awaiting_wireless = False
         self.connected = False
@@ -486,7 +490,9 @@ class Window:
         status = self.status
         if isinstance(self.connection_message, DownloadProgress) and self.bridge_state == "connecting":
             status = message(PROGRESS["download"])
-        title = f"{APP_NAME} · {status}"[:127]
+        # The phone's name goes before the status, which can be long, so the tooltip cut keeps it.
+        name = self.device.title() if self.paired and self.connected else ""
+        title = " · ".join(part for part in (APP_NAME, name, str(status)) if part)[:127]
         if self.tray.title != title:
             self.tray.title = title
 
@@ -501,6 +507,7 @@ class Window:
         fraction = connection.fraction if isinstance(connection, DownloadProgress) else None
         self.popup.set_status(str(self.status), chip, self.status_color, str(connection),
                               progressing=self.bridge_state in ("pairing", "connecting"), fraction=fraction)
+        self.popup.set_device(self.device.title() if self.paired else "", self.device.summary() if self.paired else "")
 
     def change_history(self):
         enabled = self.save_history.get()
@@ -875,6 +882,11 @@ class Window:
                 self.file_failed(*event)
             elif state == "connected" and self.bridge.reset_requested.is_set():
                 continue  # A connection that was just forgotten.
+            elif state == "device":
+                if not self.bridge.reset_requested.is_set():
+                    self.device = event
+                    self.update_popup_status()
+                    self.update_tray_title()
             else:
                 if state == "driver":
                     self.installing = False

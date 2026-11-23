@@ -1,0 +1,98 @@
+# Windows tests and builds for CopiaGo. The app depends on Win32, DPAPI and the Windows tray, so
+# its full test suite and the PyInstaller build only run on Windows.
+#
+# Security notes:
+# - Uses pull_request, not pull_request_target. Fork pull requests run with a read-only token and
+#   no secrets, so untrusted code never gets write access.
+# - Installers are built only from code that a maintainer pushed: main, manual runs, and pull
+#   requests from branches of this repository. A fork's code is tested but never packaged.
+# - Third-party actions are pinned to full commit SHAs. Dependabot keeps them current.
+name: Windows CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      installer:
+        description: Build the Inno Setup installer and upload it as an artifact
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  # A new push to a pull request replaces the run in progress. Runs on main always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test-build:
+    # Keep this name stable: the main branch ruleset requires this check by name.
+    # No path filter on purpose. A required check that never starts leaves pull requests pending.
+    name: Windows tests and build
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: "1"
+      BUILD_INSTALLER: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.installer) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: source/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r source/requirements.txt
+
+      - name: Run unit tests
+        working-directory: source
+        run: python -m unittest discover -s tests -v
+
+      - name: Build with PyInstaller
+        working-directory: source
+        run: .\build.ps1 -Python python -DistPath ..\build\dist -BuildPath ..\build\work
+
+      - name: Build installer
+        if: env.BUILD_INSTALLER == 'true'
+        working-directory: source
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            # The runner image lists Inno Setup 6, but images change. Install it only when missing.
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+          }
+          $root = (Resolve-Path ..).Path
+          & $iscc "/DRoot=$root" .\setup.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+          # Testers can compare this hash with the file they receive.
+          "### Installer" >> $env:GITHUB_STEP_SUMMARY
+          "Commit: ``$env:GITHUB_SHA``" >> $env:GITHUB_STEP_SUMMARY
+          Get-ChildItem ..\release\*.exe | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            "- ``$($_.Name)`` SHA-256 ``$hash``" >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload installer
+        if: env.BUILD_INSTALLER == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: CopiaGo-Setup-${{ github.sha }}
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 14

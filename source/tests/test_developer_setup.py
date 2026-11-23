@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -419,6 +420,59 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TimeoutError):
             fetch(session, self.staging, deadline=developer_setup.time.monotonic() - 1)
         self.assertEqual(session.calls, [])
+
+
+class DaemonThreadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_download_and_signing_run_in_daemon_threads(self):
+        # Executor workers are joined at interpreter exit, so quitting mid-download would hang.
+        seen = []
+
+        def download(*_):
+            seen.append(threading.current_thread().daemon)
+            raise requests.ConnectionError()
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.object(common, "get_home_folder", return_value=Path(root)),
+            mock.patch.object(developer_setup, "_download_parts", side_effect=download),
+            self.assertRaises(requests.ConnectionError),
+        ):
+            await developer_setup.load_image(False)
+        self.assertEqual(seen, [True])
+
+    async def test_result_error_and_cancellation_are_delivered(self):
+        self.assertEqual(await developer_setup._run_in_daemon_thread(lambda a, b: a + b, 2, 3), 5)
+        with self.assertRaises(ValueError):
+            await developer_setup._run_in_daemon_thread(int, "x")
+        release = threading.Event()
+        task = asyncio.create_task(developer_setup._run_in_daemon_thread(release.wait, 2))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        release.set()  # The late result is dropped without raising InvalidStateError.
+        await asyncio.sleep(0.05)
+
+    def test_quitting_does_not_wait_for_a_running_download(self):
+        import subprocess
+        import sys
+
+        script = (
+            "import asyncio, threading, time\n"
+            "from iphone_clip import developer_setup as d\n"
+            "started = threading.Event()\n"
+            "def slow():\n"
+            "    started.set(); time.sleep(60)\n"
+            "async def main():\n"
+            "    task = asyncio.create_task(d._run_in_daemon_thread(slow))\n"
+            "    await asyncio.to_thread(started.wait, 5)\n"
+            "    task.cancel()\n"
+            "asyncio.run(main())\n"
+        )
+        started = time.monotonic()
+        subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+                       check=True, timeout=30)
+        self.assertLess(time.monotonic() - started, 20)
 
 
 class SetupLogTests(unittest.IsolatedAsyncioTestCase):

@@ -213,6 +213,40 @@ def _content_range(value: str) -> tuple[int, int] | None:
 CHUNK_SIZE = 64 * 1024
 
 
+async def _run_in_daemon_thread(func: Callable[..., T], *args: object) -> T:
+    """Run blocking ``func`` in a daemon thread and await its result.
+
+    ``asyncio.to_thread`` uses an executor whose workers the interpreter joins at exit. Quitting
+    CopiaGo during a slow download would then hide the window but keep the process alive until
+    the download deadline. A daemon thread ends with the process; a part it was writing is checked
+    by its hash on the next attempt. Cancelling the await does not stop ``func``; callers pass it a
+    cancel event for that.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[T] = loop.create_future()
+
+    def settle(result: object, error: BaseException | None) -> None:
+        if future.done():
+            return  # The awaiting task was cancelled.
+        if error is None:
+            future.set_result(result)  # type: ignore[arg-type]
+        else:
+            future.set_exception(error)
+
+    def target() -> None:
+        try:
+            outcome: tuple[object, BaseException | None] = (func(*args), None)
+        except BaseException as exc:  # Delivered to the awaiting task, which decides what it means.
+            outcome = (None, exc)
+        try:
+            loop.call_soon_threadsafe(settle, *outcome)
+        except RuntimeError:
+            pass  # The event loop already closed: nobody is waiting for this result.
+
+    threading.Thread(target=target, name="copiago-developer-setup", daemon=True).start()
+    return await future
+
+
 def _iter_body(response) -> Iterator[bytes]:
     """Yield body bytes as soon as any arrive.
 
@@ -456,7 +490,7 @@ async def load_image(cryptex: bool, progress: Callable[[Message], None] | None =
     if progress is not None:
         progress(message(PROGRESS["download"]))
     try:
-        await asyncio.to_thread(
+        await _run_in_daemon_thread(
             _download_parts, source, names, staging, time.monotonic() + DOWNLOAD_TIMEOUT, cancel, stats,
             None if progress is None else lambda event: loop.call_soon_threadsafe(report, event), preferred)
     finally:
@@ -507,7 +541,7 @@ async def _install_image(rsd: RemoteServiceDiscoveryService, folder: Path, crypt
     class SetupSigningRequest(original_request):
         async def send_receive(self):
             progress(message(PROGRESS["sign"]))
-            result = await _run_stage("sign", asyncio.to_thread(
+            result = await _run_stage("sign", _run_in_daemon_thread(
                 _request_apple_signature, plistlib.dumps(self._request), ticket_key), SIGN_TIMEOUT)
             if cryptex:
                 progress(message(PROGRESS["install"]))

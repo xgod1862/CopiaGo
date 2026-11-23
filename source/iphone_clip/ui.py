@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 import winreg
 
 from PIL import Image, ImageOps
@@ -24,6 +25,7 @@ import win32con
 from iphone_clip import APP_NAME, __version__
 from iphone_clip.clipboard import ClipboardWriter, Clip, ClipTooLarge, fingerprint
 from iphone_clip import files
+from iphone_clip.developer_setup import DownloadProgress, PROGRESS
 from iphone_clip.device import (Bridge, CONNECTED_WIFI, FileTooLarge, IDLE_PROMPT, OfferExpired,
                                 configure_pairing_storage,
                                 forget_paired_devices, paired_identifiers)
@@ -42,8 +44,30 @@ RUN_VALUE = "iPhoneClipboardPrototype"
 MUTED, ACCENT, WARN = "muted", "ok", "warn"
 ICON_GRACE = 30  # seconds before a dropped connection turns the tray icon grey
 DISCONNECT_NOTICE = 5 * 60
+MAX_TRAY_LOG_BYTES = 512 * 1024
 STORE_SEARCH = "ms-windows-store://search/?query=Apple%20Devices"
 NOTIFY_ICONS = r"Control Panel\NotifyIconSettings"  # Windows 11 per-app tray icon settings
+
+
+def log_tray_error(operation: str, error: Exception) -> None:
+    """Keep a short local traceback without exception text, locals or clipboard data."""
+    try:
+        path = data_dir() / "tray-errors.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size >= MAX_TRAY_LOG_BYTES:
+            path.replace(path.with_suffix(".log.1"))
+        os_code = getattr(error, "winerror", None)
+        if os_code is None and isinstance(error, OSError):
+            os_code = error.errno
+        code = f" (OS error {os_code})" if os_code is not None else ""
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        # This file does not use the Python logger because the bridge disables library logging.
+        with path.open("a", encoding="utf-8") as log:
+            log.write(f"{timestamp} {operation}: {type(error).__name__}{code}\n")
+            for frame, line in traceback.walk_tb(error.__traceback__):
+                log.write(f"  {Path(frame.f_code.co_filename).name}:{line} in {frame.f_code.co_name}\n")
+    except OSError:
+        pass  # A read-only or full data directory must not interrupt the tray.
 
 
 def startup_command() -> str | None:
@@ -307,6 +331,7 @@ class Window:
         self.pending_clip = None
         self.tray.update_menu()
         self.set_icon(False)
+        self.bridge_state, self.connection_message = "setup", IDLE_PROMPT
         self.set_status(message("已忘记 iPhone。请用数据线连接后重新配对"))
         return True
 
@@ -458,7 +483,12 @@ class Window:
         self.update_tray_title()
 
     def update_tray_title(self) -> None:
-        self.tray.title = f"{APP_NAME} · {self.status}"[:127]
+        status = self.status
+        if isinstance(self.connection_message, DownloadProgress) and self.bridge_state == "connecting":
+            status = message(PROGRESS["download"])
+        title = f"{APP_NAME} · {status}"[:127]
+        if self.tray.title != title:
+            self.tray.title = title
 
     def update_popup_status(self):
         if self.connected:
@@ -467,7 +497,10 @@ class Window:
             chip = "warn"
         else:
             chip = "busy"
-        self.popup.set_status(str(self.status), chip, self.status_color, str(self.connection_message))
+        connection = self.connection_message
+        fraction = connection.fraction if isinstance(connection, DownloadProgress) else None
+        self.popup.set_status(str(self.status), chip, self.status_color, str(connection),
+                              progressing=self.bridge_state in ("pairing", "connecting"), fraction=fraction)
 
     def change_history(self):
         enabled = self.save_history.get()
@@ -800,12 +833,22 @@ class Window:
         elapsed = time.monotonic() - self.disconnected_at
         if elapsed >= ICON_GRACE:
             self.set_icon(False)
-        if elapsed >= DISCONNECT_NOTICE and not self.disconnect_notified:
+        if elapsed >= DISCONNECT_NOTICE and not self.disconnect_notified and self.bridge_state not in ("developer", "hold"):
             self.disconnect_notified = True
             self.notify(message("iPhone 已断开 {minutes} 分钟，正在自动重连。请确认手机已解锁并在同一局域网",
                                 minutes=DISCONNECT_NOTICE // 60))
 
     def drain(self):
+        """Keep consuming queued actions after an individual poll fails."""
+        try:
+            self._drain_tick()
+        except Exception as error:
+            log_tray_error("drain", error)
+        finally:
+            if not self.closed:
+                self.root.after(100, self.drain)
+
+    def _drain_tick(self):
         if self.wake():
             self.show()
         while True:
@@ -862,7 +905,7 @@ class Window:
                         self.refresh()
                     else:
                         self.notify(event)
-                if state in ("error", "sync_error", "push_error") or (state == "developer" and self.paired):
+                if state in ("error", "sync_error", "push_error") or (state in ("developer", "hold") and self.paired):
                     self.notify(event, alert=True)
                 if state == "pushed_manual" and not self.popup.visible:
                     self.notify(event)
@@ -889,7 +932,8 @@ class Window:
         self.watch_ticks += 1
         if self.watch_ticks % 5 == 0:
             self.check_pc_clipboard()
-        self.root.after(100, self.drain)
+        if self.watch_ticks % 2 == 0:
+            self.popup.animate_progress()
 
     def show(self, page="history"):
         if not self.paired or self.just_paired:
@@ -909,8 +953,11 @@ class Window:
 
     def quit(self):
         self.closed = True
-        self.bridge.stop()
-        self.tray.stop()
+        for operation, stop in (("bridge.stop", self.bridge.stop), ("tray.stop", self.tray.stop)):
+            try:
+                stop()
+            except Exception as error:
+                log_tray_error(operation, error)
         self.root.destroy()
 
 

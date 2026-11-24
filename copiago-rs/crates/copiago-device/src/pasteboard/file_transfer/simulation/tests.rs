@@ -22,13 +22,69 @@ async fn streams_over_both_flow_control_windows_with_destination_backpressure() 
             }
             <[u8; 32]>::from(sha.finalize())
         };
+        let mut progress = |_| {};
         let (result, digest) = timeout(Duration::from_secs(10), async {
-            tokio::join!(run(method, size, &mut writer), verify)
+            tokio::join!(run(method, size, &mut writer, &mut progress), verify)
         })
         .await
         .expect("flow-control windows or sink stalled");
         assert_eq!(result, Ok((size, digest)));
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn reports_streamed_payload_bytes_without_frame_padding() {
+    let (mut consumer, mut producer) = duplex(4096);
+    let (prefix, suffix) = envelope(Method::Resolve, 9);
+    let mut output = Vec::new();
+    let mut reports = Vec::new();
+    let mut progress = |report| reports.push(report);
+    let client = receive(
+        &mut consumer,
+        Method::Resolve,
+        SAMPLE_UTI,
+        SAMPLE_ITEM,
+        None,
+        FileOutput {
+            output: &mut output,
+            expected: None,
+            progress: &mut progress,
+        },
+    );
+    let server = async {
+        let request = fetch_request(Method::Resolve, SAMPLE_UTI, SAMPLE_ITEM, None);
+        Peer::handshake(&mut producer, request).await.unwrap();
+        let mut first = vec![2];
+        first.extend(prefix);
+        first.extend(b"abc");
+        first.extend([0; 2]);
+        write_frame(&mut producer, 0, 8, REPLY, &first)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        write_frame(&mut producer, 0, 0, REPLY, b"de")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        write_frame(&mut producer, 0, 0, REPLY, b"fg")
+            .await
+            .unwrap();
+        let mut last = b"hi".to_vec();
+        last.extend(suffix);
+        write_frame(&mut producer, 0, 1, REPLY, &last)
+            .await
+            .unwrap();
+    };
+    let (reply, ()) = tokio::join!(client, server);
+    assert_eq!(reply.unwrap().bytes, 9);
+    assert_eq!(output, b"abcdefghi");
+    assert_eq!(
+        reports,
+        [0, 7, 9].map(|received_bytes| FileProgress {
+            received_bytes,
+            total_bytes: 9,
+        })
+    );
 }
 
 #[test]
@@ -254,6 +310,7 @@ async fn a_stalled_reply_times_out_before_a_staged_file_can_be_committed() {
     let (mut prefix, _) = envelope(Method::Resolve, 3);
     prefix.extend_from_slice(b"abc");
     let mut out = Vec::new();
+    let mut progress = |_| {};
     let client = timeout(
         Duration::from_secs(1),
         receive(
@@ -261,9 +318,12 @@ async fn a_stalled_reply_times_out_before_a_staged_file_can_be_committed() {
             Method::Resolve,
             SAMPLE_UTI,
             SAMPLE_ITEM,
-            Some(3),
             None,
-            &mut out,
+            FileOutput {
+                output: &mut out,
+                expected: Some(3),
+                progress: &mut progress,
+            },
         ),
     );
     let server = async {
@@ -297,14 +357,18 @@ async fn receive_wire_with_change(
 ) -> (Result<ReceivedFile, Error>, Vec<u8>) {
     let (mut client, mut server) = duplex(4096);
     let mut output = Vec::new();
+    let mut progress = |_| {};
     let client = receive(
         &mut client,
         method,
         SAMPLE_UTI,
         SAMPLE_ITEM,
-        size,
         change,
-        &mut output,
+        FileOutput {
+            output: &mut output,
+            expected: size,
+            progress: &mut progress,
+        },
     );
     let server = async {
         let request = fetch_request(method, SAMPLE_UTI, SAMPLE_ITEM, size);

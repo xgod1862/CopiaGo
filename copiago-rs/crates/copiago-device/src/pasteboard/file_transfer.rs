@@ -14,6 +14,8 @@ use tokio::{
 };
 use tracing::{Dispatch, instrument::WithSubscriber};
 
+use crate::FileProgress;
+
 use super::{
     METADATA_TIMEOUT, PullPolicy,
     content::{DESCRIPTION_BYTES, Snapshot},
@@ -26,7 +28,7 @@ mod reply;
 pub(crate) mod simulation;
 
 use frames::ReplyFrames;
-use reply::Destination;
+use reply::{Destination, FileOutput};
 
 const MIB: u64 = 1024 * 1024;
 const MAX_METADATA_BODY: u64 = 2 * MIB;
@@ -133,6 +135,7 @@ pub(crate) async fn receive_file(
     offer: &FileOffer,
     method: Method,
     destination: &mut (impl AsyncWrite + Unpin),
+    progress: &mut dyn FnMut(FileProgress),
 ) -> Result<u64, FileTransferError> {
     if offer.size > MAX_FILE_BYTES {
         return Err(FileTransferError::TooLarge);
@@ -172,9 +175,12 @@ pub(crate) async fn receive_file(
             method,
             &offer.uti,
             item_index,
-            expected,
             offer.change.as_ref(),
-            destination,
+            FileOutput {
+                output: destination,
+                expected,
+                progress,
+            },
         )
         .await
     })
@@ -340,10 +346,10 @@ async fn receive(
     method: Method,
     uti: &str,
     item_index: usize,
-    expected: Option<u64>,
     change: Option<&PasteboardChange>,
-    destination: &mut (impl AsyncWrite + Unpin),
+    destination: FileOutput<'_, impl AsyncWrite + Unpin>,
 ) -> Result<ReceivedFile, FileTransferError> {
+    let expected = destination.expected;
     if expected.is_some_and(|size| size > MAX_FILE_BYTES) {
         return Err(FileTransferError::TooLarge);
     }
@@ -351,17 +357,7 @@ async fn receive(
         return Err(FileTransferError::InvalidReply);
     }
     send(stream, fetch_request(method, uti, item_index, expected)).await?;
-    receive_reply(
-        stream,
-        method,
-        uti,
-        change,
-        Destination::File {
-            output: destination,
-            expected,
-        },
-    )
-    .await
+    receive_reply(stream, method, uti, change, Destination::File(destination)).await
 }
 
 async fn receive_reply(

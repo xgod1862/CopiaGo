@@ -96,7 +96,8 @@ impl Host<'_> {
                 );
             }
             DeviceEvent::FileOffer(offer) => self.on_file_offer(offer),
-            DeviceEvent::FileResult(result) => self.on_file_result(result),
+            DeviceEvent::FileProgress(id, progress) => self.on_file_progress(id, progress),
+            DeviceEvent::FileResult(id, result) => self.on_file_result(id, result),
             DeviceEvent::PushResult(id, result) => self.on_push_result(id, result),
             DeviceEvent::ForgetResult(success) => self.finish_forget(success, now),
             DeviceEvent::Error(message) => {

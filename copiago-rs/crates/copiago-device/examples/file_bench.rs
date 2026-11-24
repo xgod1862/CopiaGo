@@ -31,7 +31,7 @@ mod windows {
     };
 
     use copiago_core::paths::ensure_data_dir;
-    use copiago_device::file_bench::{self, Link, Method};
+    use copiago_device::file_bench::{self, Link, Method, SimulationLink};
     use sha2::{Digest, Sha256};
     use tokio::{
         fs::File,
@@ -47,7 +47,7 @@ mod windows {
 
     const MIB: u64 = 1024 * 1024;
     const IO_BUFFER: usize = 128 * 1024;
-    const USAGE: &str = "file_bench simulate <threshold|resolve> <100|500>\nfile_bench <wifi|usb> <threshold|resolve> <local-sample>\nICB_DATA_DIR must name a test directory under the Windows temporary directory.";
+    const USAGE: &str = "file_bench <simulate|loopback> <threshold|resolve> <100|500>\nfile_bench <wifi|usb> <threshold|resolve> <local-sample>\nICB_DATA_DIR must name a test directory under the Windows temporary directory.";
 
     pub(super) fn run() -> Result<(), String> {
         let mut args = env::args_os().skip(1);
@@ -66,11 +66,19 @@ mod windows {
             return Err(USAGE.into());
         }
         let source = match source.to_str() {
-            Some("simulate") => match sample.to_str() {
-                Some("100") => Source::Simulated(100 * MIB),
-                Some("500") => Source::Simulated(500 * MIB),
-                _ => return Err(USAGE.into()),
-            },
+            Some(mode @ ("simulate" | "loopback")) => {
+                let link = if mode == "loopback" {
+                    SimulationLink::Loopback
+                } else {
+                    SimulationLink::InProcess
+                };
+                let size = match sample.to_str() {
+                    Some("100") => 100 * MIB,
+                    Some("500") => 500 * MIB,
+                    _ => return Err(USAGE.into()),
+                };
+                Source::Simulated(link, size)
+            }
             Some("wifi") => Source::Phone(Link::Wifi, sample.into()),
             Some("usb") => Source::Phone(Link::Usb, sample.into()),
             _ => return Err(USAGE.into()),
@@ -85,7 +93,7 @@ mod windows {
     }
 
     enum Source {
-        Simulated(u64),
+        Simulated(SimulationLink, u64),
         Phone(Link, PathBuf),
     }
 
@@ -100,13 +108,21 @@ mod windows {
             .map_err(|_| "could not open the protected temporary output")?;
         let mut out = BufWriter::with_capacity(IO_BUFFER, File::from_std(file));
 
+        let mut progress_samples = None;
         let (source, baseline, report, expected) = match source {
-            Source::Simulated(size) => {
+            Source::Simulated(link, size) => {
                 let baseline = memory()?;
-                let (report, hash) = file_bench::simulate(method, size, &mut out)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                ("simulate", baseline, report, hash)
+                let mut count = 0;
+                let (report, hash) =
+                    file_bench::simulate(method, size, &mut out, link, &mut |_| count += 1)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                progress_samples = Some(count);
+                let source = match link {
+                    SimulationLink::InProcess => "simulate",
+                    SimulationLink::Loopback => "loopback",
+                };
+                (source, baseline, report, hash)
             }
             Source::Phone(link, sample) => {
                 let mut input = File::open(&sample)
@@ -175,6 +191,9 @@ mod windows {
             baseline.PrivateUsage,
             high_water.PeakPagefileUsage,
         );
+        if let Some(count) = progress_samples {
+            println!("progress_samples={count}");
+        }
         Ok(())
     }
 

@@ -1,8 +1,16 @@
 //! A synthetic peer for exercising the file reader without a phone.
 
-use idevice::xpc::{XPCMessage, XPCObject};
+use idevice::{
+    ReadWrite,
+    xpc::{XPCMessage, XPCObject},
+};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, duplex};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, duplex},
+    net::{TcpListener, TcpStream},
+};
+
+use crate::FileProgress;
 
 use super::{
     FileTransferError as Error, Method, fetch_request,
@@ -10,6 +18,7 @@ use super::{
         FRAME_BYTES, PREFACE, REPLY, ROOT, WRAPPER_MAGIC, frame_length, frame_stream, write_frame,
     },
     receive,
+    reply::FileOutput,
 };
 
 const SAMPLE_UTI: &str = "public.zip-archive";
@@ -20,16 +29,48 @@ pub(crate) async fn run(
     method: Method,
     size: u64,
     out: &mut (impl AsyncWrite + Unpin),
+    progress: &mut dyn FnMut(FileProgress),
 ) -> Result<(u64, [u8; 32]), Error> {
-    let (mut client, mut server) = duplex(128 * 1024);
+    let (client, server) = duplex(128 * 1024);
+    exchange(client, server, method, size, out, progress).await
+}
+
+pub(crate) async fn run_loopback(
+    method: Method,
+    size: u64,
+    out: &mut (impl AsyncWrite + Unpin),
+    progress: &mut dyn FnMut(FileProgress),
+) -> Result<(u64, [u8; 32]), Error> {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .map_err(Error::from_read)?;
+    let address = listener.local_addr().map_err(Error::from_read)?;
+    let (client, (server, _)) = tokio::try_join!(TcpStream::connect(address), listener.accept())
+        .map_err(Error::from_read)?;
+    client.set_nodelay(true).map_err(Error::from_read)?;
+    server.set_nodelay(true).map_err(Error::from_read)?;
+    exchange(client, server, method, size, out, progress).await
+}
+
+async fn exchange(
+    mut client: impl ReadWrite,
+    mut server: impl AsyncRead + AsyncWrite + Unpin,
+    method: Method,
+    size: u64,
+    out: &mut (impl AsyncWrite + Unpin),
+    progress: &mut dyn FnMut(FileProgress),
+) -> Result<(u64, [u8; 32]), Error> {
     let client = receive(
         &mut client,
         method,
         SAMPLE_UTI,
         SAMPLE_ITEM,
-        Some(size),
         None,
-        out,
+        FileOutput {
+            output: out,
+            expected: Some(size),
+            progress,
+        },
     );
     let server = async {
         let request = fetch_request(method, SAMPLE_UTI, SAMPLE_ITEM, Some(size));

@@ -219,7 +219,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "copiago-app"
-version = "1.3.0"
+version = "1.3.1"
 dependencies = [
  "copiago-core",
  "copiago-device",
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "copiago-core"
-version = "1.3.0"
+version = "1.3.1"
 dependencies = [
  "serde_json",
  "sha2",
@@ -244,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "copiago-ddi"
-version = "1.3.0"
+version = "1.3.1"
 dependencies = [
  "copiago-core",
  "copiago-win",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "copiago-device"
-version = "1.3.0"
+version = "1.3.1"
 dependencies = [
  "base64 0.22.1",
  "copiago-core",
@@ -283,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "copiago-ui"
-version = "1.3.0"
+version = "1.3.1"
 dependencies = [
  "chrono",
  "copiago-core",
@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "copiago-win"
-version = "1.3.0"
+version = "1.3.1"
 dependencies = [
  "serde_json",
  "windows",

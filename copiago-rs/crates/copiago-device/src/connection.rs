@@ -503,7 +503,7 @@ async fn attempt(
         transport,
         ready: Cell::new(false),
         outstanding_pushes: RefCell::default(),
-        outstanding_file: Cell::new(false),
+        outstanding_file: Cell::new(None),
         commands: ClipboardQueue::new(MAX_QUEUED_PUSH_BYTES),
     };
     let session = backend.session(
@@ -518,7 +518,10 @@ async fn attempt(
                     let queued = active.outstanding_pushes.borrow_mut().pop_front();
                     debug_assert_eq!(queued, Some(*id));
                 }
-                DeviceEvent::FileResult(_) => active.outstanding_file.set(false),
+                DeviceEvent::FileResult(id, _) => {
+                    let queued = active.outstanding_file.take();
+                    debug_assert_eq!(queued, Some(*id));
+                }
                 _ => {}
             }
             emit(event)
@@ -547,10 +550,10 @@ async fn attempt(
             DeviceEvent::PushResult(id, Err(PasteboardError::Disconnected)),
         )?;
     }
-    if active.outstanding_file.get() {
+    if let Some(id) = active.outstanding_file.get() {
         emit_event(
             emit,
-            DeviceEvent::FileResult(Err(FileTransferError::Disconnected)),
+            DeviceEvent::FileResult(id, Err(FileTransferError::Disconnected)),
         )?;
     }
     ended
@@ -560,7 +563,7 @@ struct ActiveSession {
     transport: Transport,
     ready: Cell<bool>,
     outstanding_pushes: RefCell<VecDeque<Option<u64>>>,
-    outstanding_file: Cell<bool>,
+    outstanding_file: Cell<Option<u64>>,
     commands: ClipboardQueue,
 }
 
@@ -574,14 +577,15 @@ impl ActiveSession {
         Ok(())
     }
 
-    fn queue_file(&self, offer: FileOffer) -> Result<(), FileTransferError> {
+    fn queue_file(&self, offer: FileOffer, id: u64) -> Result<(), FileTransferError> {
         if !self.ready.get() {
             return Err(FileTransferError::Disconnected);
         }
-        if self.outstanding_file.replace(true) {
+        if self.outstanding_file.get().is_some() {
             return Err(FileTransferError::Busy);
         }
-        self.commands.send_offer(offer);
+        self.outstanding_file.set(Some(id));
+        self.commands.send_offer(offer, id);
         Ok(())
     }
 }
@@ -691,13 +695,13 @@ impl Phase<'_> {
                     emit_event(emit, DeviceEvent::PushResult(id, result))?;
                 }
             }
-            Input::Command(DeviceCommand::FetchOffer(offer)) => {
+            Input::Command(DeviceCommand::FetchOffer(offer, id)) => {
                 let result = match self {
-                    Self::Session(active) => active.queue_file(offer),
+                    Self::Session(active) => active.queue_file(offer, id),
                     _ => Err(FileTransferError::Disconnected),
                 };
                 if let Err(error) = result {
-                    emit_event(emit, DeviceEvent::FileResult(Err(error)))?;
+                    emit_event(emit, DeviceEvent::FileResult(id, Err(error)))?;
                 }
             }
             _ => {}

@@ -98,6 +98,7 @@ fn history_off_and_file_offer_actions_follow_the_rendered_state() {
         metadata: "PDF · 24.0 MB".into(),
         reason: message!("超过 {limit} MB，要同步到电脑吗？", limit = 20),
         busy: false,
+        percent: None,
     };
     page.set_offer(Some(offer.clone()));
     assert_eq!(page.tab(), Source::Phone);
@@ -118,10 +119,21 @@ fn history_off_and_file_offer_actions_follow_the_rendered_state() {
         Some(ignore)
     );
     offer.busy = true;
+    offer.percent = Some(25);
     page.set_offer(Some(offer.clone()));
     assert_eq!(page.activate(HistoryTarget::Action(accept), now), None);
     assert_eq!(page.activate(HistoryTarget::Action(ignore), now), None);
+    page.activate(HistoryTarget::Tab(Source::Pc), now);
+    offer.percent = Some(50);
+    page.set_offer(Some(offer.clone()));
+    assert_eq!(page.tab(), Source::Pc);
+    offer.id += 1;
+    page.set_offer(Some(offer.clone()));
+    assert_eq!(page.tab(), Source::Pc);
+    page.activate(HistoryTarget::Tab(Source::Phone), now);
+    assert_eq!(page.current_offer().unwrap().percent, Some(50));
     offer.busy = false;
+    offer.percent = None;
     offer.id += 1;
     page.set_offer(Some(offer));
     assert_eq!(page.activate(HistoryTarget::Action(accept), now), None);

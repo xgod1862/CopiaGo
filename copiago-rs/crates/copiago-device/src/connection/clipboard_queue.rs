@@ -40,11 +40,11 @@ impl ClipboardQueue {
     }
 
     // ActiveSession limits file commands to one outstanding request separately.
-    pub(super) fn send_offer(&self, offer: FileOffer) {
+    pub(super) fn send_offer(&self, offer: FileOffer, id: u64) {
         self.pending
             .borrow_mut()
             .commands
-            .push_back(DeviceCommand::FetchOffer(offer));
+            .push_back(DeviceCommand::FetchOffer(offer, id));
         self.incoming.notify_one();
     }
 

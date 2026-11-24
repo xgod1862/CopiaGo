@@ -1,6 +1,11 @@
-use std::ops::Range;
+use std::{ops::Range, time::Duration};
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    time::Instant,
+};
+
+use crate::FileProgress;
 
 use super::FileTransferError as Error;
 
@@ -12,6 +17,7 @@ pub(super) const WRAPPER_MAGIC: u32 = 0x29b00b92;
 const WINDOW_BATCH: u32 = 64 * 1024;
 const END_STREAM: u8 = 1;
 const PADDED: u8 = 8;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 
 pub(super) struct ReplyFrames<'a, Stream> {
     stream: &'a mut Stream,
@@ -64,13 +70,27 @@ impl<'a, Stream: AsyncRead + AsyncWrite + Unpin> ReplyFrames<'a, Stream> {
 
     pub(super) async fn copy(
         &mut self,
-        mut count: u64,
+        total_bytes: u64,
         out: &mut (impl AsyncWrite + Unpin),
+        progress: &mut dyn FnMut(FileProgress),
     ) -> Result<(), Error> {
-        while count != 0 {
-            let chunk = self.take(count).await?;
+        let mut remaining = total_bytes;
+        let mut last_report = Instant::now();
+        progress(FileProgress {
+            received_bytes: 0,
+            total_bytes,
+        });
+        while remaining != 0 {
+            let chunk = self.take(remaining).await?;
             out.write_all(chunk).await.map_err(|_| Error::Destination)?;
-            count -= chunk.len() as u64;
+            remaining -= chunk.len() as u64;
+            if remaining == 0 || last_report.elapsed() >= PROGRESS_INTERVAL {
+                progress(FileProgress {
+                    received_bytes: total_bytes - remaining,
+                    total_bytes,
+                });
+                last_report = Instant::now();
+            }
         }
         Ok(())
     }

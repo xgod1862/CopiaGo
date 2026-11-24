@@ -2,7 +2,10 @@ use copiago_core::clip::PasteboardChange;
 use idevice::xpc::XPCObject;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::pasteboard::{MAX_ALTERNATE_IMAGE_BYTES, content::metadata_change_id};
+use crate::{
+    FileProgress,
+    pasteboard::{MAX_ALTERNATE_IMAGE_BYTES, content::metadata_change_id},
+};
 
 use super::{
     FileTransferError as Error, MAX_FILE_BYTES, MAX_METADATA_BODY, Method, ReceivedFile,
@@ -29,17 +32,20 @@ enum Path {
 }
 
 pub(super) enum Destination<'a, W> {
-    File {
-        output: &'a mut W,
-        expected: Option<u64>,
-    },
+    File(FileOutput<'a, W>),
     Image(&'a mut Vec<u8>),
+}
+
+pub(super) struct FileOutput<'a, W> {
+    pub output: &'a mut W,
+    pub expected: Option<u64>,
+    pub progress: &'a mut dyn FnMut(FileProgress),
 }
 
 impl<W> Destination<'_, W> {
     pub(super) fn max_payload(&self) -> u64 {
         match self {
-            Self::File { .. } => MAX_FILE_BYTES,
+            Self::File(_) => MAX_FILE_BYTES,
             Self::Image(_) => MAX_ALTERNATE_IMAGE_BYTES as u64,
         }
     }
@@ -198,13 +204,15 @@ impl<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin> Scan<'_, '_, '_, 
             DATA => {
                 let length = u64::from(self.word(end).await?);
                 let expected = match self.destination {
-                    Destination::File { expected, .. } => *expected,
+                    Destination::File(file) => file.expected,
                     Destination::Image(_) => None,
                 };
                 check_size(length, self.destination.max_payload(), expected)?;
                 self.advance(end, padded(length))?;
                 match self.destination {
-                    Destination::File { output, .. } => self.frames.copy(length, *output).await?,
+                    Destination::File(file) => {
+                        self.frames.copy(length, file.output, file.progress).await?;
+                    }
                     Destination::Image(bytes) => {
                         let length = length as usize;
                         bytes

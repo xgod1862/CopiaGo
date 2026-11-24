@@ -16,8 +16,13 @@ pub(super) struct PendingOffer {
 
 impl PendingOffer {
     pub(super) fn set(&mut self, offer: FileOffer) -> u64 {
+        let id = self.allocate_id();
+        self.pending = Some((id, offer));
+        id
+    }
+
+    pub(super) fn allocate_id(&mut self) -> u64 {
         self.next_id += 1;
-        self.pending = Some((self.next_id, offer));
         self.next_id
     }
 

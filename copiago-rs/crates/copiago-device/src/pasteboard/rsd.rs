@@ -25,7 +25,7 @@ use super::{
 pub(crate) use tests::verify_push_round_trip;
 
 pub(crate) const PASTEBOARD_SERVICE: &str = "com.apple.coredevice.pasteboardservice";
-const GENERAL_PASTEBOARD: &str = "general";
+pub(super) const GENERAL_PASTEBOARD: &str = "general";
 
 pub(crate) async fn watch_rsd(
     adapter: &mut AdapterHandle,
@@ -119,7 +119,7 @@ impl PasteboardBackend for RsdPasteboard<'_> {
     }
 }
 
-fn pull_request(policy: PullPolicy) -> XPCObject {
+pub(super) fn pull_request(policy: PullPolicy) -> XPCObject {
     let (name, options) = match policy {
         PullPolicy::AllPromised => ("allPromised", Dictionary::new()),
         PullPolicy::PromiseSecondary => ("promiseSecondary", Dictionary::new()),

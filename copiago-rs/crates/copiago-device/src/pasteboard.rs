@@ -17,6 +17,7 @@ use crate::{ConnState, DeviceCommand, DeviceEvent};
 
 mod content;
 mod file_offer;
+pub(crate) mod file_transfer;
 mod rsd;
 
 #[cfg(test)]

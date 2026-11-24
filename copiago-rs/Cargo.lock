@@ -224,6 +224,7 @@ dependencies = [
  "futures-util",
  "idevice",
  "plist",
+ "sha2",
  "tokio",
  "tracing",
  "uuid",

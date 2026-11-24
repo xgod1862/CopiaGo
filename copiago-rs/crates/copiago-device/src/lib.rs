@@ -7,6 +7,8 @@ mod contract;
 #[cfg(windows)]
 pub mod discovery;
 #[cfg(windows)]
+pub mod file_bench;
+#[cfg(windows)]
 mod pasteboard;
 #[cfg(windows)]
 mod usb;

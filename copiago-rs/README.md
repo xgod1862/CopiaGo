@@ -41,7 +41,7 @@ $testDir = Join-Path $env:TEMP "CopiaGo-$testId\app"
 
 在原 Windows 账户下运行 Rust 安装包，沿用安装器识别到的原安装目录。安装器关闭该目录中的 CopiaGo，装好新程序后清理旧的 `iPhoneClipboard.exe` 和 `_internal`，保留 `data` 中各账户的数据。登录启动选项默认采用该账户当前的开关状态。
 
-如果 Python 仍在使用 `%LOCALAPPDATA%iPhoneClipboardPrototype`，且当前账户的安装目录数据为空，Rust 首次启动时会迁移设置、历史和配对记录，并尝试把源目录保留为 `iPhoneClipboardPrototype.before-rust-upgrade` 备份。迁移失败时继续使用原数据目录。卸载时默认保留数据，选择同时删除数据会清理当前账户的备份。
+如果 Python 仍在使用 `%LOCALAPPDATA%\iPhoneClipboardPrototype`，且当前账户的安装目录数据为空，Rust 首次启动时会迁移设置、历史和配对记录，并尝试把源目录保留为 `iPhoneClipboardPrototype.before-rust-upgrade` 备份。迁移失败时继续使用原数据目录。卸载时默认保留数据，选择同时删除数据会清理当前账户的备份。
 
 真机复验时，在测试电脑的同一账户用 Python 1.2.0 完成配对并保存设置和两侧历史，保持手机解锁、拔掉 USB，并确认电脑与手机处于同一局域网。从仓库根目录启动已构建的安装器。
 

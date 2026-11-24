@@ -22,25 +22,30 @@ fn main() -> ExitCode {
 #[cfg(windows)]
 mod windows {
     use std::{
-        cell::Cell,
+        cell::{Cell, RefCell},
         env,
         ops::ControlFlow,
         time::{Duration, Instant},
     };
 
-    use copiago_core::paths::{RunMode, data_dir};
+    use copiago_core::{
+        clip::FileOffer,
+        files::MAX_FILE_BYTES,
+        paths::{RunMode, data_dir},
+    };
     use copiago_device::{
-        ConnState, DeviceCommand, DeviceEvent, DeviceRunOptions, HostSignal, run_device,
+        ConnState, DeviceCommand, DeviceEvent, DeviceRunOptions, FileTransferError, HostSignal,
+        run_device,
     };
     use tokio::sync::mpsc;
 
-    const USAGE: &str =
-        "usage: connection_probe [--seconds N] [--simulate-resume] [--write-device-data]";
+    const USAGE: &str = "usage: connection_probe [--seconds N] [--simulate-resume] [--write-device-data] [--check-expired-offer]";
 
     pub(super) fn run() -> Result<(), &'static str> {
         let mut seconds = 30;
         let mut write = false;
         let mut resume = false;
+        let mut check_expiry = false;
         let mut args = env::args_os().skip(1);
         while let Some(arg) = args.next() {
             match arg.to_str() {
@@ -53,6 +58,7 @@ mod windows {
                 }
                 Some("--write-device-data") => write = true,
                 Some("--simulate-resume") => resume = true,
+                Some("--check-expired-offer") => check_expiry = true,
                 _ => return Err(USAGE),
             }
         }
@@ -73,6 +79,9 @@ mod windows {
         let started = Instant::now();
         let connected = Cell::new(0);
         let resume_at = Cell::new(None::<Instant>);
+        let first_offer = RefCell::new(None::<FileOffer>);
+        let expiry_requested = Cell::new(false);
+        let expiry_verified = Cell::new(false);
         let (send, mut commands) = mpsc::channel(1);
         let (signal, signals) = mpsc::channel(1);
         let worker = run_device(&root, options, &mut commands, signals, |event| {
@@ -95,6 +104,7 @@ mod windows {
                     }
                 }
                 DeviceEvent::Status(state, text) => {
+                    *first_offer.borrow_mut() = None;
                     println!(
                         "elapsed_ms={elapsed} state={state:?} {}",
                         text.render(options.language)
@@ -118,7 +128,32 @@ mod windows {
                         "elapsed_ms={elapsed} clip_received while_disconnected={while_disconnected}"
                     );
                 }
-                DeviceEvent::FileOffer(_) => println!("elapsed_ms={elapsed} file_offered"),
+                DeviceEvent::FileOffer(offer) => {
+                    println!("elapsed_ms={elapsed} file_offered");
+                    if check_expiry && !expiry_requested.get() && offer.change.is_some() {
+                        let mut first = first_offer.borrow_mut();
+                        if first.as_ref().is_some_and(|old| old.change != offer.change) {
+                            let old = first.take().unwrap();
+                            if send.try_send(DeviceCommand::FetchOffer(old)).is_ok() {
+                                expiry_requested.set(true);
+                                println!("elapsed_ms={elapsed} expired_offer_requested");
+                            }
+                        } else if first.is_none()
+                            && offer.data.is_none()
+                            && (1..=MAX_FILE_BYTES).contains(&offer.size)
+                        {
+                            *first = Some(offer);
+                            println!("elapsed_ms={elapsed} first_promised_offer_saved");
+                        }
+                    }
+                }
+                DeviceEvent::FileResult(Err(FileTransferError::OfferExpired)) if check_expiry => {
+                    expiry_verified.set(true);
+                    println!("elapsed_ms={elapsed} offer_expired");
+                }
+                DeviceEvent::FileResult(Err(error)) if check_expiry => {
+                    println!("elapsed_ms={elapsed} file_failed reason={error}");
+                }
                 _ => {}
             }
             ControlFlow::Continue(())
@@ -134,6 +169,9 @@ mod windows {
         }
         if resume && connected.get() < 2 {
             return Err("connection was not restored after simulated resume");
+        }
+        if check_expiry && !expiry_verified.get() {
+            return Err("expired file offer was not confirmed");
         }
         Ok(())
     }

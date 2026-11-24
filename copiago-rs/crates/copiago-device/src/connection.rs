@@ -9,7 +9,7 @@ use std::{
 };
 
 use copiago_core::{
-    clip::Clip,
+    clip::{Clip, FileOffer},
     ddi::DdiStage,
     i18n::{Language, LanguagePreference, Message, message},
 };
@@ -17,16 +17,16 @@ use idevice::usbmuxd::UsbmuxdAddr;
 use tokio::{sync::mpsc, time::sleep};
 
 use crate::{
-    ConnState, DeviceCommand, DeviceEvent, PasteboardError, UsbProbeError, WifiProbeError,
-    pasteboard::PasteboardState, usb::listen_usb_detach, wifi::PairedDevice,
+    ConnState, DeviceCommand, DeviceEvent, FileTransferError, PasteboardError, UsbProbeError,
+    WifiProbeError, pasteboard::PasteboardState, usb::listen_usb_detach, wifi::PairedDevice,
 };
 
+mod clipboard_queue;
 mod native;
-mod push_queue;
 #[cfg(test)]
 mod tests;
 
-use push_queue::PushQueue;
+use clipboard_queue::ClipboardQueue;
 
 const RETRY_DELAY: Duration = Duration::from_secs(4);
 const MULTIPLE_RECORDS_DELAY: Duration = Duration::from_secs(5);
@@ -81,9 +81,10 @@ impl Default for DeviceRunOptions {
 /// Pass the CopiaGo data root. The worker owns one session at a time and resumes
 /// discovery after a transport failure, desktop resume or network change.
 /// Shutdown, a closed command channel, or a callback break stops the worker.
-/// Pairing, persistent forgetting and file downloads are handled outside this worker.
+/// Pairing and persistent forgetting are handled outside this worker.
 /// Pending pushes are processed in order. If their byte budget is exhausted,
 /// new pushes receive a `PushResult` with `PasteboardError::PushBusy`.
+/// A file download runs only on an explicit `FetchOffer` command.
 pub async fn run_device(
     data_dir: &Path,
     options: DeviceRunOptions,
@@ -123,7 +124,7 @@ trait Backend {
         device: &PairedDevice,
         transport: Transport,
         clipboard: &mut PasteboardState,
-        pushes: &PushQueue,
+        commands: &ClipboardQueue,
         emit: impl Fn(DeviceEvent) -> ControlFlow<()>,
     ) -> Result<(), Failure>;
 }
@@ -349,19 +350,21 @@ async fn attempt(
         transport,
         ready: Cell::new(false),
         outstanding_pushes: Cell::new(0),
-        pushes: PushQueue::new(MAX_QUEUED_PUSH_BYTES),
+        outstanding_file: Cell::new(false),
+        commands: ClipboardQueue::new(MAX_QUEUED_PUSH_BYTES),
     };
     let session = backend.session(
         device,
         transport,
         &mut state.clipboard,
-        &active.pushes,
+        &active.commands,
         |event| {
             match &event {
                 DeviceEvent::Status(ConnState::Connected { .. }, _) => active.ready.set(true),
                 DeviceEvent::PushResult(_) => active
                     .outstanding_pushes
                     .set(active.outstanding_pushes.get() - 1),
+                DeviceEvent::FileResult(_) => active.outstanding_file.set(false),
                 _ => {}
             }
             emit(event)
@@ -383,6 +386,12 @@ async fn attempt(
             DeviceEvent::PushResult(Err(PasteboardError::Disconnected)),
         )?;
     }
+    if active.outstanding_file.get() {
+        emit_event(
+            emit,
+            DeviceEvent::FileResult(Err(FileTransferError::Disconnected)),
+        )?;
+    }
     ended
 }
 
@@ -390,7 +399,8 @@ struct ActiveSession {
     transport: Transport,
     ready: Cell<bool>,
     outstanding_pushes: Cell<usize>,
-    pushes: PushQueue,
+    outstanding_file: Cell<bool>,
+    commands: ClipboardQueue,
 }
 
 impl ActiveSession {
@@ -398,9 +408,20 @@ impl ActiveSession {
         if !self.ready.get() {
             return Err(PasteboardError::Disconnected);
         }
-        self.pushes.send(clip)?;
+        self.commands.send_push(clip)?;
         self.outstanding_pushes
             .set(self.outstanding_pushes.get() + 1);
+        Ok(())
+    }
+
+    fn queue_file(&self, offer: FileOffer) -> Result<(), FileTransferError> {
+        if !self.ready.get() {
+            return Err(FileTransferError::Disconnected);
+        }
+        if self.outstanding_file.replace(true) {
+            return Err(FileTransferError::Busy);
+        }
+        self.commands.send_offer(offer);
         Ok(())
     }
 }
@@ -502,6 +523,15 @@ impl Phase<'_> {
                 };
                 if result.is_err() {
                     emit_event(emit, DeviceEvent::PushResult(result))?;
+                }
+            }
+            Input::Command(DeviceCommand::FetchOffer(offer)) => {
+                let result = match self {
+                    Self::Session(active) => active.queue_file(offer),
+                    _ => Err(FileTransferError::Disconnected),
+                };
+                if let Err(error) = result {
+                    emit_event(emit, DeviceEvent::FileResult(Err(error)))?;
                 }
             }
             _ => {}

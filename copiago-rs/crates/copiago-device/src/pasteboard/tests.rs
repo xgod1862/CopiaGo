@@ -37,6 +37,10 @@ enum Request {
         delay: Duration,
         result: Result<Option<PasteboardChange>, PasteboardError>,
     },
+    Fetch {
+        offer: FileOffer,
+        error: FileTransferError,
+    },
 }
 
 struct FakeBackend(VecDeque<Request>);
@@ -123,6 +127,18 @@ impl PasteboardBackend for FakeBackend {
             sleep(delay).await;
         }
         result
+    }
+
+    async fn fetch_file(&mut self, offer: FileOffer) -> Result<ReceivedFile, FileTransferError> {
+        let Some(Request::Fetch {
+            offer: expected,
+            error,
+        }) = self.0.pop_front()
+        else {
+            panic!("unexpected fetch");
+        };
+        assert!(offer == expected, "unexpected offer");
+        Err(error)
     }
 }
 
@@ -499,7 +515,7 @@ async fn files_use_threshold_and_keep_offer_identity() {
                 .answer(
                     PullPolicy::Threshold(256 * 1024),
                     snapshot(
-                        11,
+                        10,
                         types,
                         [(FILE_DESCRIPTOR, inline(&descriptor)), (PDF, payload)],
                     ),
@@ -515,6 +531,63 @@ async fn files_use_threshold_and_keep_offer_identity() {
         assert!(offer.data == inline_data);
         assert!(offer.change == offer_change && update.change == offer_change);
     }
+}
+
+#[tokio::test]
+async fn skips_a_description_from_a_newer_clipboard_change() {
+    let types = &[FILE_DESCRIPTOR, "com.adobe.pdf"];
+    let update = next_update(
+        FakeBackend::new()
+            .answer(PullPolicy::AllPromised, snapshot(10, types, []))
+            .answer(
+                PullPolicy::Threshold(256 * 1024),
+                snapshot(11, types, [("com.adobe.pdf", inline(b"newer"))]),
+            ),
+    )
+    .await;
+    assert!(update.event.is_none());
+    assert_eq!(update.change.unwrap().count, 10);
+}
+
+#[tokio::test]
+async fn watcher_dispatches_fetch_offer_and_emits_the_result() {
+    let offer = FileOffer {
+        name: "sample.pdf".to_owned(),
+        uti: "com.adobe.pdf".to_owned(),
+        size: 1,
+        change: None,
+        data: None,
+    };
+    let mut backend = FakeBackend::new().answer(PullPolicy::AllPromised, snapshot(1, &[], []));
+    backend.0.push_back(Request::Fetch {
+        offer: offer.clone(),
+        error: FileTransferError::OfferExpired,
+    });
+    let mut command = Some(DeviceCommand::FetchOffer(offer));
+    let mut expired = false;
+    watch(
+        &mut backend,
+        async || pending().await,
+        true,
+        Language::ZhCn,
+        &mut PasteboardState::default(),
+        async || command.take(),
+        |event| {
+            if matches!(
+                event,
+                DeviceEvent::FileResult(Err(FileTransferError::OfferExpired))
+            ) {
+                expired = true;
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+    )
+    .await
+    .unwrap();
+    backend.verify();
+    assert!(expired);
 }
 
 #[test]

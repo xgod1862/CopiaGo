@@ -28,7 +28,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     DeviceCommand, DeviceEvent, PasteboardError,
-    pasteboard::{PASTEBOARD_SERVICE, PasteboardState, watch_rsd},
+    pasteboard::{PASTEBOARD_SERVICE, PasteboardState, WatchOptions, watch_rsd},
     wifi::PairedDevice,
 };
 
@@ -148,7 +148,7 @@ pub async fn watch_usb(
 
 /// Synchronize with a single already-paired USB iPhone.
 ///
-/// Handles `DeviceCommand::Push` while connected and emits its result.
+/// Handles `DeviceCommand::Push` and `DeviceCommand::FetchOffer` while connected.
 /// Returns any other command to the caller and closes the session.
 /// A closed command channel or a callback break ends the session with `None`.
 pub async fn sync_usb(
@@ -177,8 +177,11 @@ async fn run_usb(
     let result = watch_rsd(
         &mut tunnel.adapter,
         &mut tunnel.rsd,
-        false,
-        language,
+        WatchOptions {
+            data_dir,
+            wireless: false,
+            language,
+        },
         &mut PasteboardState::default(),
         async || match &mut commands {
             Some(receiver) => receiver.recv().await,

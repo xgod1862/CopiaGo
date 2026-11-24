@@ -1,9 +1,10 @@
 use copiago_core::DeviceInfo;
 use copiago_core::clip::{Clip, FileOffer};
 use copiago_core::ddi::{DdiStage, Progress};
+use copiago_core::files::ReceivedFile;
 use copiago_core::i18n::Message;
 
-use crate::PasteboardError;
+use crate::{FileTransferError, PasteboardError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnState {
@@ -28,6 +29,7 @@ pub enum DeviceEvent {
         while_disconnected: bool,
     },
     FileOffer(FileOffer),
+    FileResult(Result<ReceivedFile, FileTransferError>),
     Unsupported {
         kind: Message,
     },

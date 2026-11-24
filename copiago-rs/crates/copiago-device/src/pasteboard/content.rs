@@ -250,11 +250,15 @@ pub(super) async fn read_clip(
 ) -> Result<Update, PasteboardError> {
     if let Some(uti) = file_offer::content_type(&listing).map(str::to_owned) {
         return match pull(backend, PullPolicy::Threshold(DESCRIPTION_BYTES)).await {
-            Ok(described) => {
+            Ok(described)
+                if listing.change.is_none()
+                    || described.change.is_none()
+                    || described.change == listing.change =>
+            {
                 let offer = file_offer::describe(described, uti, listing.change.clone(), language);
                 Ok(listing.into_update(Some(Clip::File(offer))))
             }
-            Err(PasteboardError::RequestTimeout) => Ok(listing.skip()),
+            Ok(_) | Err(PasteboardError::RequestTimeout) => Ok(listing.skip()),
             Err(error) => Err(error),
         };
     }

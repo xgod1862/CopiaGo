@@ -2,6 +2,7 @@
 
 use copiago_core::{
     clip::Clip,
+    files::{OfferDecision, decide_offer},
     settings::{Settings, SyncKind},
 };
 use copiago_device::DeviceCommand;
@@ -111,8 +112,8 @@ impl ClipboardSync {
         self.written_sequence = sequence;
     }
 
-    pub(super) fn offers_files(&self) -> bool {
-        self.settings.pull_types.contains(&SyncKind::File)
+    pub(super) fn decide_offer(&self, size: u64) -> OfferDecision {
+        decide_offer(&self.settings, size)
     }
 }
 

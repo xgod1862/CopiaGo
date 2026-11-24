@@ -111,3 +111,34 @@ foreach ($size in 100, 500) {
 - 在真机测试前将这两份合成文件置于测试手机的「文件」App。优先建立 Wi‑Fi 测试条件，运行 `& (Join-Path $examples 'wifi_probe.exe')`，期望 `pair_verify=true`、`pasteboard_advertised=true`。USB 复验连接同一已配对设备，运行 `& (Join-Path $examples 'usb_probe.exe')`，期望 `pasteboard_advertised=true`。
 - 在「文件」App 复制相应样本后运行 `& $bench wifi threshold (Join-Path $samples 'copiago-bench-100MiB.bin')`。同样覆盖 `resolve`、`500MiB`、`usb` 的组合，每个组合独立执行 3 次。期望 `sha256_match=true`、`bytes=104857600` 或 `bytes=524288000`。按组合记录成功次数、传输/刷盘耗时、吞吐与内存峰值。若返回样本不符、数据未内联、超时或断线，记录失败和错误类别。
 - T-DEV-08 可在串行剪贴板请求中调用 crate 内 `pasteboard::file_transfer::receive_file(adapter, port, &offer, Method::Threshold, &mut writer)`。目标须为尚未发布的临时文件。成功值为完整回复中的实际文件字节数。调用方在成功后同步并发布，失败或取消时丢弃临时文件。
+
+## M2 · T-DEV-08 文件接收
+
+- Windows x64 build 26300、Rust 1.100.0。Release `copiago.exe` 为 2,030,592 字节。工作区 144 项测试通过，5 项默认忽略。
+- 合成对端通过 `thresholdData` 发送恰好 512 MiB，使用正式临时文件、长度校验、刷盘和发布流程。3 次均为 536,870,912 字节，读回 SHA-256 一致。接收至发布耗时 938–991 ms，含读回校验为 1,472–1,540 ms。测试进程峰值工作集 8,171,520–11,698,176 字节，约每 15 ms 采样的 Private Bytes 峰值 1,683,456–1,724,416 字节。
+- 非交互 headless 启动清除了 25 h 前的合成接收目录，保留近期目录，处理窗口关闭消息后正常退出。阶段目录和发布目录的 ACL 单测验证了当前用户与 SYSTEM。合成测试使用受保护的临时目录。
+- 真机 USB/Wi-Fi 文件接收、资源管理器实际粘贴、真机耗时和内存、安装体积待测。
+
+### 复验
+
+沿用上节创建受保护的临时 `ICB_DATA_DIR`、配置工具链和准备测试配对记录的步骤。从 `copiago-rs` 运行。
+
+```powershell
+$env:TEMP = $env:ICB_DATA_DIR
+$env:TMP = $env:ICB_DATA_DIR
+cargo test --release --locked -p copiago-device --lib pasteboard::file_receive::tests::streamed_file_accepts_the_exact_file_size_limit -- --ignored --exact --nocapture
+```
+
+真机检查使用「文件」App 中的合成样本。本机另留样本原件，在专用 Windows 测试会话运行。
+
+```powershell
+[IO.File]::WriteAllText((Join-Path $env:ICB_DATA_DIR 'settings.json'), '{"pull":true,"pull_types":["file"],"push":false,"file_ask_mb":20}')
+cargo build --release --locked -p copiago-app
+.\target\release\copiago.exe --headless
+```
+
+- 等待 `event=connected transport=wifi`。分别复制 64 KiB 和 1 MiB 样本，预期自动出现 `event=file_complete`。在资源管理器粘贴，核对文件名和 `Get-FileHash` 的两份样本结果。
+- 复制 25 MiB 或 100 MiB 样本，预期 `event=file_waiting`，暂时无下载。输入 `ignore <id>` 验证忽略。重新复制后输入新提示里的 `accept <id>`，预期 `event=file_requested` 和 `event=file_complete`。
+- 复制 512 MiB 样本并确认，预期 `event=file_complete bytes=536870912`。复制大于 512 MiB 的样本，预期 `event=file_failed reason=too_large`。在已开始的大文件传输中断开连接或退出后，核对临时 `.incoming-*` 目录已清理。
+- 退出 headless，运行 `cargo run --release --locked -p copiago-device --example connection_probe -- --check-expired-offer --seconds 60`。等待连接后复制 25 MiB 文件，看到 `first_promised_offer_saved` 后再复制另一个合成文件，预期探针提交过期的 `FetchOffer` 并报告 `offer_expired`。
+- 接上同一台已配对 iPhone，在 Wi-Fi 无法建立时预期 `transport=usb`，重复文件接收检查。

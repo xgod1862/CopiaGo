@@ -35,6 +35,7 @@ const WM_APP_DEVICE: u32 = WM_APP + 1;
 const WM_APP_RESUME: u32 = WM_APP + 2;
 const WM_APP_NETWORK: u32 = WM_APP + 3;
 const WM_APP_WORKER_EXIT: u32 = WM_APP + 4;
+const WM_APP_FILE_ANSWER: u32 = WM_APP + 5;
 const NETWORK_TIMER: usize = 1;
 const NETWORK_SETTLE_MS: u32 = 300;
 
@@ -45,6 +46,7 @@ pub(super) enum WindowEvent {
     NetworkChanged,
     NetworkSettled,
     WorkerExited,
+    FileAnswer,
 }
 
 pub(super) struct Window {
@@ -124,6 +126,7 @@ impl Window {
                         Some(WindowEvent::NetworkSettled)
                     }
                     WM_APP_WORKER_EXIT => Some(WindowEvent::WorkerExited),
+                    WM_APP_FILE_ANSWER => Some(WindowEvent::FileAnswer),
                     _ => None,
                 };
                 if event.is_some() {
@@ -200,6 +203,10 @@ impl WindowWaker {
 
     pub(super) fn worker_exited(&self) {
         post(with_exposed_provenance_mut(self.0), WM_APP_WORKER_EXIT);
+    }
+
+    pub(super) fn file_answer(&self) -> bool {
+        post(with_exposed_provenance_mut(self.0), WM_APP_FILE_ANSWER)
     }
 }
 

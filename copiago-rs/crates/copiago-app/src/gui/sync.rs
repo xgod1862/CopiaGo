@@ -12,7 +12,7 @@ use copiago_device::{DeviceCommand, FileTransferError, PasteboardError};
 use copiago_ui::history::{HistoryAction, HistoryList, HistoryOffer, HistoryRowId, StatusTone};
 use copiago_win::{
     clipboard::ClipboardError,
-    image::{decode_scaled, encode_png, png_for_device},
+    image::{ImageError, decode_scaled, encode_png, png_for_device},
     tray::NotificationKind,
 };
 
@@ -351,11 +351,7 @@ impl Host<'_> {
             Source::Pc => settings.pc_history,
         };
         if record {
-            history_note(self.history.add(source, clip, |bytes, width, height| {
-                decode_scaled(bytes, width, height)
-                    .and_then(|picture| encode_png(&picture))
-                    .map_err(io::Error::other)
-            }))
+            history_note(self.history.add(source, clip, history_preview))
         } else {
             Message::new("")
         }
@@ -687,5 +683,17 @@ mod tests {
 
         retire_forgotten_session(&mut clipboard, &mut file, &mut pushes, true);
         assert!(!clipboard.has_pending());
+    }
+}
+
+/// PNG thumbnail for a history entry. An image too large to shrink within the
+/// memory budget (e.g. a big progressive JPEG without an embedded preview) is
+/// still saved, with an empty preview: both the Rust and the Python popup then
+/// show the generic image icon, and the picture can be copied again from history.
+fn history_preview(bytes: &[u8], width: u32, height: u32) -> io::Result<Vec<u8>> {
+    match decode_scaled(bytes, width, height) {
+        Ok(picture) => encode_png(&picture).map_err(io::Error::other),
+        Err(ImageError::ImageTooLarge) => Ok(Vec::new()),
+        Err(other) => Err(io::Error::other(other)),
     }
 }

@@ -18,13 +18,13 @@ use windows_sys::Win32::Networking::WinHttp::{
     WINHTTP_CALLBACK_STATUS_HANDLE_CREATED, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE,
     WINHTTP_CALLBACK_STATUS_READ_COMPLETE, WINHTTP_CALLBACK_STATUS_REQUEST_ERROR,
     WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, WINHTTP_DISABLE_AUTHENTICATION,
-    WINHTTP_DISABLE_COOKIES, WINHTTP_FLAG_ASYNC, WINHTTP_FLAG_SECURE, WINHTTP_INTERNET_SCHEME_HTTP,
-    WINHTTP_INTERNET_SCHEME_HTTPS, WINHTTP_OPTION_CONTEXT_VALUE, WINHTTP_OPTION_DISABLE_FEATURE,
-    WINHTTP_QUERY_CUSTOM, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
-    WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect, WinHttpCrackUrl, WinHttpOpen,
-    WinHttpOpenRequest, WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData,
-    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption, WinHttpSetStatusCallback,
-    WinHttpSetTimeouts,
+    WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS, WINHTTP_FLAG_ASYNC, WINHTTP_FLAG_SECURE,
+    WINHTTP_INTERNET_SCHEME_HTTP, WINHTTP_INTERNET_SCHEME_HTTPS, WINHTTP_OPTION_CONTEXT_VALUE,
+    WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_QUERY_CUSTOM, WINHTTP_QUERY_FLAG_NUMBER,
+    WINHTTP_QUERY_STATUS_CODE, WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpCrackUrl, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable,
+    WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+    WinHttpSetOption, WinHttpSetStatusCallback, WinHttpSetTimeouts,
 };
 
 const CANCEL_POLL: Duration = Duration::from_millis(50);
@@ -116,6 +116,26 @@ impl Client {
         headers: &[(&str, &str)],
         limits: RequestLimits<'a>,
     ) -> Result<Response<'a>, Error> {
+        self.get_with_disabled_features(url, headers, limits, 0)
+    }
+
+    /// Sends a GET to the given URL without following any HTTP redirect.
+    pub(crate) fn get_without_redirects<'a>(
+        &'a self,
+        url: &str,
+        headers: &[(&str, &str)],
+        limits: RequestLimits<'a>,
+    ) -> Result<Response<'a>, Error> {
+        self.get_with_disabled_features(url, headers, limits, WINHTTP_DISABLE_REDIRECTS)
+    }
+
+    fn get_with_disabled_features<'a>(
+        &'a self,
+        url: &str,
+        headers: &[(&str, &str)],
+        limits: RequestLimits<'a>,
+        disabled_features: u32,
+    ) -> Result<Response<'a>, Error> {
         limits.check()?;
         let url = Url::parse(url)?;
         // SAFETY: Host is NUL-terminated and self owns the live session.
@@ -138,7 +158,7 @@ impl Client {
         let receive = milliseconds(limits.idle_timeout);
         // SAFETY: handle is live and all timeout values are finite positive milliseconds.
         check(unsafe { WinHttpSetTimeouts(handle.raw(), connect, connect, connect, receive) })?;
-        let disabled = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
+        let disabled = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION | disabled_features;
         handle.option(WINHTTP_OPTION_DISABLE_FEATURE, &disabled)?;
         for &(name, value) in headers {
             if name.is_empty() || name.contains([':', '\r', '\n']) || value.contains(['\r', '\n']) {

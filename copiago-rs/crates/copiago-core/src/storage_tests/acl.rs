@@ -1,16 +1,19 @@
 use std::ffi::c_void;
 use std::fs;
+use std::io;
 use std::mem::size_of;
 use std::path::Path;
 use std::process::Command;
 use std::ptr::null_mut;
 
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW, SDDL_REVISION_1,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
+    GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACE_HEADER, CONTAINER_INHERIT_ACE, EqualSid, GetAce,
-    GetSecurityDescriptorControl, GetSecurityDescriptorDacl, INHERITED_ACE, IsWellKnownSid,
+    ACCESS_ALLOWED_ACE, ACE_HEADER, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, EqualSid,
+    GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl, INHERITED_ACE, IsWellKnownSid,
     OBJECT_INHERIT_ACE, SE_DACL_PROTECTED, WinLocalSystemSid,
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
@@ -19,9 +22,15 @@ use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 use crate::atomic;
 use crate::paths::ensure_data_dir;
 use crate::test_support::TestDir;
-use crate::win32::LocalAllocation;
+use crate::win32::{LocalAllocation, wide_path};
 
 const INHERITABLE: u32 = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+
+#[derive(Clone, Copy)]
+enum DescriptorSource {
+    Native,
+    Icacls,
+}
 
 #[test]
 fn icacls_confirms_only_user_and_system_and_inheritance() {
@@ -75,8 +84,26 @@ fn icacls_confirms_only_user_and_system_and_inheritance() {
             .iter()
             .find_map(|[entry, sddl]| Path::new(entry).ends_with(path).then_some(*sddl))
             .unwrap_or_else(|| panic!("icacls omitted {path}"));
-        check_dacl(sddl, &current_user, flags, protected)
-            .unwrap_or_else(|reason| panic!("{path}: {reason}"));
+        let exported = parse_sddl(sddl).unwrap_or_else(|reason| panic!("icacls {path}: {reason}"));
+        check_dacl(
+            &exported,
+            &current_user,
+            flags,
+            protected,
+            DescriptorSource::Icacls,
+        )
+        .unwrap_or_else(|reason| panic!("icacls {path}: {reason}"));
+
+        let native = read_descriptor(&dir.path().join(path))
+            .unwrap_or_else(|error| panic!("Win32 {path}: {error}"));
+        check_dacl(
+            &native,
+            &current_user,
+            flags,
+            protected,
+            DescriptorSource::Native,
+        )
+        .unwrap_or_else(|reason| panic!("Win32 {path}: {reason}"));
     }
 }
 
@@ -87,25 +114,65 @@ fn dacl_check_accepts_equivalent_sid_and_access_mask_spellings() {
         "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;S-1-5-19)",
         "D:P(A;CIOI;0x001f01ff;;;LS)(A;CIOI;0x001f01ff;;;S-1-5-18)",
     ] {
-        assert_eq!(check_dacl(sddl, &user, INHERITABLE, true), Ok(()));
+        let descriptor = parse_sddl(sddl).unwrap();
+        assert_eq!(
+            check_dacl(
+                &descriptor,
+                &user,
+                INHERITABLE,
+                true,
+                DescriptorSource::Icacls
+            ),
+            Ok(())
+        );
     }
 
     let system = parse_sid("S-1-5-18");
-    let sddl = "D:P(A;OICI;0x001f01ff;;;S-1-5-18)";
-    assert_eq!(check_dacl(sddl, &system, INHERITABLE, true), Ok(()));
+    let descriptor = parse_sddl("D:P(A;OICI;0x001f01ff;;;S-1-5-18)").unwrap();
+    assert_eq!(
+        check_dacl(
+            &descriptor,
+            &system,
+            INHERITABLE,
+            true,
+            DescriptorSource::Icacls
+        ),
+        Ok(())
+    );
 }
 
 #[test]
-fn dacl_check_accepts_descendants_with_or_without_the_inherited_marker() {
+fn dacl_check_requires_the_inherited_marker_only_in_native_descendants() {
     let user = parse_sid("S-1-5-19");
-    for (flags, expected) in [
-        ("OICI", INHERITABLE),
-        ("OICIID", INHERITABLE),
-        ("", 0),
-        ("ID", 0),
+    let missing_marker = Err("unexpected ACE inheritance flags");
+    for (flags, expected, native_result) in [
+        ("OICI", INHERITABLE, missing_marker),
+        ("OICIID", INHERITABLE, Ok(())),
+        ("", 0, missing_marker),
+        ("ID", 0, Ok(())),
     ] {
         let sddl = format!("D:(A;{flags};FA;;;LS)(A;{flags};FA;;;SY)");
-        assert_eq!(check_dacl(&sddl, &user, expected, false), Ok(()));
+        let descriptor = parse_sddl(&sddl).unwrap();
+        assert_eq!(
+            check_dacl(
+                &descriptor,
+                &user,
+                expected,
+                false,
+                DescriptorSource::Icacls
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_dacl(
+                &descriptor,
+                &user,
+                expected,
+                false,
+                DescriptorSource::Native
+            ),
+            native_result
+        );
     }
 }
 
@@ -125,11 +192,14 @@ fn dacl_check_rejects_incorrect_propagation_flags() {
     ] {
         let dacl_flags = if protected { "P" } else { "" };
         let sddl = format!("D:{dacl_flags}(A;{flags};FA;;;LS)(A;{flags};FA;;;SY)");
-        assert_eq!(
-            check_dacl(&sddl, &user, expected, protected),
-            Err("unexpected ACE inheritance flags"),
-            "ACE flags {flags}"
-        );
+        let descriptor = parse_sddl(&sddl).unwrap();
+        for source in [DescriptorSource::Native, DescriptorSource::Icacls] {
+            assert_eq!(
+                check_dacl(&descriptor, &user, expected, protected, source),
+                Err("unexpected ACE inheritance flags"),
+                "ACE flags {flags}"
+            );
+        }
     }
 }
 
@@ -166,16 +236,21 @@ fn dacl_check_rejects_changed_permissions_and_principals() {
             "unexpected DACL protection flag",
         ),
     ] {
-        assert_eq!(check_dacl(sddl, &user, INHERITABLE, true), Err(failure));
+        let descriptor = parse_sddl(sddl).unwrap();
+        assert_eq!(
+            check_dacl(
+                &descriptor,
+                &user,
+                INHERITABLE,
+                true,
+                DescriptorSource::Icacls
+            ),
+            Err(failure)
+        );
     }
 }
 
-fn check_dacl(
-    sddl: &str,
-    current_user: &LocalAllocation<c_void>,
-    expected_flags: u32,
-    protected: bool,
-) -> Result<(), &'static str> {
+fn parse_sddl(sddl: &str) -> Result<LocalAllocation<c_void>, &'static str> {
     let wide: Vec<_> = sddl.encode_utf16().chain([0]).collect();
     let mut descriptor = null_mut();
     // SAFETY: wide is NUL-terminated and the descriptor output is writable.
@@ -191,9 +266,41 @@ fn check_dacl(
         return Err("Windows could not parse icacls SDDL");
     }
     // SAFETY: Successful conversion returns an owned LocalFree allocation.
-    let descriptor =
-        unsafe { LocalAllocation::from_raw(descriptor) }.ok_or("missing security descriptor")?;
+    unsafe { LocalAllocation::from_raw(descriptor) }.ok_or("missing security descriptor")
+}
 
+fn read_descriptor(path: &Path) -> io::Result<LocalAllocation<c_void>> {
+    let wide = wide_path(path)?;
+    let mut descriptor = null_mut();
+    // SAFETY: wide is NUL-terminated, the descriptor output is writable, and the other outputs
+    // are optional.
+    let result = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    // SAFETY: A successful query returns an owned LocalFree allocation.
+    unsafe { LocalAllocation::from_raw(descriptor) }
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing security descriptor"))
+}
+
+fn check_dacl(
+    descriptor: &LocalAllocation<c_void>,
+    current_user: &LocalAllocation<c_void>,
+    propagation_flags: u32,
+    protected: bool,
+    source: DescriptorSource,
+) -> Result<(), &'static str> {
     let (mut control, mut revision) = (0, 0);
     // SAFETY: The descriptor is live and both outputs are writable.
     let got_control =
@@ -221,9 +328,12 @@ fn check_dacl(
         return Err("unexpected DACL entry count");
     }
 
-    // Observed icacls exports differ on this marker for descendants.
-    // The nested fixture verifies propagation, and every other flag must match.
-    let ignored_flags = if protected { 0 } else { INHERITED_ACE };
+    // icacls /save can omit the inherited marker that the live descendant ACEs carry.
+    let (expected_flags, ignored_flags) = match (protected, source) {
+        (true, _) => (propagation_flags, 0),
+        (false, DescriptorSource::Native) => (propagation_flags | INHERITED_ACE, 0),
+        (false, DescriptorSource::Icacls) => (propagation_flags, INHERITED_ACE),
+    };
     for index in 0..u32::from(count) {
         let mut entry = null_mut();
         // SAFETY: acl is valid, index is within AceCount and entry is writable.

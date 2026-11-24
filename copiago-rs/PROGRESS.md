@@ -21,7 +21,7 @@
 | T-CORE-05 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/11 | 使用系统 winsqlite3、DPAPI 和原表。双来源上限、去重、旧列迁移及合成 Python 双向实测通过。关闭保存后保留原历史，独立清空。 |
 | T-IMG-01 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/11 | 统一 WIC 解码、缩放、PNG 与 DIB。48 MP 基线 JPEG 缩略图 5 次峰值 ≤ 13.20 MB，透明像素保持。渐进式 48 MP 可解码但超 30 MB（155.39 MB）。 |
 | T-IMG-02 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/11 | 同一条目定向请求 PNG/JPEG，总限时 6 s、图片 ≤64 MiB；无替代时 WIC，四种来源及相册端到端待验。 |
-| T-DDI-01 | 待办 | — | |
+| T-DDI-01 | 已合并 | — | WinHTTP 续传、换源、取消和原子发布。两套镜像真下载，8/8 Python 固定大小及 SHA-256 匹配，热缓存零下载。 |
 | T-DDI-02 | 待办 | — | |
 | T-UI-01 | 待办 | — | |
 | T-UI-02 | 待办 | — | |

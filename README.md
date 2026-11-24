@@ -14,6 +14,22 @@ Copy on your iPhone and paste directly into Windows apps. Pair once over USB, th
 | Windows | **Windows 10 21H2 (build 19044) or later, including Windows 11**, x64. Apple's device connection components are required; CopiaGo prompts you to install [Apple Devices](https://support.apple.com/en-us/118290) if they are missing. |
 | Network | First-time pairing needs a USB cable. Wireless sync then needs the PC and iPhone on the same local network, able to discover each other. The first developer-service setup downloads about 18 MB and requests a signature from Apple. |
 
+## Size and resource use
+
+1.3.0 is a Rust rewrite. Compared with the Python-based 1.2.0:
+
+| | 1.3.0 | 1.2.0 (Python) |
+| --- | ---: | ---: |
+| Installer | 3.7 MB | 25 MB |
+| Portable ZIP | 1.9 MB | — |
+| Installed size | 7.9 MB (3.4 MB app; the rest is the uninstaller) | 74 MB |
+| Memory in the tray | about 3.5 MB | about 71 MB |
+| Memory with the panel open | about 10–12 MB | — |
+| CPU when idle | about 0.1% of one logical core | — |
+| Launch to connected over Wi-Fi | about 2 seconds | — |
+
+Memory is process private memory (private commit), measured on Windows 11 x64 with a real iPhone connected over Wi-Fi. After the panel closes, CopiaGo returns that memory, and Task Manager shows about 3 MB. The developer components (about 18 MB) are downloaded to the data folder on first connection and are not counted in the installed size.
+
 ## Quick start
 
 1. Run the installer on Windows.

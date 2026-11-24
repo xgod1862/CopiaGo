@@ -84,6 +84,29 @@ fn decodes_indexed_gif_and_handles_an_optional_webp_codec() {
 }
 
 #[test]
+fn recognizes_heic_brands_only_inside_the_file_type_box() {
+    let heic = include_bytes!("fixtures/two-colors.heic");
+    assert!(detect_container(heic).is_ok_and(|format| format == GUID_ContainerFormatHeif));
+
+    let compatible = b"\0\0\0\x18ftypmif1\0\0\0\0mif1heic";
+    let extended = b"\0\0\0\x01ftyp\0\0\0\0\0\0\0\x18heix\0\0\0\0";
+    for bytes in [compatible.as_slice(), extended.as_slice()] {
+        assert!(detect_container(bytes).is_ok_and(|format| format == GUID_ContainerFormatHeif));
+    }
+    for bytes in [
+        b"\0\0\0\x10ftypisom\0\0\0\0heic".as_slice(),
+        b"\0\0\0\x14ftypavif\0\0\0\0mif1".as_slice(),
+        b"\0\0\0\x18ftypmif1\0\0\0\0heic".as_slice(),
+        b"\0\0\0\x10ftypmif1heic".as_slice(),
+    ] {
+        assert!(matches!(
+            detect_container(bytes),
+            Err(ImageError::InvalidImage)
+        ));
+    }
+}
+
+#[test]
 fn scaled_png_respects_alpha() {
     let pixels = vec![255, 0, 0, 0, 0, 0, 255, 255];
     let png = encode_png(&BgraImage::from_bgra(2, 1, pixels).unwrap()).unwrap();
@@ -169,7 +192,7 @@ fn measure_thumbnail() {
     assert!((1..PEAK_LIMIT_BYTES).contains(&private_commit));
 }
 
-fn memory_peaks() -> PROCESS_MEMORY_COUNTERS {
+pub(crate) fn memory_peaks() -> PROCESS_MEMORY_COUNTERS {
     let len = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
     let mut counters = PROCESS_MEMORY_COUNTERS {
         cb: len,

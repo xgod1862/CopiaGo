@@ -24,4 +24,7 @@ pub use usb::{
     PairingRecordSource, UsbProbe, UsbProbeError, UsbWatchError, probe_usb, sync_usb, watch_usb,
 };
 #[cfg(windows)]
-pub use wifi::{IdentifierMigration, WifiProbe, WifiProbeError, WifiProbeOptions, probe_wifi};
+pub use wifi::{
+    IdentifierMigration, WifiProbe, WifiProbeError, WifiProbeOptions, probe_wifi,
+    probe_wifi_pasteboard_types,
+};

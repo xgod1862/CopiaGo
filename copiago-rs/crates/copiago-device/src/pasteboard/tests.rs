@@ -342,26 +342,135 @@ async fn jpeg_wins_when_both_heic_and_jpeg_are_inline() {
 }
 
 #[tokio::test]
-async fn heic_is_used_when_jpeg_is_only_promised() {
+async fn heic_only_skips_the_alternative_request() {
+    let update = next_update(
+        FakeBackend::new()
+            .answer(PullPolicy::AllPromised, snapshot(1, &[HEIC], []))
+            .answer(
+                PullPolicy::PromiseSecondary,
+                snapshot(1, &[HEIC], [(HEIC, inline(b"heic"))]),
+            ),
+    )
+    .await;
+    assert_clip(update.event, test_image(HEIC, b"heic"));
+}
+
+#[tokio::test]
+async fn prefers_png_or_jpeg_resolved_for_the_same_heic_item() {
+    for (png, expected) in [
+        (b"png".as_slice(), test_image(PNG, b"png")),
+        (b"", test_image(JPEG, b"jpeg")),
+    ] {
+        let update = next_update(heic_with_promised_alternatives().answer(
+            PullPolicy::AllResolved,
+            snapshot(
+                1,
+                &[HEIC, JPEG, PNG],
+                [(JPEG, inline(b"jpeg")), (PNG, inline(png))],
+            ),
+        ))
+        .await;
+        assert_clip(update.event, expected);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn keeps_the_original_heic_when_the_optional_request_fails() {
+    for backend in [
+        heic_with_promised_alternatives().error(PullPolicy::AllResolved),
+        heic_with_promised_alternatives().delay(PullPolicy::AllResolved, 31, Snapshot::default()),
+        heic_with_promised_alternatives().answer(
+            PullPolicy::AllResolved,
+            snapshot(1, &[HEIC, JPEG, PNG], [(JPEG, promised(4))]),
+        ),
+    ] {
+        let update = next_update(backend).await;
+        assert!(!update.timed_out);
+        assert_clip(update.event, test_image(HEIC, b"heic"));
+    }
+}
+
+#[tokio::test]
+async fn only_accepts_alternatives_from_the_same_change_and_item() {
+    let types = &[HEIC, JPEG, PNG];
+    let jpeg_item = || item(types, dictionary([(JPEG, inline(b"other image"))]));
+    for resolved in [
+        board(metadata("nonce".into(), 2), vec![jpeg_item()]),
+        board(metadata("other nonce".into(), 1), vec![jpeg_item()]),
+        board(dictionary([]), vec![jpeg_item()]),
+        board(
+            metadata("nonce".into(), 1),
+            vec![item(types, dictionary([])), jpeg_item()],
+        ),
+        board(
+            metadata("nonce".into(), 1),
+            vec!["malformed first item".into(), jpeg_item()],
+        ),
+    ] {
+        let backend = heic_with_promised_alternatives().answer(PullPolicy::AllResolved, resolved);
+        let update = next_update(backend).await;
+        assert_eq!(update.change.unwrap().count, 1);
+        assert_clip(update.event, test_image(HEIC, b"heic"));
+    }
+}
+
+#[tokio::test]
+async fn a_different_items_jpeg_does_not_trigger_the_heic_alternative_request() {
     let update = next_update(
         FakeBackend::new()
             .answer(PullPolicy::AllPromised, snapshot(1, &[HEIC, JPEG], []))
             .answer(
                 PullPolicy::PromiseSecondary,
-                snapshot(
-                    1,
-                    &[HEIC, JPEG],
-                    [(HEIC, inline(b"heic")), (JPEG, promised(4))],
+                board(
+                    metadata("nonce".into(), 1),
+                    vec![
+                        item(&[HEIC], dictionary([(HEIC, inline(b"heic"))])),
+                        item(&[JPEG], dictionary([(JPEG, promised(4))])),
+                    ],
                 ),
             ),
     )
     .await;
-    assert_clip(
-        update.event,
-        Clip::Image {
-            bytes: b"heic".to_vec(),
-            uti: HEIC.to_owned(),
-        },
+    assert_clip(update.event, test_image(HEIC, b"heic"));
+}
+
+fn heic_with_promised_alternatives() -> FakeBackend {
+    let types = &[HEIC, JPEG, PNG];
+    FakeBackend::new()
+        .answer(PullPolicy::AllPromised, snapshot(1, types, []))
+        .answer(
+            PullPolicy::PromiseSecondary,
+            snapshot(
+                1,
+                types,
+                [
+                    (HEIC, inline(b"heic")),
+                    (JPEG, promised(4)),
+                    (PNG, promised(3)),
+                ],
+            ),
+        )
+}
+
+fn test_image(uti: &str, bytes: &[u8]) -> Clip {
+    Clip::Image {
+        bytes: bytes.to_vec(),
+        uti: uti.to_owned(),
+    }
+}
+
+#[test]
+fn metadata_probe_groups_utis_in_item_order() {
+    let listing = board(
+        metadata("nonce".into(), 1),
+        vec![
+            item(&[HEIC, JPEG], dictionary([(HEIC, promised(4096))])),
+            item(&[URL, WEB_ARCHIVE], dictionary([])),
+        ],
+    );
+    assert_eq!(
+        listing.into_item_types(),
+        [vec![HEIC, JPEG], vec![URL, WEB_ARCHIVE]]
     );
 }
 

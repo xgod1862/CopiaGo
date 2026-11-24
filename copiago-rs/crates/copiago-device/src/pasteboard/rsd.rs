@@ -18,7 +18,7 @@ use super::{
     METADATA_TIMEOUT, NOTIFICATIONS, PasteboardBackend, PasteboardError, PasteboardState,
     PullPolicy, SetItem,
     content::{INLINE_TEXT, PNG_UTI, Snapshot, change_id},
-    watch,
+    pull, watch,
 };
 
 #[cfg(test)]
@@ -26,6 +26,16 @@ pub(crate) use tests::verify_push_round_trip;
 
 pub(crate) const PASTEBOARD_SERVICE: &str = "com.apple.coredevice.pasteboardservice";
 const GENERAL_PASTEBOARD: &str = "general";
+
+pub(crate) async fn read_rsd_types(
+    adapter: &mut AdapterHandle,
+    rsd: &RsdHandshake,
+) -> Result<Vec<Vec<String>>, PasteboardError> {
+    let port = pasteboard_port(rsd)?;
+    let mut backend = RsdPasteboard { adapter, port };
+    let snapshot = pull(&mut backend, PullPolicy::AllPromised).await?;
+    Ok(snapshot.into_item_types())
+}
 
 pub(crate) async fn watch_rsd(
     adapter: &mut AdapterHandle,
@@ -36,11 +46,7 @@ pub(crate) async fn watch_rsd(
     next_command: impl AsyncFnMut() -> Option<DeviceCommand>,
     emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
 ) -> Result<Option<DeviceCommand>, PasteboardError> {
-    let port = rsd
-        .services
-        .get(PASTEBOARD_SERVICE)
-        .ok_or(PasteboardError::ServiceMissing)?
-        .port;
+    let port = pasteboard_port(rsd)?;
     let mut notifications = timeout(METADATA_TIMEOUT, subscribe(adapter, rsd))
         .with_subscriber(Dispatch::none())
         .await
@@ -63,6 +69,13 @@ pub(crate) async fn watch_rsd(
         emit,
     )
     .await
+}
+
+fn pasteboard_port(rsd: &RsdHandshake) -> Result<u16, PasteboardError> {
+    rsd.services
+        .get(PASTEBOARD_SERVICE)
+        .map(|service| service.port)
+        .ok_or(PasteboardError::ServiceMissing)
 }
 
 async fn subscribe(

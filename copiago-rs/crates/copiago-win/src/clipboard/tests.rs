@@ -125,6 +125,71 @@ fn wic_preserves_alpha_in_png_and_dib_v5() {
 }
 
 #[test]
+fn wic_prepares_jpeg_and_uses_the_optional_heic_codec() {
+    use windows::Win32::Foundation::WINCODEC_ERR_COMPONENTNOTFOUND;
+
+    const MF_E_TOPO_CODEC_NOT_FOUND: i32 = 0xc00d5212u32 as i32;
+    for (format, input) in [
+        (
+            "jpeg",
+            include_bytes!("../image/fixtures/two-colors.jpg").as_slice(),
+        ),
+        (
+            "heic",
+            include_bytes!("../image/fixtures/two-colors.heic").as_slice(),
+        ),
+    ] {
+        let started = Instant::now();
+        let result = prepare_image_write(input);
+        let prepare_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        let (mut dib, mut png) = match result {
+            Ok(prepared) => prepared,
+            Err(ClipboardError::ImageCodec(code))
+                if format == "heic"
+                    && [WINCODEC_ERR_COMPONENTNOTFOUND.0, MF_E_TOPO_CODEC_NOT_FOUND]
+                        .contains(&code) =>
+            {
+                println!(
+                    "input={format} bytes={} prepare_ms={prepare_ms:.2} codec_error={code:#010x}",
+                    input.len()
+                );
+                continue;
+            }
+            Err(error) => panic!("failed to prepare {format} for the clipboard: {error}"),
+        };
+        println!(
+            "input={format} bytes={} prepare_ms={prepare_ms:.2}",
+            input.len()
+        );
+
+        let decoded = png
+            .with_bytes(|bytes| image::decode(bytes))
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded.dimensions(), (160, 96));
+        let red = &decoded.pixels()[40 * 4..41 * 4];
+        let green = &decoded.pixels()[120 * 4..121 * 4];
+        assert!(red[2] > 180 && red[1] < 80 && red[3] == 255);
+        assert!(green[1] > 160 && green[2] < 80 && green[3] == 255);
+        dib.with_bytes(|bytes| {
+            assert!(bytes[4..8] == 160u32.to_le_bytes());
+            assert!(bytes[8..12] == (-96i32).to_le_bytes());
+            assert_eq!(&bytes[DIB_V5_HEADER_BYTES..], decoded.pixels());
+        })
+        .unwrap();
+
+        let scaled = image::decode_scaled(input, 96, 96).unwrap();
+        assert_eq!(scaled.dimensions(), (96, 58));
+    }
+
+    let memory = image::tests::memory_peaks();
+    println!(
+        "peak_working_set_bytes={} peak_private_commit_bytes={}",
+        memory.PeakWorkingSetSize, memory.PeakPagefileUsage
+    );
+}
+
+#[test]
 fn wic_applies_tiff_orientation_to_both_formats() {
     let tiff = tiff_with_orientation(5);
     let preview = image::decode_scaled(&tiff, 88, 56).unwrap();

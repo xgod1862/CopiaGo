@@ -13,6 +13,9 @@ use super::{PasteboardBackend, PasteboardError, PullPolicy, file_offer, pull};
 pub(super) const INLINE_TEXT: [&str; 3] =
     ["public.utf8-plain-text", "public.plain-text", "public.text"];
 pub(super) const PNG_UTI: &str = "public.png";
+const JPEG_UTI: &str = "public.jpeg";
+const HEIC_UTI: &str = "public.heic";
+const HEIC_ALTERNATIVES: [&str; 2] = [PNG_UTI, JPEG_UTI];
 // These also justify the lightweight content request. The current Python
 // reader still extracts text only from the inline UTF-8 representations.
 const DECLARED_TEXT: [&str; 3] = [
@@ -22,8 +25,8 @@ const DECLARED_TEXT: [&str; 3] = [
 ];
 const IMAGE_FORMATS: [(&str, &str); 6] = [
     (PNG_UTI, "image/png"),
-    ("public.jpeg", "image/jpeg"),
-    ("public.heic", "image/heic"),
+    (JPEG_UTI, "image/jpeg"),
+    (HEIC_UTI, "image/heic"),
     ("public.tiff", "image/tiff"),
     ("com.compuserve.gif", "image/gif"),
     ("org.webmproject.webp", "image/webp"),
@@ -56,19 +59,22 @@ impl Snapshot {
             .and_then(Value::into_array)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(Value::into_dictionary)
-            .map(|mut item| Item {
-                types: item
-                    .remove("types")
-                    .and_then(Value::into_array)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(Value::into_string)
-                    .collect(),
-                entries: item
-                    .remove("data")
-                    .and_then(Value::into_dictionary)
-                    .unwrap_or_default(),
+            .map(|value| {
+                // Keep the wire position for comparisons across PULL replies.
+                let mut item = value.into_dictionary().unwrap_or_default();
+                Item {
+                    types: item
+                        .remove("types")
+                        .and_then(Value::into_array)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(Value::into_string)
+                        .collect(),
+                    entries: item
+                        .remove("data")
+                        .and_then(Value::into_dictionary)
+                        .unwrap_or_default(),
+                }
             })
             .collect();
         Ok(Self { change, items })
@@ -78,6 +84,10 @@ impl Snapshot {
         self.items
             .iter()
             .flat_map(|item| item.types.iter().map(String::as_str))
+    }
+
+    pub(super) fn into_item_types(self) -> Vec<Vec<String>> {
+        self.items.into_iter().map(|item| item.types).collect()
     }
 
     pub(super) fn take_entry(&mut self, uti: &str) -> Option<Dictionary> {
@@ -94,23 +104,19 @@ impl Snapshot {
             .any(|name| INLINE_TEXT.contains(&name) || DECLARED_TEXT.contains(&name))
     }
 
-    fn take_image(&mut self) -> Option<Clip> {
-        for item in &mut self.items {
-            for (uti, _) in IMAGE_FORMATS {
-                if let Some(bytes) = item.take_inline(uti).and_then(Value::into_data)
-                    && !bytes.is_empty()
-                {
-                    return Some(Clip::Image {
-                        bytes,
-                        uti: uti.to_owned(),
-                    });
-                }
+    fn take_image(&mut self) -> Option<(usize, Clip)> {
+        for (index, item) in self.items.iter_mut().enumerate() {
+            if let Some(image) = IMAGE_FORMATS
+                .into_iter()
+                .find_map(|(uti, _)| item.take_image(uti))
+            {
+                return Some((index, image));
             }
         }
 
-        self.items.iter_mut().find_map(|item| {
+        self.items.iter_mut().enumerate().find_map(|(index, item)| {
             let archive = item.take_inline(WEB_ARCHIVE)?.into_data()?;
-            archive_image(archive)
+            Some((index, archive_image(archive)?))
         })
     }
 
@@ -175,6 +181,26 @@ impl Item {
 
     fn take_inline(&mut self, uti: &str) -> Option<Value> {
         self.take_entry(uti)?.remove("data")
+    }
+
+    fn take_image(&mut self, uti: &str) -> Option<Clip> {
+        let bytes = self.take_inline(uti)?.into_data()?;
+        (!bytes.is_empty()).then(|| Clip::Image {
+            bytes,
+            uti: uti.to_owned(),
+        })
+    }
+
+    fn declares_heic_alternative(&self) -> bool {
+        self.types
+            .iter()
+            .any(|uti| HEIC_ALTERNATIVES.contains(&uti.as_str()))
+    }
+
+    fn take_heic_alternative(&mut self) -> Option<Clip> {
+        HEIC_ALTERNATIVES
+            .into_iter()
+            .find_map(|uti| self.take_image(uti))
     }
 }
 
@@ -254,7 +280,21 @@ pub(super) async fn read_clip(
         Err(PasteboardError::RequestTimeout) => return Ok(listing.skip()),
         Err(error) => return Err(error),
     };
-    if let Some(image) = secondary.take_image() {
+    if let Some((index, mut image)) = secondary.take_image() {
+        // A JPEG or PNG of the same item can avoid a system HEVC dependency.
+        // AllResolved is optional here because we already have the original.
+        if matches!(&image, Clip::Image { uti, .. } if uti == HEIC_UTI)
+            && secondary.change.is_some()
+            && secondary.items[index].declares_heic_alternative()
+            && let Ok(mut resolved) = pull(backend, PullPolicy::AllResolved).await
+            && resolved.change == secondary.change
+            && let Some(alternative) = resolved
+                .items
+                .get_mut(index)
+                .and_then(Item::take_heic_alternative)
+        {
+            image = alternative;
+        }
         return Ok(secondary.into_update(Some(image)));
     }
 
@@ -263,7 +303,7 @@ pub(super) async fn read_clip(
     if secondary.declares_image() {
         return match pull(backend, PullPolicy::AllResolved).await {
             Ok(mut resolved) => {
-                let image = resolved.take_image();
+                let image = resolved.take_image().map(|(_, image)| image);
                 Ok(resolved.into_update(image))
             }
             Err(PasteboardError::RequestTimeout) => Ok(secondary.into_update(None)),

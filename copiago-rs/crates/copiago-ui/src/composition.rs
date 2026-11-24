@@ -1,6 +1,7 @@
 //! Win32 popup host and drawing primitives for the Visual Layer.
 
 mod drawing;
+mod position;
 mod thread;
 mod window;
 
@@ -11,10 +12,12 @@ pub use window::POPUP_SETTINGS_CHANGED;
 use std::{cell::OnceCell, rc::Rc};
 
 use crate::{
+    animation::MotionPolicy,
     components::Rect,
     focus::{Card, FocusElement, FocusEvent, FocusId, FocusRing},
 };
 use drawing::Drawing;
+use position::TrayPlacement;
 use window::{CLOSE_POPUP, DISMISS_POPUP, DPI_CHANGED, Placement, PopupWindows};
 use windows::{
     UI::{
@@ -25,7 +28,7 @@ use windows::{
         },
     },
     Win32::{
-        Foundation::{E_FAIL, E_INVALIDARG, HWND, POINT},
+        Foundation::{E_FAIL, E_INVALIDARG, HWND, POINT, RECT},
         System::WinRT::Composition::ICompositorDesktopInterop,
         UI::{
             Input::KeyboardAndMouse::VK_ESCAPE,
@@ -119,8 +122,38 @@ impl<'ui> PopupHost<'ui> {
     ) -> Result<()> {
         self.hide();
         let placement = Placement::new(position, bounds, self.windows.dpi_at(position)?)?;
-        let visible = VisiblePopup::new(self.windows.visual(), placement, build)?;
+        self.present(placement, None, activate, build)
+    }
+
+    /// Present a card next to the tray, with an entrance from the taskbar edge.
+    /// Pass the current shell icon rectangle in physical screen pixels when
+    /// available. Otherwise use the monitor of the given screen point or cursor.
+    pub fn show_at_tray(
+        &mut self,
+        icon_rect: Option<RECT>,
+        fallback: Option<POINT>,
+        bounds: PopupBounds,
+        activate: bool,
+        build: impl FnOnce(&PopupScene) -> Result<()>,
+    ) -> Result<()> {
+        self.hide();
+        let tray = TrayPlacement::resolve(icon_rect, fallback)?;
+        let dpi = self.windows.dpi_at(tray.dpi_sample())?;
+        self.present(tray.place(bounds, dpi)?, Some(tray), activate, build)
+    }
+
+    fn present(
+        &mut self,
+        placement: Placement,
+        tray: Option<TrayPlacement>,
+        activate: bool,
+        build: impl FnOnce(&PopupScene) -> Result<()>,
+    ) -> Result<()> {
+        let visible = VisiblePopup::new(self.windows.visual(), placement, tray, build)?;
         self.windows.place(placement)?;
+        if let Some(tray) = tray {
+            tray.animate_in(&visible.scene, MotionPolicy::system())?;
+        }
         self.place_accessibility(placement);
         if let Err(error) = self.windows.show(activate) {
             self.hide();
@@ -130,8 +163,8 @@ impl<'ui> PopupHost<'ui> {
         Ok(())
     }
 
-    /// Move a visible card to a screen pixel. A monitor DPI change queues a
-    /// rebuild through handle_message.
+    /// Move a visible card to a screen pixel and release any tray anchor. A
+    /// monitor DPI change queues a rebuild through handle_message.
     pub fn move_to(&mut self, position: POINT) -> Result<()> {
         if let Some(visible) = &mut self.visible {
             let placement =
@@ -141,21 +174,53 @@ impl<'ui> PopupHost<'ui> {
                 return Err(error);
             }
             visible.placement = placement;
+            visible.tray = None;
             self.place_accessibility(placement);
         }
         Ok(())
     }
 
     /// Rebuild a visible card at a new position or height without hiding it,
-    /// changing its focus, or recreating its graphics device.
+    /// changing its focus, or recreating its graphics device. An explicit
+    /// position releases any tray anchor.
     pub fn rebuild(
         &mut self,
         position: POINT,
         bounds: PopupBounds,
         build: impl FnOnce(&PopupScene) -> Result<()>,
     ) -> Result<()> {
-        if let Some(visible) = self.visible.as_mut() {
+        if let Some(visible) = self.visible.as_ref() {
             let placement = Placement::new(position, bounds, visible.placement.dpi)?;
+            self.rebuild_visible(placement, None, build)?;
+        }
+        Ok(())
+    }
+
+    /// Rebuild a card opened by show_at_tray, keeping it against the taskbar as
+    /// its bounds change. The entrance animation runs only when shown.
+    pub fn rebuild_at_tray(
+        &mut self,
+        bounds: PopupBounds,
+        build: impl FnOnce(&PopupScene) -> Result<()>,
+    ) -> Result<()> {
+        let Some(visible) = self.visible.as_ref() else {
+            return Ok(());
+        };
+        let tray = visible
+            .tray
+            .ok_or_else(|| Error::new(E_INVALIDARG, "The popup has no tray anchor"))?
+            .refresh(visible.placement.position)?;
+        let placement = tray.place(bounds, visible.placement.dpi)?;
+        self.rebuild_visible(placement, Some(tray), build)
+    }
+
+    fn rebuild_visible(
+        &mut self,
+        placement: Placement,
+        tray: Option<TrayPlacement>,
+        build: impl FnOnce(&PopupScene) -> Result<()>,
+    ) -> Result<()> {
+        if let Some(visible) = self.visible.as_mut() {
             if let Err(error) = visible
                 .rebuild(placement, build)
                 .and_then(|()| self.windows.place(placement))
@@ -163,6 +228,9 @@ impl<'ui> PopupHost<'ui> {
                 self.hide();
                 return Err(error);
             }
+            visible.tray = tray;
+            self.place_accessibility(placement);
+            self.refresh_focus()?;
         }
         Ok(())
     }
@@ -188,18 +256,18 @@ impl<'ui> PopupHost<'ui> {
             WM_KEYDOWN if message.wParam.0 == usize::from(VK_ESCAPE.0) => self.hide(),
             DPI_CHANGED => {
                 if let Some((dpi, position)) = self.windows.take_dpi_change()
-                    && let Some(visible) = self.visible.as_mut()
+                    && let Some(visible) = self.visible.as_ref()
                 {
-                    let placement = Placement::new(position, visible.placement.bounds, dpi)?;
-                    if let Err(error) = visible
-                        .rebuild(placement, rebuild)
-                        .and_then(|()| self.windows.place(placement))
-                    {
-                        self.hide();
-                        return Err(error);
-                    }
-                    self.place_accessibility(placement);
-                    self.refresh_focus()?;
+                    let bounds = visible.placement.bounds;
+                    let tray = visible
+                        .tray
+                        .map(|tray| tray.refresh(position))
+                        .transpose()?;
+                    let placement = match tray {
+                        Some(tray) => tray.place(bounds, dpi)?,
+                        None => Placement::new(position, bounds, dpi)?,
+                    };
+                    self.rebuild_visible(placement, tray, rebuild)?;
                 }
             }
             _ => return Ok(false),
@@ -428,12 +496,14 @@ struct VisiblePopup {
     target: DesktopWindowTarget,
     scene: PopupScene,
     placement: Placement,
+    tray: Option<TrayPlacement>,
 }
 
 impl VisiblePopup {
     fn new(
         visual_hwnd: HWND,
         placement: Placement,
+        tray: Option<TrayPlacement>,
         build: impl FnOnce(&PopupScene) -> Result<()>,
     ) -> Result<Self> {
         let compositor = Compositor::new()?;
@@ -444,6 +514,7 @@ impl VisiblePopup {
             target,
             scene: PopupScene::new(&compositor, Rc::default(), placement)?,
             placement,
+            tray,
         };
         build(&visible.scene)?;
         visible.target.SetRoot(&visible.scene.root)?;

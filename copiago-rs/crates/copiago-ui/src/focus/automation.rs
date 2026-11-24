@@ -34,7 +34,6 @@ use super::{
     FocusElement, FocusEvent, FocusId,
     model::{Card, Key, ROOT, RuntimeId, Tree},
 };
-use crate::components::Rect;
 use provider::{Provider, decoration_provider, toggle_state};
 
 const FOCUS_CHANGED: u32 = WM_APP + 5;
@@ -136,12 +135,6 @@ impl PopupInteraction {
 
     pub(crate) fn request_focus(&self, id: Option<FocusId>) -> bool {
         lock(&self.tree).requested_focus(id)
-    }
-
-    pub(crate) fn focus_bounds(&self) -> Option<Rect> {
-        let tree = lock(&self.tree);
-        let runtime = tree.native_target().filter(|id| *id != ROOT)?;
-        tree.bounds(runtime)
     }
 
     pub(crate) fn announce_focus(&self, hwnd: HWND) {

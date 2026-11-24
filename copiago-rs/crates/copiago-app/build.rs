@@ -1,5 +1,5 @@
 fn main() -> std::io::Result<()> {
-    const ICON: &str = "../../../source/iphone_clip/assets/jade.ico";
+    const ICON: &str = "../../assets/copiago.ico";
 
     println!("cargo:rerun-if-changed=copiago.manifest");
     println!("cargo:rerun-if-changed={ICON}");

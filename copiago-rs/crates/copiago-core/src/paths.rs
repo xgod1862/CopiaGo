@@ -4,7 +4,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::System::WindowsProgramming::GetUserNameW;
 
@@ -16,7 +16,11 @@ mod upgrade;
 pub(crate) use acl::create_private_dir;
 pub use acl::ensure_data_dir;
 
+// Data folder of Python 1.2.0 (named before the CopiaGo rename). Read only to migrate.
+// Data folder of Python 1.2.0, named before the CopiaGo rename. Read only to migrate.
 const LEGACY_DIR_NAME: &str = "iPhoneClipboardPrototype";
+// Default install folder before the CopiaGo rename, under %LOCALAPPDATA%Programs.
+const LEGACY_INSTALL_DIR_NAME: &str = "iPhoneClipboard";
 pub const DEVICE_DATA_DIR: &str = "device-data";
 
 /// Whether the executable is running from a development build or a packaged distribution.
@@ -42,17 +46,33 @@ pub fn data_dir(mode: RunMode) -> io::Result<PathBuf> {
     )
 }
 
-/// Prepares the default installed data root and takes over older Python data if necessary.
+/// Prepares the default installed data root and takes over older data if it is still empty.
 /// Explicit overrides and portable runs should continue to use [data_dir].
 pub fn prepare_installed_data_dir(target: PathBuf) -> io::Result<PathBuf> {
     let legacy = env::var_os("LOCALAPPDATA")
         .filter(|path| !path.is_empty())
-        .map(|path| PathBuf::from(path).join(LEGACY_DIR_NAME));
+        .map(|path| legacy_source(&target, &PathBuf::from(path)));
     if let Some(legacy) = legacy {
         return upgrade::prepare(target, legacy);
     }
     ensure_data_dir(&target)?;
     Ok(target)
+}
+
+/// Where earlier data for this account may live, preferring the old default install folder.
+/// The installer moves that folder when it relocates an upgrade; if the move failed or was
+/// skipped, the data is still there and is copied on first start instead.
+fn legacy_source(target: &Path, local_app_data: &Path) -> PathBuf {
+    let old_install = target.file_name().map(|account| {
+        local_app_data
+            .join("Programs")
+            .join(LEGACY_INSTALL_DIR_NAME)
+            .join("data")
+            .join(account)
+    });
+    old_install
+        .filter(|old| old != target && old.is_dir())
+        .unwrap_or_else(|| local_app_data.join(LEGACY_DIR_NAME))
 }
 
 fn resolve_data_dir(

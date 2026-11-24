@@ -10,6 +10,8 @@ use tokio::time::{Instant, timeout_at};
 mod windows;
 
 pub const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Budget when the paired phone is also on USB, so a silent Wi-Fi side costs little.
+pub const QUICK_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// A RemotePairing advertisement and its match result.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,9 +44,35 @@ impl Candidate {
 /// diagnostics. Automatic connections use only matched addresses and still
 /// require pair-verify.
 pub async fn discover(peer_alt_irk: Option<&[u8; 16]>) -> io::Result<Vec<Candidate>> {
-    let deadline = Instant::now() + DISCOVERY_TIMEOUT;
+    discover_within(peer_alt_irk, DISCOVERY_TIMEOUT).await
+}
+
+/// Like [`discover`], with a caller-chosen deadline.
+pub async fn discover_within(
+    peer_alt_irk: Option<&[u8; 16]>,
+    budget: Duration,
+) -> io::Result<Vec<Candidate>> {
+    let deadline = Instant::now() + budget;
     let mut scan = windows::Scan::start()?;
     Ok(collect_candidates(deadline, peer_alt_irk, async || scan.next().await).await)
+}
+
+/// Resolve once Windows reports an advertisement that matches the pairing record.
+/// Windows keeps browsing in the background and delivers the phone's own announcement
+/// when it rejoins the network, so waiting here costs no polling. If browsing cannot
+/// start this never resolves and callers fall back to their timer.
+pub(crate) async fn watch(peer_alt_irk: &[u8; 16]) {
+    if let Ok(mut scan) = windows::Scan::start() {
+        while let Some(advertisement) = scan.next().await {
+            if advertisement
+                .into_candidate(Some(peer_alt_irk))
+                .is_some_and(|candidate| candidate.auth_tag_matches)
+            {
+                return;
+            }
+        }
+    }
+    std::future::pending().await
 }
 
 pub(crate) fn matched_addresses(candidates: &[Candidate]) -> Vec<SocketAddr> {

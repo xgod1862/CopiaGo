@@ -15,11 +15,13 @@ use windows::{
 use windows_numerics::Vector3;
 
 use super::{Placement, PopupBounds, PopupScene};
-use crate::animation::{Animator, Axis, MotionPolicy, Spring, Tween};
+use crate::animation::{Animator, Axis, MotionPolicy, Tween};
 
 const GAP_DIPS: f32 = 12.0;
-const ENTER_DIPS: f32 = 36.0;
-const ENTER_SPRING: Spring = Spring::new(70, 0.72);
+const ENTER_DIPS: f32 = 18.0;
+const ENTER_SCALE: f32 = 0.965;
+const ENTER_MOTION: Tween = Tween::new(320).enter();
+const ENTER_FADE: Tween = Tween::new(180);
 
 #[derive(Clone, Copy)]
 pub(super) struct TrayPlacement {
@@ -27,7 +29,6 @@ pub(super) struct TrayPlacement {
     icon: Option<RECT>,
     work: RECT,
     edge: Edge,
-    align_to: Option<i32>,
 }
 
 impl TrayPlacement {
@@ -91,21 +92,11 @@ impl TrayPlacement {
         let work = bar
             .and_then(|(_, bar)| edge.exclude_bar(work, bar))
             .unwrap_or(work);
-        let strip = edge.strip(screen, work);
-        // A hidden icon may have a rectangle inside the overflow flyout. It
-        // still identifies the display but cannot align a card along the bar.
-        let align_to = icon
-            .filter(|rect| intersection(*rect, strip).is_some())
-            .map(|rect| match edge {
-                Edge::Top | Edge::Bottom => rect.right,
-                Edge::Left | Edge::Right => rect.bottom,
-            });
         Self {
             monitor,
             icon,
             work,
             edge,
-            align_to,
         }
     }
 
@@ -121,16 +112,13 @@ impl TrayPlacement {
         let gap = (GAP_DIPS * dpi as f32 / super::DEFAULT_DPI as f32).round() as i64;
         let (left, right) = origin_limits(self.work.left, self.work.right, width, gap);
         let (top, bottom) = origin_limits(self.work.top, self.work.bottom, height, gap);
-        let align = |extent, min, max| {
-            self.align_to
-                .map_or(max, |end| i64::from(end) - i64::from(extent))
-                .clamp(min, max)
-        };
+        // Match the Python popup and Windows flyouts: sit in the work-area corner at the
+        // end of the taskbar instead of following the icon's position on the bar.
         let (x, y) = match self.edge {
-            Edge::Left => (left, align(height, top, bottom)),
-            Edge::Top => (align(width, left, right), top),
-            Edge::Right => (right, align(height, top, bottom)),
-            Edge::Bottom => (align(width, left, right), bottom),
+            Edge::Left => (left, bottom),
+            Edge::Top => (right, top),
+            Edge::Right => (right, bottom),
+            Edge::Bottom => (right, bottom),
         };
         Placement::new(
             POINT {
@@ -148,16 +136,18 @@ impl TrayPlacement {
         let size = visual.Size()?;
         let (_, offset, pivot) = self.edge.entrance(size.X, size.Y);
         visual.SetCenterPoint(pivot)?;
-        let timing = Tween::new(super::HIDE_MS);
+        // Retreat a short way toward the taskbar while fading, so closing reads as a
+        // quieter echo of the entrance.
+        let timing = Tween::new(super::HIDE_MS).exit();
         animator.offset(
             visual,
-            Vector3::new(offset.X * 2.0 / 3.0, offset.Y * 2.0 / 3.0, 0.0),
+            Vector3::new(offset.X * 0.5, offset.Y * 0.5, 0.0),
             timing,
         )?;
         animator.animate_v3(
             &visual.cast()?,
             windows::core::h!("Scale"),
-            Vector3::new(0.97, 0.97, 1.0),
+            Vector3::new(0.98, 0.98, 1.0),
             timing,
             |scale| visual.SetScale(scale),
         )?;
@@ -171,20 +161,21 @@ impl TrayPlacement {
         let animator = Animator::new(scene.compositor(), policy)?;
         let visual = scene.motion_root();
         let size = visual.Size()?;
-        let (axis, offset, pivot) = self.edge.entrance(size.X, size.Y);
+        let (_, offset, pivot) = self.edge.entrance(size.X, size.Y);
         visual.SetCenterPoint(pivot)?;
         visual.SetOffset(offset)?;
-        visual.SetScale(Vector3::new(0.94, 0.94, 1.0))?;
+        visual.SetScale(Vector3::new(ENTER_SCALE, ENTER_SCALE, 1.0))?;
         visual.SetOpacity(0.0)?;
-        animator.spring(
+        // Glide in without overshoot: a bounce at the screen edge reads as jitter.
+        animator.offset(visual, Vector3::default(), ENTER_MOTION)?;
+        animator.animate_v3(
             &visual.cast()?,
-            "Offset",
-            &[(axis, 0.0)],
-            ENTER_SPRING,
-            || visual.SetOffset(Vector3::default()),
+            windows::core::h!("Scale"),
+            Vector3::new(1.0, 1.0, 1.0),
+            ENTER_MOTION,
+            |scale| visual.SetScale(scale),
         )?;
-        animator.spring_scale(visual, 1.0, ENTER_SPRING)?;
-        animator.opacity(visual, 1.0, Tween::new(220))
+        animator.opacity(visual, 1.0, ENTER_FADE)
     }
 }
 

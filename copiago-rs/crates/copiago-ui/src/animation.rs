@@ -53,10 +53,33 @@ impl MotionPolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Curve {
+    /// Soft start and a long, quiet settle. Use for moves and state changes.
+    #[default]
+    Standard,
+    /// Arrives quickly and glides to rest. Use for elements entering the scene.
+    Decelerate,
+    /// Leaves gently, then gets out of the way. Use for elements leaving the scene.
+    Accelerate,
+}
+
+impl Curve {
+    /// Cubic Bezier control points `(x1, y1, x2, y2)`.
+    pub const fn points(self) -> [f32; 4] {
+        match self {
+            Self::Standard => [0.2, 0.0, 0.0, 1.0],
+            Self::Decelerate => [0.05, 0.7, 0.1, 1.0],
+            Self::Accelerate => [0.3, 0.0, 0.8, 0.15],
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Tween {
     pub duration_ms: u32,
     pub delay_ms: u32,
+    pub curve: Curve,
 }
 
 impl Tween {
@@ -68,7 +91,20 @@ impl Tween {
         Self {
             duration_ms,
             delay_ms,
+            curve: Curve::Standard,
         }
+    }
+
+    pub const fn enter(self) -> Self {
+        self.with(Curve::Decelerate)
+    }
+
+    pub const fn exit(self) -> Self {
+        self.with(Curve::Accelerate)
+    }
+
+    pub const fn with(self, curve: Curve) -> Self {
+        Self { curve, ..self }
     }
 }
 
@@ -106,15 +142,22 @@ impl Spring {
 pub struct Animator {
     compositor: Compositor,
     easing: CubicBezierEasingFunction,
+    decelerate: CubicBezierEasingFunction,
+    accelerate: CubicBezierEasingFunction,
     policy: MotionPolicy,
 }
 
 impl Animator {
     pub fn new(compositor: &Compositor, policy: MotionPolicy) -> Result<Self> {
+        let curve = |curve: Curve| {
+            let [x1, y1, x2, y2] = curve.points();
+            compositor.CreateCubicBezierEasingFunction(Vector2::new(x1, y1), Vector2::new(x2, y2))
+        };
         Ok(Self {
             compositor: compositor.clone(),
-            easing: compositor
-                .CreateCubicBezierEasingFunction(Vector2::new(0.1, 0.9), Vector2::new(0.2, 1.0))?,
+            easing: curve(Curve::Standard)?,
+            decelerate: curve(Curve::Decelerate)?,
+            accelerate: curve(Curve::Accelerate)?,
             policy,
         })
     }
@@ -125,6 +168,14 @@ impl Animator {
 
     pub fn easing(&self) -> &CubicBezierEasingFunction {
         &self.easing
+    }
+
+    pub fn curve(&self, curve: Curve) -> &CubicBezierEasingFunction {
+        match curve {
+            Curve::Standard => &self.easing,
+            Curve::Decelerate => &self.decelerate,
+            Curve::Accelerate => &self.accelerate,
+        }
     }
 
     pub fn policy(&self) -> MotionPolicy {
@@ -151,7 +202,7 @@ impl Animator {
             return set(value);
         }
         let animation = self.compositor.CreateScalarKeyFrameAnimation()?;
-        animation.InsertKeyFrameWithEasingFunction(1.0, value, &self.easing)?;
+        animation.InsertKeyFrameWithEasingFunction(1.0, value, self.curve(timing.curve))?;
         configure(&animation, timing)?;
         target.StartAnimation(property, &animation)
     }
@@ -168,7 +219,7 @@ impl Animator {
         }
         let animation = self.compositor.CreateColorKeyFrameAnimation()?;
         animation.SetInterpolationColorSpace(CompositionColorSpace::Rgb)?;
-        animation.InsertKeyFrameWithEasingFunction(1.0, value, &self.easing)?;
+        animation.InsertKeyFrameWithEasingFunction(1.0, value, self.curve(timing.curve))?;
         configure(&animation, timing)?;
         brush.StartAnimation(h!("Color"), &animation)
     }
@@ -187,7 +238,7 @@ impl Animator {
             return set(value);
         }
         let animation = self.compositor.CreateVector2KeyFrameAnimation()?;
-        animation.InsertKeyFrameWithEasingFunction(1.0, value, &self.easing)?;
+        animation.InsertKeyFrameWithEasingFunction(1.0, value, self.curve(timing.curve))?;
         configure(&animation, timing)?;
         target.StartAnimation(property, &animation)
     }
@@ -206,7 +257,7 @@ impl Animator {
             return set(value);
         }
         let animation = self.compositor.CreateVector3KeyFrameAnimation()?;
-        animation.InsertKeyFrameWithEasingFunction(1.0, value, &self.easing)?;
+        animation.InsertKeyFrameWithEasingFunction(1.0, value, self.curve(timing.curve))?;
         configure(&animation, timing)?;
         target.StartAnimation(property, &animation)
     }

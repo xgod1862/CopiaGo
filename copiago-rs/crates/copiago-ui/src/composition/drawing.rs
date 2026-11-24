@@ -41,6 +41,9 @@ use windows::{
 };
 use windows_numerics::{Matrix3x2, Vector2};
 
+/// Largest preview edge in pixels: a full-width card at very high display scales.
+pub const MAX_THUMBNAIL_SIDE: u32 = 1600;
+
 /// Weight in Microsoft YaHei UI. DirectWrite supplies fallback for other scripts.
 #[derive(Clone, Copy, Debug, Default)]
 pub enum Font {
@@ -217,8 +220,8 @@ impl Drawing {
         let stride = width.checked_mul(4).unwrap_or_default();
         if width == 0
             || height == 0
-            || width > 88
-            || height > 56
+            || width > MAX_THUMBNAIL_SIDE
+            || height > MAX_THUMBNAIL_SIDE
             || stride as usize * height as usize != straight_bgra.len()
         {
             return Err(Error::new(

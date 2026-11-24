@@ -41,7 +41,7 @@ fn all_taskbar_edges_anchor_inside_the_correct_monitor_at_each_dpi() {
             rect(-2560, -1440, -2512, 0),
             rect(-2512, -1440, 0, 0),
             rect(-2552, -400, -2528, -376),
-            Vector3::new(-36.0, 0.0, 0.0),
+            Vector3::new(-18.0, 0.0, 0.0),
             Vector3::new(0.0, 226.0, 0.0),
         ),
         (
@@ -49,7 +49,7 @@ fn all_taskbar_edges_anchor_inside_the_correct_monitor_at_each_dpi() {
             rect(-2560, -1440, 0, -1392),
             rect(-2560, -1392, 0, 0),
             rect(-850, -1428, -826, -1404),
-            Vector3::new(0.0, -36.0, 0.0),
+            Vector3::new(0.0, -18.0, 0.0),
             Vector3::new(196.0, 0.0, 0.0),
         ),
         (
@@ -57,7 +57,7 @@ fn all_taskbar_edges_anchor_inside_the_correct_monitor_at_each_dpi() {
             rect(-48, -1440, 0, 0),
             rect(-2560, -1440, -48, 0),
             rect(-42, -400, -18, -376),
-            Vector3::new(36.0, 0.0, 0.0),
+            Vector3::new(18.0, 0.0, 0.0),
             Vector3::new(392.0, 226.0, 0.0),
         ),
         (
@@ -65,7 +65,7 @@ fn all_taskbar_edges_anchor_inside_the_correct_monitor_at_each_dpi() {
             rect(-2560, -48, 0, 0),
             rect(-2560, -1440, 0, -48),
             rect(-850, -42, -826, -18),
-            Vector3::new(0.0, 36.0, 0.0),
+            Vector3::new(0.0, 18.0, 0.0),
             Vector3::new(196.0, 452.0, 0.0),
         ),
     ] {
@@ -84,26 +84,26 @@ fn all_taskbar_edges_anchor_inside_the_correct_monitor_at_each_dpi() {
             let expected = match edge {
                 Edge::Left => rect(
                     work.left + gap,
-                    icon.bottom - height,
+                    work.bottom - gap - height,
                     work.left + gap + width,
-                    icon.bottom,
+                    work.bottom - gap,
                 ),
                 Edge::Top => rect(
-                    icon.right - width,
+                    work.right - gap - width,
                     work.top + gap,
-                    icon.right,
+                    work.right - gap,
                     work.top + gap + height,
                 ),
                 Edge::Right => rect(
                     work.right - gap - width,
-                    icon.bottom - height,
+                    work.bottom - gap - height,
                     work.right - gap,
-                    icon.bottom,
+                    work.bottom - gap,
                 ),
                 Edge::Bottom => rect(
-                    icon.right - width,
+                    work.right - gap - width,
                     work.bottom - gap - height,
-                    icon.right,
+                    work.right - gap,
                     work.bottom - gap,
                 ),
             };
@@ -114,7 +114,7 @@ fn all_taskbar_edges_anchor_inside_the_correct_monitor_at_each_dpi() {
 }
 
 #[test]
-fn overflow_and_missing_icons_use_the_corner_of_the_actual_taskbar_edge() {
+fn any_icon_position_uses_the_corner_of_the_actual_taskbar_edge() {
     let work = rect(-2500, -1440, 0, -48);
     let bar = rect(-2560, -48, 0, 0);
     let flyout_icon = rect(-350, -160, -326, -136);
@@ -130,7 +130,7 @@ fn overflow_and_missing_icons_use_the_corner_of_the_actual_taskbar_edge() {
     let icon = rect(-140, -42, -116, -18);
     let anchor = anchor(work, None, Some(icon));
     assert_eq!(anchor.edge, Edge::Bottom);
-    assert_eq!(card_box(anchor.place(CARD, 96).unwrap()).right, -116);
+    assert_eq!(card_box(anchor.place(CARD, 96).unwrap()).right, -12);
 }
 
 #[test]

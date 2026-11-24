@@ -19,7 +19,7 @@ pub(super) const SOURCES: [Source<'static>; 3] = [
     },
 ];
 
-// Fixed sizes and SHA-256 from source/iphone_clip/developer_setup.py.
+// Fixed sizes and SHA-256 from the Python 1.2.0 developer_setup.py.
 pub(super) const PERSONALIZED: Package = Package {
     folder: "Xcode_iOS_DDI_Personalized",
     files: &[

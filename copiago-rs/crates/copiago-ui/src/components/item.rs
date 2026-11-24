@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::{
-    animation::{Animator, MotionPolicy, Spring, Tween},
+    animation::{Animator, MotionPolicy, Tween},
     composition::{Font, PopupScene, RoundedRectangle, rounded_rectangle},
 };
 
@@ -18,8 +18,8 @@ use windows::{
 };
 use windows_numerics::{Vector2, Vector3};
 
-const REFLOW_MS: u32 = 420;
-const EXIT_MS: u32 = 250;
+const REFLOW_MS: u32 = 340;
+const EXIT_MS: u32 = 180;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ItemKind {
@@ -32,7 +32,8 @@ pub enum ItemKind {
 impl ItemKind {
     fn tile(self, theme: &Theme) -> (char, Color, Color) {
         match self {
-            Self::Text => ('\u{E8A1}', theme.tint, theme.accent),
+            // Lines of a paragraph; the old glyph looked like a preview pane.
+            Self::Text => ('\u{E8E4}', theme.tint, theme.accent),
             Self::Link => ('\u{E71B}', theme.link_tint, theme.link_ink),
             Self::Image => ('\u{EB9F}', theme.tint, theme.accent),
             Self::File => ('\u{E7C3}', theme.file_tint, theme.disconnected.text),
@@ -73,7 +74,9 @@ impl ItemAction {
                 if copied { '\u{E73E}' } else { '\u{E8C8}' },
                 ButtonStyle::Primary,
             ),
-            Self::Send => ('\u{E898}', ButtonStyle::Tinted),
+            // A paper plane reads as "send"; the old upload arrow looked like "pin to top".
+            // Neutral fill: a tinted one disappears on the tinted selected card.
+            Self::Send => ('\u{E724}', ButtonStyle::Neutral),
             Self::Delete => ('\u{E74D}', ButtonStyle::Danger),
         }
     }
@@ -86,12 +89,20 @@ pub struct ItemLayout {
     pub height: f32,
     pub kind: ItemKind,
     pub actions: ItemActions,
+    /// Height of a full-width image preview, or 0 for the compact icon tile.
+    pub media: f32,
 }
 
 impl ItemLayout {
     pub const ROW_HEIGHT: f32 = 60.0;
     pub const GAP: f32 = 8.0;
     pub const TITLE_SIZE: f32 = 14.0;
+    /// Inset of a full-width image inside its card.
+    pub const MEDIA_INSET: f32 = 6.0;
+    /// Detail line and actions below a full-width image. Pictures carry no title.
+    pub const MEDIA_STRIP: f32 = 46.0;
+    pub const MEDIA_MIN: f32 = 84.0;
+    pub const MEDIA_MAX: f32 = 148.0;
 
     pub const fn new(width: f32, height: f32, kind: ItemKind, actions: ItemActions) -> Self {
         Self {
@@ -99,7 +110,55 @@ impl ItemLayout {
             height,
             kind,
             actions,
+            media: 0.0,
         }
+    }
+
+    /// An image card whose preview spans the row. `aspect` is width over height;
+    /// the preview height is clamped and the picture is cropped to fill it.
+    pub fn image(width: f32, aspect: Option<f32>, actions: ItemActions) -> Self {
+        let inner = width - Self::MEDIA_INSET * 2.0;
+        let media = aspect
+            .filter(|aspect| aspect.is_finite() && *aspect > 0.0)
+            .map_or(120.0, |aspect| inner / aspect)
+            .clamp(Self::MEDIA_MIN, Self::MEDIA_MAX)
+            .round();
+        Self {
+            width,
+            height: Self::MEDIA_INSET + media + Self::MEDIA_STRIP,
+            kind: ItemKind::Image,
+            actions,
+            media,
+        }
+    }
+
+    pub fn has_media(self) -> bool {
+        self.media > 0.0
+    }
+
+    /// Top of the text and action area.
+    fn strip_top(self) -> f32 {
+        if self.has_media() {
+            Self::MEDIA_INSET + self.media
+        } else {
+            0.0
+        }
+    }
+
+    fn title_center(self) -> f32 {
+        21.0
+    }
+
+    fn detail_center(self) -> f32 {
+        if self.has_media() {
+            self.strip_top() + Self::MEDIA_STRIP / 2.0
+        } else {
+            self.height - 19.0
+        }
+    }
+
+    fn tile_radius(self) -> f32 {
+        if self.has_media() { 11.0 } else { 10.0 }
     }
 
     pub fn selected_text_height(lines: usize) -> f32 {
@@ -111,6 +170,14 @@ impl ItemLayout {
     }
 
     pub fn tile(self) -> Rect {
+        if self.has_media() {
+            return Rect::new(
+                Self::MEDIA_INSET,
+                Self::MEDIA_INSET,
+                self.width - Self::MEDIA_INSET * 2.0,
+                self.media,
+            );
+        }
         let width = if self.kind == ItemKind::Image {
             56.0
         } else {
@@ -120,7 +187,9 @@ impl ItemLayout {
     }
 
     pub fn text_left(self) -> f32 {
-        if self.kind == ItemKind::Image {
+        if self.has_media() {
+            14.0
+        } else if self.kind == ItemKind::Image {
             80.0
         } else {
             60.0
@@ -140,7 +209,12 @@ impl ItemLayout {
             | (ItemActions::CopySendDelete, ItemAction::Send) => 1.0,
             (ItemActions::CopySendDelete, ItemAction::Delete) => 2.0,
         };
-        Some(Rect::new(self.width - 44.0 - 40.0 * slot, 14.0, 32.0, 32.0))
+        let top = if self.has_media() {
+            self.strip_top() + (Self::MEDIA_STRIP - 32.0) / 2.0
+        } else {
+            14.0
+        };
+        Some(Rect::new(self.width - 44.0 - 40.0 * slot, top, 32.0, 32.0))
     }
 
     pub fn hit_action(self, point: Vector2) -> Option<ItemAction> {
@@ -220,33 +294,39 @@ impl ListItem {
         visual.Children()?.InsertAtTop(&entrance)?;
         entrance.Children()?.InsertAtTop(&press)?;
 
+        // A selected row reads through a soft accent tint rather than an outline.
         let colors = if selected {
-            (theme.white, theme.white)
+            (theme.tint, theme.tint_hover)
         } else {
             (theme.card, theme.card_hover)
         };
         let compositor = scene.compositor();
         let children = press.Children()?;
-        let background = if selected {
-            let border = rounded_rectangle(compositor, bounds.size(), 16.0, theme.accent)?;
-            children.InsertAtBottom(&border.visual)?;
-            let background = rounded_rectangle(
-                compositor,
-                Vector2::new(layout.width - 3.0, layout.height - 3.0),
-                14.5,
-                colors.0,
-            )?;
-            background.visual.SetOffset(xy(1.5, 1.5))?;
-            background
-        } else {
-            rounded_rectangle(compositor, bounds.size(), 16.0, colors.0)?
-        };
+        let background = rounded_rectangle(compositor, bounds.size(), 16.0, colors.0)?;
         children.InsertAtTop(&background.visual)?;
 
         let (glyph, tile_fill, tile_ink) = layout.kind.tile(theme);
+        // On the tinted selected card the tinted tile would vanish; lift it to white.
+        let tile_fill = if layout.has_media() {
+            // A neutral backdrop frames pictures, including ones close to the card colour.
+            theme.control_hover
+        } else if selected && tile_fill == theme.tint {
+            theme.white
+        } else {
+            tile_fill
+        };
         let tile = holder(scene, layout.tile())?;
-        let tile_fill = rounded_rectangle(compositor, layout.tile().size(), 10.0, tile_fill)?;
-        let icon = scene.icon(glyph, 18.0, tile_ink)?;
+        let tile_fill = rounded_rectangle(
+            compositor,
+            layout.tile().size(),
+            layout.tile_radius(),
+            tile_fill,
+        )?;
+        let icon = scene.icon(
+            glyph,
+            if layout.has_media() { 28.0 } else { 18.0 },
+            tile_ink,
+        )?;
         center(
             &icon,
             Rect::new(0.0, 0.0, layout.tile().width, layout.tile().height),
@@ -256,7 +336,12 @@ impl ListItem {
             let clip = compositor.CreateGeometricClipWithGeometry(&tile_fill.geometry)?;
             tile.SetClip(&clip)?;
             let placeholder = compositor.CreateContainerVisual()?;
-            placeholder.Children()?.InsertAtBottom(&tile_fill.visual)?;
+            if layout.has_media() {
+                // The backdrop stays behind a contained picture; only the icon hides.
+                tile.Children()?.InsertAtBottom(&tile_fill.visual)?;
+            } else {
+                placeholder.Children()?.InsertAtBottom(&tile_fill.visual)?;
+            }
             placeholder.Children()?.InsertAtTop(&icon.visual)?;
             tile.Children()?.InsertAtBottom(&placeholder)?;
             Some(ImageTile {
@@ -276,6 +361,7 @@ impl ListItem {
             .title
             .iter()
             .take(if expanded { 3 } else { 1 })
+            .filter(|_| !layout.has_media())
             .enumerate()
         {
             let width = if expanded {
@@ -294,7 +380,7 @@ impl ListItem {
             let y = if expanded {
                 12.0 + index as f32 * 20.0
             } else {
-                21.0 - label.size.Y / 2.0
+                layout.title_center() - label.size.Y / 2.0
             };
             label.visual.SetOffset(xy(layout.text_left(), y))?;
             children.InsertAtTop(&label.visual)?;
@@ -309,12 +395,16 @@ impl ListItem {
             content.detail,
             Font::Regular,
             12.0,
-            layout.width - 14.0 - layout.text_left(),
+            if layout.has_media() {
+                layout.text_width()
+            } else {
+                layout.width - 14.0 - layout.text_left()
+            },
             ink,
         )?;
         detail.visual.SetOffset(xy(
             layout.text_left(),
-            layout.height - 19.0 - detail.size.Y / 2.0,
+            layout.detail_center() - detail.size.Y / 2.0,
         ))?;
         children.InsertAtTop(&detail.visual)?;
 
@@ -399,15 +489,21 @@ impl ListItem {
             return Ok(());
         }
         let target = self.position.target();
-        let from = Vector2::new(target.X, target.Y - 18.0);
+        let from = Vector2::new(target.X, target.Y - 10.0);
         animator.implicit_offset(&self.visual, 0)?;
         self.visual.SetOffset(at(from))?;
         self.entrance.SetOpacity(0.0)?;
-        self.entrance.SetScale(Vector3::new(0.97, 0.97, 1.0))?;
+        self.entrance.SetScale(Vector3::new(0.98, 0.98, 1.0))?;
         animator.implicit_offset(&self.visual, REFLOW_MS)?;
         self.visual.SetOffset(at(target))?;
-        animator.opacity(&self.entrance, 1.0, Tween::delayed(300, 60))?;
-        animator.spring_scale(&self.entrance, 1.0, Spring::new(60, 0.7))?;
+        animator.opacity(&self.entrance, 1.0, Tween::delayed(220, 40))?;
+        animator.animate_v3(
+            &self.entrance.cast()?,
+            h!("Scale"),
+            Vector3::new(1.0, 1.0, 1.0),
+            Tween::new(REFLOW_MS).enter(),
+            |scale| self.entrance.SetScale(scale),
+        )?;
         self.position = OffsetTransition::new(from, target, now, REFLOW_MS);
         self.position_policy = Some(animator.policy());
         Ok(())
@@ -429,11 +525,11 @@ impl ListItem {
                     &clip.cast()?,
                     h!("BottomInset"),
                     self.layout.height,
-                    Tween::new(EXIT_MS),
+                    Tween::new(EXIT_MS).exit(),
                     |height| clip.SetBottomInset(height),
                 )?;
             }
-            animator.opacity(&self.entrance, 0.0, Tween::new(EXIT_MS))
+            animator.opacity(&self.entrance, 0.0, Tween::new(EXIT_MS).exit())
         })
     }
 
@@ -484,7 +580,52 @@ impl ListItem {
         Ok(())
     }
 
-    /// The thumbnail is an unparented visual in 56 × 36 local DIPs. Passing
+    /// Centre a contained picture in a full-width slot and round its own corners.
+    fn place_media(&self, thumbnail: &Visual) -> Result<()> {
+        if !self.layout.has_media() {
+            return Ok(());
+        }
+        let slot = self.layout.tile().size();
+        let size = thumbnail.Size()?;
+        thumbnail.SetOffset(xy(
+            ((slot.X - size.X) / 2.0).round(),
+            ((slot.Y - size.Y) / 2.0).round(),
+        ))?;
+        let compositor = thumbnail.Compositor()?;
+        let shape = compositor.CreateRoundedRectangleGeometry()?;
+        shape.SetSize(size)?;
+        let radius = 8.0_f32.min(size.X / 2.0).min(size.Y / 2.0);
+        shape.SetCornerRadius(Vector2::new(radius, radius))?;
+        thumbnail.SetClip(&compositor.CreateGeometricClipWithGeometry(&shape)?)?;
+        Ok(())
+    }
+
+    /// Detach the loaded picture so a repainted copy of this row can reuse it.
+    pub fn take_thumbnail(&mut self) -> Result<Option<Visual>> {
+        let (Some(tile), Some(thumbnail)) = (&self.image_tile, self.thumbnail.take()) else {
+            return Ok(None);
+        };
+        tile.visual.Children()?.Remove(&thumbnail)?;
+        tile.placeholder.SetIsVisible(true)?;
+        Ok(Some(thumbnail))
+    }
+
+    /// Show a picture taken from the previous paint of this row, without a fade.
+    pub fn adopt_thumbnail(&mut self, thumbnail: &Visual) -> Result<()> {
+        let tile = self
+            .image_tile
+            .as_ref()
+            .ok_or_else(|| Error::new(E_INVALIDARG, "Thumbnail requires an image item"))?;
+        thumbnail.StopAnimation(h!("Opacity"))?;
+        thumbnail.SetOpacity(1.0)?;
+        self.place_media(thumbnail)?;
+        tile.visual.Children()?.InsertAtTop(thumbnail)?;
+        tile.placeholder.SetIsVisible(false)?;
+        self.thumbnail = Some(thumbnail.clone());
+        Ok(())
+    }
+
+    /// The thumbnail is an unparented visual sized to `ItemLayout::tile`. Passing
     /// None restores the placeholder. The image slot clips the thumbnail to its rounded tile.
     pub fn set_thumbnail(&mut self, animator: &Animator, thumbnail: Option<&Visual>) -> Result<()> {
         let tile = self
@@ -496,6 +637,7 @@ impl ListItem {
         }
         let children = tile.visual.Children()?;
         if let Some(thumbnail) = thumbnail {
+            self.place_media(thumbnail)?;
             thumbnail.SetOpacity(if animator.policy().allows_motion() {
                 0.0
             } else {
@@ -516,6 +658,21 @@ impl ListItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_cards_span_the_row_with_a_clamped_height() {
+        let wide = ItemLayout::image(356.0, Some(2.0), ItemActions::CopyDelete);
+        assert_eq!(wide.tile(), Rect::new(6.0, 6.0, 344.0, 148.0));
+        assert_eq!(wide.height, 6.0 + 148.0 + ItemLayout::MEDIA_STRIP);
+        assert_eq!(wide.text_left(), 14.0);
+        let copy = wide.action_bounds(ItemAction::Copy).unwrap();
+        assert_eq!(copy.y, 154.0 + (ItemLayout::MEDIA_STRIP - 32.0) / 2.0);
+        assert!(copy.bottom() <= wide.height);
+        let panorama = ItemLayout::image(356.0, Some(8.0), ItemActions::None);
+        assert_eq!(panorama.tile().height, ItemLayout::MEDIA_MIN);
+        let unknown = ItemLayout::image(356.0, None, ItemActions::None);
+        assert_eq!(unknown.tile().height, 120.0);
+    }
 
     #[test]
     fn selected_rows_reserve_the_python_action_slots() {

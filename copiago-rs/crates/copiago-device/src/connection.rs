@@ -38,6 +38,10 @@ mod tests;
 use clipboard_queue::ClipboardQueue;
 
 const RETRY_DELAY: Duration = Duration::from_secs(4);
+// After this many consecutive misses the phone is probably away. Stop blind polling and
+// wait for its network announcement, with a slow timer as a safety net.
+const FAST_RETRIES: u32 = 6;
+const IDLE_RETRY: Duration = Duration::from_secs(30);
 const MULTIPLE_RECORDS_DELAY: Duration = Duration::from_secs(5);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
 // Budget a maximum-size Windows PNG plus room for queue entries and small copies.
@@ -113,6 +117,7 @@ pub async fn run_device(
         data_dir,
         addr: &addr,
         options,
+        cable_attached: Cell::new(false),
     };
     let (detached, events) = mpsc::channel(16);
     let mut inputs = Inputs {
@@ -140,6 +145,12 @@ trait Backend {
     ) -> Result<DeviceInfo, PairingError>;
     fn forget(&self) -> std::io::Result<()>;
     async fn usb_id(&self, device: &PairedDevice) -> Result<Option<u32>, UsbProbeError>;
+    /// Told before each Wi-Fi attempt whether the paired phone is also on USB.
+    fn set_cable_attached(&self, _attached: bool) {}
+    /// Resolves when the paired phone reappears on the network. The default never does.
+    async fn advertisement(&self, _device: &PairedDevice) {
+        pending::<()>().await;
+    }
     async fn session(
         &self,
         device: &PairedDevice,
@@ -249,7 +260,7 @@ impl Failure {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum WaitMode {
     Setup,
     User,
@@ -286,6 +297,8 @@ struct DeviceState {
     serial: Option<String>,
     clipboard: PasteboardState,
     first_setup: bool,
+    /// Consecutive reconnect waits since the last ready session.
+    misses: u32,
 }
 
 impl DeviceState {
@@ -343,10 +356,12 @@ async fn connect_or_wait(
         Err(_) => "unavailable",
     };
     diagnostic::event(format_args!("paired_records={records}"));
+    let mut paired = None;
     let wait = match pairing {
         Ok(device) => {
             state.select(&device);
             let error = connect_cycle(backend, inputs, emit, state, &device).await?;
+            paired = Some(device);
             error.wait(state.first_setup)
         }
         Err(WifiProbeError::NoPairingRecord) => {
@@ -363,10 +378,31 @@ async fn connect_or_wait(
             ..Failure::Wifi(error).wait(false)
         },
     };
+    diagnostic::event(format_args!(
+        "event=wait mode={:?} state={:?}",
+        wait.mode, wait.state
+    ));
     emit_event(emit, DeviceEvent::Status(wait.state, wait.message))?;
-    inputs
-        .drive(wait.mode.timer(), Phase::Waiting(wait.mode), emit)
-        .await
+    let idle = match (wait.mode, &paired) {
+        (WaitMode::Reconnect, Some(device)) => {
+            state.misses = state.misses.saturating_add(1);
+            (state.misses > FAST_RETRIES).then_some(device)
+        }
+        _ => None,
+    };
+    let timer = async {
+        let Some(device) = idle else {
+            return wait.mode.timer().await;
+        };
+        sleep(RETRY_DELAY).await;
+        tokio::select! {
+            () = backend.advertisement(device) => {
+                diagnostic::event(format_args!("event=advertisement_seen"));
+            }
+            () = sleep(IDLE_RETRY - RETRY_DELAY) => {}
+        }
+    };
+    inputs.drive(timer, Phase::Waiting(wait.mode), emit).await
 }
 
 async fn setup(
@@ -421,14 +457,26 @@ async fn connect_cycle(
     state: &mut DeviceState,
     device: &PairedDevice,
 ) -> Result<Failure, Interrupted> {
+    // Look for the cable first: with the phone on USB, a silent Wi-Fi side should not hold
+    // up the fallback for the full discovery window.
+    let cable = inputs
+        .drive(backend.usb_id(device), Phase::Lookup, emit)
+        .await?;
+    backend.set_cable_attached(matches!(cable, Ok(Some(_))));
     let wifi = attempt(backend, inputs, emit, state, device, Transport::Wifi).await?;
     if !wifi.allows_usb() {
         return Ok(wifi);
     }
-    match inputs
-        .drive(backend.usb_id(device), Phase::Lookup, emit)
-        .await?
-    {
+    let cable = match cable {
+        Ok(Some(id)) => Ok(Some(id)),
+        // The cable may have been plugged in during the Wi-Fi attempt.
+        _ => {
+            inputs
+                .drive(backend.usb_id(device), Phase::Lookup, emit)
+                .await?
+        }
+    };
+    match cable {
         Ok(Some(id)) => {
             let usb = attempt(backend, inputs, emit, state, device, Transport::Usb(id)).await?;
             Ok(wifi.after_usb(usb))
@@ -479,6 +527,7 @@ async fn attempt(
     let result = inputs.drive(session, Phase::Session(&active), emit).await;
     if active.ready.get() {
         state.first_setup = false;
+        state.misses = 0;
     }
     let ended = match result {
         Ok(Err(error)) => Ok(error),
@@ -486,6 +535,12 @@ async fn attempt(
         Ok(Ok(())) | Err(Interrupted::Stop) => return Err(Interrupted::Stop),
         Err(other) => Err(other),
     };
+    if let Ok(failure) = &ended {
+        diagnostic::event(format_args!(
+            "event=attempt_failed transport={transport:?} ready={} failure={failure:?}",
+            active.ready.get()
+        ));
+    }
     for id in active.outstanding_pushes.into_inner() {
         emit_event(
             emit,

@@ -16,6 +16,7 @@ fn history(ids: &[i64], enabled: bool) -> HistoryList {
                 created: "2026-11-24T14:23".into(),
                 kind: "text".into(),
                 preview: b"synthetic".to_vec(),
+                ..Entry::default()
             })
             .collect(),
     }

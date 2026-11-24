@@ -4,7 +4,7 @@
 mod text;
 mod view;
 
-pub use view::{HistoryControl, HistoryLayout, HistoryView, ThumbnailPixels};
+pub use view::{HistoryControl, HistoryLayout, HistoryView, ThumbnailPixels, ThumbnailRequest};
 
 use std::time::{Duration, Instant};
 

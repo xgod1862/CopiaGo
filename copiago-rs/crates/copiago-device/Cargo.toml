@@ -6,5 +6,23 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+idevice = { version = "=0.1.68", default-features = false, features = ["remote_pairing", "ring"] }
+tokio = { version = "1", default-features = false, features = ["sync", "time"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_Dns",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+copiago-core = { path = "../copiago-core" }
+plist = { version = "1", default-features = false }
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "test-util"] }
+zeroize = "1.9"
+
 [lints]
 workspace = true

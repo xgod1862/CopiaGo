@@ -29,7 +29,7 @@ const IMAGE_FORMATS: [(&str, &str); 6] = [
     ("org.webmproject.webp", "image/webp"),
 ];
 const WEB_ARCHIVE: &str = "com.apple.webarchive";
-const DESCRIPTION_BYTES: i64 = 256 * 1024;
+pub(super) const DESCRIPTION_BYTES: i64 = 256 * 1024;
 
 #[derive(Default)]
 pub(super) struct Snapshot {
@@ -38,6 +38,7 @@ pub(super) struct Snapshot {
 }
 
 struct Item {
+    index: usize,
     types: Vec<String>,
     entries: Dictionary,
 }
@@ -56,8 +57,10 @@ impl Snapshot {
             .and_then(Value::into_array)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(Value::into_dictionary)
-            .map(|mut item| Item {
+            .enumerate()
+            .filter_map(|(index, item)| Some((index, item.into_dictionary()?)))
+            .map(|(index, mut item)| Item {
+                index,
                 types: item
                     .remove("types")
                     .and_then(Value::into_array)
@@ -78,6 +81,13 @@ impl Snapshot {
         self.items
             .iter()
             .flat_map(|item| item.types.iter().map(String::as_str))
+    }
+
+    pub(super) fn file_item_index(&self, uti: &str) -> Option<usize> {
+        self.items.iter().find_map(|item| {
+            item.entries.get(uti)?.as_dictionary()?;
+            Some(item.index)
+        })
     }
 
     pub(super) fn take_entry(&mut self, uti: &str) -> Option<Dictionary> {
@@ -180,6 +190,10 @@ impl Item {
 
 pub(super) fn change_id(board: &Dictionary) -> Option<PasteboardChange> {
     let metadata = board.get("metadata")?.as_dictionary()?;
+    metadata_change_id(metadata)
+}
+
+pub(super) fn metadata_change_id(metadata: &Dictionary) -> Option<PasteboardChange> {
     let count = metadata.get("changeCount")?.as_signed_integer()?;
     // Keep a typed representation: equal-looking text and binary nonces are
     // different. RemoteXPC maps XPC null to an empty plist string.

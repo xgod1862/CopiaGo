@@ -20,7 +20,8 @@ idevice = { version = "=0.1.68", default-features = false, features = [
     "rsd",
 ] }
 plist = { version = "1", default-features = false }
-tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "macros", "sync"] }
+sha2 = { version = "0.10", default-features = false }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "macros", "sync", "io-util"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v3"] }
 windows-sys = { version = "0.59", features = [
@@ -35,7 +36,12 @@ zeroize = "1.9"
 
 [target.'cfg(windows)'.dev-dependencies]
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
-tokio = { version = "1", default-features = false, features = ["io-util", "test-util"] }
+tokio = { version = "1", default-features = false, features = ["fs", "test-util"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true

@@ -17,8 +17,9 @@ use windows::{
                 GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, LoadCursorW, PostMessageW,
                 RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
                 SWP_SHOWWINDOW, SetForegroundWindow, SetLayeredWindowAttributes, SetWindowLongPtrW,
-                SetWindowPos, ShowWindow, WM_APP, WM_CLOSE, WM_DPICHANGED, WM_NCCREATE,
-                WM_NCDESTROY, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+                SetWindowPos, ShowWindow, WM_APP, WM_CLOSE, WM_DESTROY, WM_DPICHANGED,
+                WM_GETOBJECT, WM_KILLFOCUS, WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS,
+                WM_SETTINGCHANGE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
                 WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
                 WS_POPUP,
             },
@@ -28,6 +29,7 @@ use windows::{
 };
 
 use super::{DEFAULT_DPI, PopupBounds, SHADOW_MARGIN, bounded_radius};
+use crate::focus::PopupInteraction;
 
 const CLASS: PCWSTR = w!("CopiaGo.CompositionPopup");
 pub(super) const DPI_CHANGED: u32 = WM_APP + 1;
@@ -36,6 +38,12 @@ pub(super) const CLOSE_POPUP: u32 = WM_APP + 2;
 pub const POPUP_SETTINGS_CHANGED: u32 = WM_APP + 3;
 
 type DpiChange = (u32, POINT);
+
+#[derive(Default)]
+struct WindowData {
+    dpi_change: Cell<Option<DpiChange>>,
+    interaction: PopupInteraction,
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Placement {
@@ -87,12 +95,12 @@ pub(super) struct PopupWindows {
     // Destroy the owned visual window before its input owner and window data.
     visual: Window,
     input: Window,
-    change: Box<Cell<Option<DpiChange>>>,
+    data: Box<WindowData>,
 }
 
 impl PopupWindows {
     pub(super) fn new() -> Result<Self> {
-        let change = Box::new(Cell::new(None));
+        let data = Box::<WindowData>::default();
         // SAFETY: The module, class strings and window procedure live for the
         // process. The Box keeps the input window data alive until destruction.
         unsafe {
@@ -123,7 +131,7 @@ impl PopupWindows {
                 None,
                 None,
                 Some(instance),
-                Some(std::ptr::from_ref(change.as_ref()).cast()),
+                Some(std::ptr::from_ref(data.as_ref()).cast()),
             )?);
 
             // HWND hit testing cannot see the compositor's alpha. A layered,
@@ -152,7 +160,7 @@ impl PopupWindows {
             Ok(Self {
                 visual,
                 input,
-                change,
+                data,
             })
         }
     }
@@ -163,6 +171,10 @@ impl PopupWindows {
 
     pub(super) fn visual(&self) -> HWND {
         self.visual.0
+    }
+
+    pub(super) fn interaction(&self) -> &PopupInteraction {
+        &self.data.interaction
     }
 
     pub(super) fn dpi_at(&self, position: POINT) -> Result<u32> {
@@ -177,7 +189,7 @@ impl PopupWindows {
                 1,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             )?;
-            self.change.set(None);
+            self.data.dpi_change.set(None);
             let dpi = GetDpiForWindow(self.input.0);
             if dpi == 0 {
                 Err(Error::from_hresult(E_FAIL))
@@ -188,7 +200,7 @@ impl PopupWindows {
     }
 
     pub(super) fn take_dpi_change(&self) -> Option<DpiChange> {
-        self.change.take()
+        self.data.dpi_change.take()
     }
 
     pub(super) fn place(&self, placement: Placement) -> Result<()> {
@@ -260,7 +272,7 @@ impl PopupWindows {
             let _ = ShowWindow(self.visual.0, SW_HIDE);
             let _ = ShowWindow(self.input.0, SW_HIDE);
         }
-        self.change.set(None);
+        self.data.dpi_change.set(None);
     }
 }
 
@@ -283,6 +295,33 @@ extern "system" fn window_proc(
     // window's data remains live until WM_NCDESTROY. WM_DPICHANGED supplies a
     // readable RECT for the duration of this callback.
     unsafe {
+        let data = (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowData).as_ref();
+        if let Some(data) = data {
+            match message {
+                WM_GETOBJECT => {
+                    if let Some(provider) = data.interaction.get_object(hwnd, wparam, lparam) {
+                        return provider;
+                    }
+                }
+                WM_SETFOCUS | WM_KILLFOCUS => {
+                    data.interaction.native_focus(hwnd, message == WM_SETFOCUS);
+                }
+                WM_DESTROY => data.interaction.destroy(hwnd),
+                _ => {}
+            }
+        } else {
+            match message {
+                WM_GETOBJECT => {
+                    if let Some(provider) =
+                        PopupInteraction::decoration_object(hwnd, wparam, lparam)
+                    {
+                        return provider;
+                    }
+                }
+                WM_DESTROY => PopupInteraction::destroy_decoration(hwnd),
+                _ => {}
+            }
+        }
         match message {
             WM_NCCREATE => {
                 let create = &*(lparam.0 as *const CREATESTRUCTW);
@@ -292,24 +331,20 @@ extern "system" fn window_proc(
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             WM_CLOSE => {
-                if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != 0 {
+                if data.is_some() {
                     let _ = PostMessageW(Some(hwnd), CLOSE_POPUP, WPARAM(0), LPARAM(0));
                 }
                 return LRESULT(0);
             }
             WM_SETTINGCHANGE => {
-                if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != 0 {
+                if data.is_some() {
                     let _ = PostMessageW(Some(hwnd), POPUP_SETTINGS_CHANGED, WPARAM(0), LPARAM(0));
                 }
             }
             WM_DPICHANGED => {
-                let change =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Cell<Option<DpiChange>>;
-                if let (Some(change), Some(rect)) =
-                    (change.as_ref(), (lparam.0 as *const RECT).as_ref())
-                {
+                if let (Some(data), Some(rect)) = (data, (lparam.0 as *const RECT).as_ref()) {
                     let dpi = (wparam.0 & 0xffff) as u32;
-                    change.set(Some((
+                    data.dpi_change.set(Some((
                         dpi,
                         POINT {
                             x: rect.left,

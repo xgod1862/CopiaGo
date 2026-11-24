@@ -12,16 +12,18 @@ idevice = { version = "=0.1.68", default-features = false, features = [
     "ring",
     "usbmuxd",
     "core_device_proxy",
+    "notification_proxy",
     "tunnel_tcp_stack",
     "rsd",
 ] }
-tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
+plist = { version = "1", default-features = false }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "macros", "sync"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+windows-sys = { version = "0.59", features = ["Win32_System_SystemInformation"] }
 zeroize = "1.9"
 
 [target.'cfg(windows)'.dev-dependencies]
-plist = { version = "1", default-features = false }
-tokio = { version = "1", default-features = false, features = ["io-util"] }
+tokio = { version = "1", default-features = false, features = ["io-util", "test-util"] }
 
 [lints]
 workspace = true

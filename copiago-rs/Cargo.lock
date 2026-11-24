@@ -119,6 +119,7 @@ dependencies = [
  "plist",
  "tokio",
  "tracing",
+ "windows-sys 0.59.0",
  "zeroize",
 ]
 

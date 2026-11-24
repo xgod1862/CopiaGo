@@ -80,7 +80,7 @@ impl fmt::Display for WifiProbeError {
             Self::InvalidPairingRecord => "invalid RemotePairing record",
             Self::HostName => "could not determine the host name",
             Self::Discovery => "could not start DNS-SD discovery",
-            Self::NoEndpoint => "no RemotePairing endpoint found",
+            Self::NoEndpoint => "no matching RemotePairing endpoint found",
             Self::Connect => "could not connect to the RemotePairing endpoint",
             Self::PairVerify => "RemotePairing pair-verify failed",
             Self::CreateListener => "could not create the CoreDevice tunnel listener",
@@ -129,12 +129,13 @@ async fn open(
     let mut record = record::RemoteRecord::read(&device.path)?;
     let endpoints = match options.address {
         Some(address) => vec![address],
-        None => discovery::discover(record.peer_alt_irk())
-            .await
-            .map_err(|_| WifiProbeError::Discovery)?
-            .iter()
-            .flat_map(discovery::Candidate::addresses)
-            .collect(),
+        None => {
+            let irk = record.peer_alt_irk().ok_or(WifiProbeError::NoEndpoint)?;
+            let candidates = discovery::discover(Some(irk))
+                .await
+                .map_err(|_| WifiProbeError::Discovery)?;
+            discovery::matched_addresses(&candidates)
+        }
     };
 
     let deadline = Instant::now() + CONNECT_TIMEOUT;

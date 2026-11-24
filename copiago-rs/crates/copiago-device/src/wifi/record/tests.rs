@@ -62,6 +62,17 @@ fn legacy_record_is_sealed_with_all_fields_and_migrates_once() {
 }
 
 #[test]
+fn automatic_discovery_requires_the_python_peer_irk_field() {
+    let fixture = TestRecord::new();
+    let mut fields = sample_record();
+    fields.remove("peer_alt_irk");
+    fixture.write_sealed(fields);
+
+    let record = RemoteRecord::read(&fixture.path).unwrap();
+    assert!(record.peer_alt_irk().is_none());
+}
+
+#[test]
 fn refreshed_or_removed_record_is_preserved() {
     let fixture = TestRecord::new();
     fixture.write_sealed(sample_record());

@@ -36,9 +36,9 @@
 | T-WIN-02 | 已合并 | [PR #13](https://github.com/xgod1862/CopiaGo/pull/13) | 接入托盘、单实例和开机启动，验证图标重建和注册表命令。 |
 | T-WIN-03 | 已合并 | [PR #13](https://github.com/xgod1862/CopiaGo/pull/13) | 接入在线更新和发布跳转，保留 Python 的稳定版本比较。 |
 | T-APP-02 | 待真机验证 | [PR #13](https://github.com/xgod1862/CopiaGo/pull/13) | 发布入口默认进入正式托盘，联通窗口、设置、历史和设备状态。 |
-| T-PKG-01 | 已合并 | [M5]({{M5_PR_URL}}) | 交付默认 x64 安装包和便携 ZIP，隔离安装卸载通过。 |
-| T-PKG-02 | 待真机验证 | [M5]({{M5_PR_URL}}) | 真实 Python 1.2.0 副本覆盖后，设置、双来源历史和配对记录兼容。 |
-| T-QA-01 | 待真机验证 | [M5]({{M5_PR_URL}}) | 回归最终二进制、安装占用及离线内存，登记真机和 24 小时欠测项。 |
+| T-PKG-01 | 已合并 | [M5](https://github.com/xgod1862/CopiaGo/pull/14) | 交付默认 x64 安装包和便携 ZIP，隔离安装卸载通过。 |
+| T-PKG-02 | 待真机验证 | [M5](https://github.com/xgod1862/CopiaGo/pull/14) | 真实 Python 1.2.0 副本覆盖后，设置、双来源历史和配对记录兼容。 |
+| T-QA-01 | 待真机验证 | [M5](https://github.com/xgod1862/CopiaGo/pull/14) | 回归最终二进制、安装占用及离线内存，登记真机和 24 小时欠测项。 |
 
 ## 最终构建与目标
 
@@ -57,7 +57,7 @@
 
 M1 的 headless 集成候选在同一局域网上实际连上 5 次，中位 1.923 s。M5 从启动到托盘就绪为 86.53 ms，Wi-Fi 和 USB 只读探针均未建立会话。M5 断线短测 61 点，跨度 120.743 s，专用工作集首末相差 −139,264 B，CPU 平均约占一个逻辑处理器的 0.0891%。最终版已连接空闲 CPU、连机内存和 24 小时稳定性均为未测。 [阶段实测](METRICS.md)
 
-本地 `cargo fmt --check`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked` 和依赖许可证检查通过。248 项默认通过，10 项按原标记忽略，另定向通过 512 MiB 合成接收、Python 双向历史和原生 Windows 探针。 [最终质量检查]({{M5_PR_URL}}/checks) · [复验结果](METRICS.md)
+本地 `cargo fmt --check`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked` 和依赖许可证检查通过。248 项默认通过，10 项按原标记忽略，另定向通过 512 MiB 合成接收、Python 双向历史和原生 Windows 探针。 [最终质量检查](https://github.com/xgod1862/CopiaGo/pull/14/checks) · [复验结果](METRICS.md)
 
 ## 待真机与人工复验
 

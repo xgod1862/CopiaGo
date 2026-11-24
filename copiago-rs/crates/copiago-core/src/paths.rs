@@ -11,6 +11,7 @@ use windows_sys::Win32::System::WindowsProgramming::GetUserNameW;
 mod acl;
 #[cfg(test)]
 mod tests;
+mod upgrade;
 
 pub(crate) use acl::create_private_dir;
 pub use acl::ensure_data_dir;
@@ -39,6 +40,19 @@ pub fn data_dir(mode: RunMode) -> io::Result<PathBuf> {
                 .unwrap_or_default()
         },
     )
+}
+
+/// Prepares the default installed data root and takes over older Python data if necessary.
+/// Explicit overrides and portable runs should continue to use [data_dir].
+pub fn prepare_installed_data_dir(target: PathBuf) -> io::Result<PathBuf> {
+    let legacy = env::var_os("LOCALAPPDATA")
+        .filter(|path| !path.is_empty())
+        .map(|path| PathBuf::from(path).join(LEGACY_DIR_NAME));
+    if let Some(legacy) = legacy {
+        return upgrade::prepare(target, legacy);
+    }
+    ensure_data_dir(&target)?;
+    Ok(target)
 }
 
 fn resolve_data_dir(

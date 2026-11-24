@@ -346,6 +346,13 @@ impl PopupScene {
         self.draw(|drawing| drawing.text(&self.compositor, self.scale(), text, style))
     }
 
+    /// Rasterize wrapped text with an ellipsis at the last visible line if needed.
+    pub fn wrapped_text(&self, text: &str, style: TextStyle, max_lines: u8) -> Result<TextSurface> {
+        self.draw(|drawing| {
+            drawing.wrapped_text(&self.compositor, self.scale(), text, style, max_lines)
+        })
+    }
+
     /// Rasterize a glyph from Segoe Fluent Icons or Segoe MDL2 Assets.
     pub fn icon(&self, glyph: char, size: f32, color: Color) -> Result<TextSurface> {
         self.draw(|drawing| drawing.icon(&self.compositor, self.scale(), glyph, size, color))

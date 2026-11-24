@@ -114,6 +114,71 @@ impl Button {
         Self::build(scene, bounds, bounds.height / 2.0, colors, surface)
     }
 
+    pub(crate) fn choice(
+        scene: &PopupScene,
+        right_center: Vector2,
+        label: &str,
+        selected: bool,
+        single: bool,
+        theme: &Theme,
+    ) -> Result<Self> {
+        let colors = if selected {
+            ButtonColors {
+                idle: theme.tint,
+                hover: theme.tint_hover,
+                ink: theme.connected.text,
+                disabled: theme.tint,
+            }
+        } else {
+            ButtonColors {
+                idle: theme.white,
+                hover: theme.control_hover,
+                ink: theme.muted,
+                disabled: theme.white,
+            }
+        };
+        let font = if selected {
+            Font::Semibold
+        } else {
+            Font::Regular
+        };
+        let size = if single { 12.0 } else { 12.5 };
+        let inset = if single { 16.0 } else { 30.0 };
+        let surface = text(scene, label, font, size, 100.0, colors.ink)?;
+        let width = surface.size.X.ceil() + inset;
+        let bounds = Rect::new(right_center.X - width, right_center.Y - 14.0, width, 28.0);
+        Self::build(scene, bounds, 14.0, colors, surface)
+    }
+
+    pub(crate) fn forget(
+        scene: &PopupScene,
+        bounds: Rect,
+        label: &str,
+        confirming: bool,
+        theme: &Theme,
+    ) -> Result<Self> {
+        let idle = if confirming {
+            theme.danger_tint
+        } else {
+            theme.white
+        };
+        let colors = ButtonColors {
+            idle,
+            hover: theme.danger_tint,
+            ink: theme.danger,
+            disabled: idle,
+        };
+        let surface = text(
+            scene,
+            label,
+            Font::Regular,
+            12.0,
+            bounds.width - 16.0,
+            colors.ink,
+        )?;
+        Self::build(scene, bounds, bounds.height / 2.0, colors, surface)
+    }
+
     pub fn icon(
         scene: &PopupScene,
         bounds: Rect,

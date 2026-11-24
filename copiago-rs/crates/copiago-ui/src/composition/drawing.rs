@@ -22,9 +22,10 @@ use windows::{
             DirectWrite::{
                 DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
-                DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
-                DWriteCreateFactory, IDWriteFactory,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_LINE_SPACING_METHOD_UNIFORM,
+                DWRITE_TEXT_METRICS, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory,
+                IDWriteFactory,
             },
             Dxgi::IDXGIDevice,
         },
@@ -122,6 +123,17 @@ impl Drawing {
         text: &str,
         style: TextStyle,
     ) -> Result<TextSurface> {
+        self.wrapped_text(compositor, scale, text, style, 1)
+    }
+
+    pub(super) fn wrapped_text(
+        &self,
+        compositor: &Compositor,
+        scale: f32,
+        text: &str,
+        style: TextStyle,
+        max_lines: u8,
+    ) -> Result<TextSurface> {
         let text: Vec<u16> = text
             .encode_utf16()
             .map(|unit| match unit {
@@ -129,7 +141,14 @@ impl Drawing {
                 _ => unit,
             })
             .collect();
-        self.rasterize(compositor, scale, &text, style, w!("Microsoft YaHei UI"))
+        self.rasterize(
+            compositor,
+            scale,
+            &text,
+            style,
+            w!("Microsoft YaHei UI"),
+            max_lines,
+        )
     }
 
     pub(super) fn icon(
@@ -153,6 +172,7 @@ impl Drawing {
                 color,
             },
             family,
+            1,
         )
     }
 
@@ -185,6 +205,7 @@ impl Drawing {
         text: &[u16],
         style: TextStyle,
         family: PCWSTR,
+        max_lines: u8,
     ) -> Result<TextSurface> {
         let font_px = style.size * scale;
         let max_px = (style.max_width * scale).floor();
@@ -205,7 +226,19 @@ impl Drawing {
                 font_px,
                 w!("zh-CN"),
             )?;
-            format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            let layout_height = if max_lines > 1 {
+                format.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+                let line_height = font_px * 1.5;
+                format.SetLineSpacing(
+                    DWRITE_LINE_SPACING_METHOD_UNIFORM,
+                    line_height,
+                    font_px * 1.12,
+                )?;
+                line_height * f32::from(max_lines) + 0.01
+            } else {
+                format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+                font_px * 3.0
+            };
             let sign = self.write.CreateEllipsisTrimmingSign(&format)?;
             format.SetTrimming(
                 &DWRITE_TRIMMING {
@@ -216,7 +249,7 @@ impl Drawing {
             )?;
             let layout = self
                 .write
-                .CreateTextLayout(text, &format, max_px - 2.0, font_px * 3.0)?;
+                .CreateTextLayout(text, &format, max_px - 2.0, layout_height)?;
             layout.GetMetrics(&mut metrics)?;
             layout
         };
@@ -225,7 +258,15 @@ impl Drawing {
             .ceil()
             .min(max_px - 2.0)
             + 2.0;
-        let height = metrics.height.ceil() + 2.0;
+        let height = metrics
+            .height
+            .min(if max_lines > 1 {
+                font_px * 1.5 * f32::from(max_lines)
+            } else {
+                f32::INFINITY
+            })
+            .ceil()
+            + 2.0;
         let surface = self.graphics.CreateDrawingSurface(
             Size {
                 Width: width,

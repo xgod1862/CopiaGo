@@ -236,6 +236,12 @@ dependencies = [
 [[package]]
 name = "copiago-ddi"
 version = "2.0.0-beta"
+dependencies = [
+ "copiago-core",
+ "copiago-win",
+ "plist",
+ "sha2",
+]
 
 [[package]]
 name = "copiago-device"

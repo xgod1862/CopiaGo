@@ -1,5 +1,5 @@
 //! History popup driven by synthetic previews. No database, clipboard or phone.
-//! Usage: history_page [phone|pc|offer|progress|retry|off|many] [left] [top] [--timed|--probe]
+//! Usage: history_page [phone|pc|offer|transfer|progress|retry|off|many] [left] [top] [--timed|--probe]
 
 #[cfg(not(windows))]
 fn main() {
@@ -168,6 +168,7 @@ mod example {
                     metadata: "PPTX · 24.0 MB".into(),
                     reason: message!("超过 {limit} MB，要同步到电脑吗？", limit = 20),
                     busy: false,
+                    percent: None,
                 }));
                 page.set_status(HistoryStatus {
                     connection: Status::Connected,
@@ -180,6 +181,19 @@ mod example {
                     ..HistoryStatus::default()
                 });
             }
+            "transfer" => page.set_offer(Some(HistoryOffer {
+                id: 7,
+                name: t("传输验证.zip", "Sample transfer.zip").into(),
+                metadata: "ZIP".into(),
+                reason: message!(
+                    "{received} / {total} · {percent}%",
+                    received = "40.0 MB",
+                    total = "100.0 MB",
+                    percent = 40
+                ),
+                busy: true,
+                percent: Some(40),
+            })),
             "progress" => page.set_status(HistoryStatus {
                 detail: Some(message!("正在准备 iPhone 开发组件…")),
                 progress: ProgressState::Determinate(0.56),

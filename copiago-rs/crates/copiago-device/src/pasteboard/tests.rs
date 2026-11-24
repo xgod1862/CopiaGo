@@ -199,7 +199,11 @@ impl PasteboardBackend for FakeBackend {
         result
     }
 
-    async fn fetch_file(&mut self, offer: FileOffer) -> Result<ReceivedFile, FileTransferError> {
+    async fn fetch_file(
+        &mut self,
+        offer: FileOffer,
+        _progress: &mut dyn FnMut(FileProgress),
+    ) -> Result<ReceivedFile, FileTransferError> {
         let Some(Request::Fetch {
             offer: expected,
             error,
@@ -820,7 +824,7 @@ async fn watcher_dispatches_fetch_offer_and_emits_the_result() {
         offer: offer.clone(),
         error: FileTransferError::OfferExpired,
     });
-    let mut command = Some(DeviceCommand::FetchOffer(offer));
+    let mut command = Some(DeviceCommand::FetchOffer(offer, 1));
     let mut expired = false;
     watch(
         &mut backend,
@@ -832,7 +836,7 @@ async fn watcher_dispatches_fetch_offer_and_emits_the_result() {
         |event| {
             if matches!(
                 event,
-                DeviceEvent::FileResult(Err(FileTransferError::OfferExpired))
+                DeviceEvent::FileResult(1, Err(FileTransferError::OfferExpired))
             ) {
                 expired = true;
                 ControlFlow::Break(())

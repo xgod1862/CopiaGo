@@ -187,10 +187,10 @@ impl Backend for FakePhone {
                             }
                             DeviceEvent::PushResult(id, Ok(()))
                         }
-                        DeviceCommand::FetchOffer(offer) => {
+                        DeviceCommand::FetchOffer(offer, id) => {
                             self.fetched.borrow_mut().push(offer);
                             self.pause_request().await;
-                            DeviceEvent::FileResult(Err(FileTransferError::OfferExpired))
+                            DeviceEvent::FileResult(id, Err(FileTransferError::OfferExpired))
                         }
                         _ => unreachable!("a clipboard queue only contains clipboard commands"),
                     };
@@ -843,8 +843,8 @@ async fn file_commands_reach_the_connected_session_and_do_not_survive_its_end() 
     let mut inputs = rig(&mut commands, signals, None);
     let emit_status = collect_status(events);
     let emit = |event| match event {
-        DeviceEvent::FileResult(reply) => {
-            result.send(reply.err().unwrap()).unwrap();
+        DeviceEvent::FileResult(id, reply) => {
+            result.send((id, reply.err().unwrap())).unwrap();
             ControlFlow::Continue(())
         }
         event => emit_status(event),
@@ -859,32 +859,32 @@ async fn file_commands_reach_the_connected_session_and_do_not_survive_its_end() 
     let verify = async {
         status(&mut statuses, ConnState::Connecting).await;
         status(&mut statuses, ConnState::Connected { wireless: true }).await;
-        send.send(DeviceCommand::FetchOffer(offer.clone()))
+        send.send(DeviceCommand::FetchOffer(offer.clone(), 1))
             .await
             .unwrap();
         timeout(Duration::from_secs(1), phone.request_started.notified())
             .await
             .unwrap();
         assert!(phone.fetched.borrow().as_slice() == [offer.clone()]);
-        send.send(DeviceCommand::FetchOffer(offer.clone()))
+        send.send(DeviceCommand::FetchOffer(offer.clone(), 2))
             .await
             .unwrap();
         assert_eq!(
             timeout(Duration::from_secs(1), results.recv())
                 .await
                 .unwrap(),
-            Some(FileTransferError::Busy),
+            Some((2, FileTransferError::Busy)),
         );
         phone.release_request.notify_one();
         assert_eq!(
             timeout(Duration::from_secs(1), results.recv())
                 .await
                 .unwrap(),
-            Some(FileTransferError::OfferExpired),
+            Some((1, FileTransferError::OfferExpired)),
         );
         // A valid result releases the request slot. Cancelling the next request
         // reports a disconnection and does not requeue it on the next session.
-        send.send(DeviceCommand::FetchOffer(offer.clone()))
+        send.send(DeviceCommand::FetchOffer(offer.clone(), 3))
             .await
             .unwrap();
         timeout(Duration::from_secs(1), phone.request_started.notified())
@@ -895,7 +895,7 @@ async fn file_commands_reach_the_connected_session_and_do_not_survive_its_end() 
             timeout(Duration::from_secs(1), results.recv())
                 .await
                 .unwrap(),
-            Some(FileTransferError::Disconnected),
+            Some((3, FileTransferError::Disconnected)),
         );
         status(&mut statuses, ConnState::Connecting).await;
         status(&mut statuses, ConnState::Connected { wireless: true }).await;

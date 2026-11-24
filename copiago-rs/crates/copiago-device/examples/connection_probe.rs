@@ -143,7 +143,7 @@ mod windows {
                         let mut first = first_offer.borrow_mut();
                         if first.as_ref().is_some_and(|old| old.change != offer.change) {
                             let old = first.take().unwrap();
-                            if send.try_send(DeviceCommand::FetchOffer(old)).is_ok() {
+                            if send.try_send(DeviceCommand::FetchOffer(old, 1)).is_ok() {
                                 expiry_requested.set(true);
                                 println!("elapsed_ms={elapsed} expired_offer_requested");
                             }
@@ -156,11 +156,13 @@ mod windows {
                         }
                     }
                 }
-                DeviceEvent::FileResult(Err(FileTransferError::OfferExpired)) if check_expiry => {
+                DeviceEvent::FileResult(1, Err(FileTransferError::OfferExpired))
+                    if check_expiry =>
+                {
                     expiry_verified.set(true);
                     println!("elapsed_ms={elapsed} offer_expired");
                 }
-                DeviceEvent::FileResult(Err(error)) if check_expiry => {
+                DeviceEvent::FileResult(1, Err(error)) if check_expiry => {
                     println!("elapsed_ms={elapsed} file_failed reason={error}");
                 }
                 _ => {}

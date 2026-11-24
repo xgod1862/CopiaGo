@@ -90,6 +90,8 @@ pub struct HistoryOffer {
     pub metadata: String,
     pub reason: Message,
     pub busy: bool,
+    /// A missing percentage on an active transfer means its total is unknown.
+    pub percent: Option<u8>,
 }
 
 #[derive(Default)]
@@ -157,6 +159,7 @@ impl HistoryPage {
 
     pub fn set_offer(&mut self, offer: Option<HistoryOffer>) {
         if let Some(offer) = &offer
+            && !offer.busy
             && self.offer.as_ref().is_none_or(|prior| prior.id != offer.id)
         {
             self.switch_tab(Source::Phone);

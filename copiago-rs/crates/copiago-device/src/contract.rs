@@ -29,7 +29,8 @@ pub enum DeviceEvent {
         while_disconnected: bool,
     },
     FileOffer(FileOffer),
-    FileResult(Result<ReceivedFile, FileTransferError>),
+    FileProgress(u64, FileProgress),
+    FileResult(u64, Result<ReceivedFile, FileTransferError>),
     Unsupported {
         kind: Message,
     },
@@ -44,11 +45,19 @@ pub enum DeviceEvent {
     Error(Message),
 }
 
+/// File payload bytes written so far and the validated payload length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileProgress {
+    pub received_bytes: u64,
+    pub total_bytes: u64,
+}
+
 /// Commands the host sends to the device worker.
 pub enum DeviceCommand {
     /// The optional host-supplied id is echoed on success, rejection and disconnect.
     Push(Clip, Option<u64>),
-    FetchOffer(FileOffer),
+    /// The host-supplied id is echoed by progress and the terminal result.
+    FetchOffer(FileOffer, u64),
     /// Pair one USB iPhone when no record exists, or retry a paused connection.
     RequestPair,
     /// Cancel the current operation and remove CopiaGo's wireless pairing records and cached device info.

@@ -126,7 +126,9 @@ fn wic_preserves_alpha_in_png_and_dib_v5() {
 
 #[test]
 fn wic_prepares_jpeg_and_uses_the_optional_heic_codec() {
-    use windows::Win32::Foundation::WINCODEC_ERR_COMPONENTNOTFOUND;
+    use windows::Win32::Foundation::{
+        WINCODEC_ERR_COMPONENTINITIALIZEFAILURE, WINCODEC_ERR_COMPONENTNOTFOUND,
+    };
 
     const MF_E_TOPO_CODEC_NOT_FOUND: i32 = 0xc00d5212u32 as i32;
     for (format, input) in [
@@ -146,8 +148,12 @@ fn wic_prepares_jpeg_and_uses_the_optional_heic_codec() {
             Ok(prepared) => prepared,
             Err(ClipboardError::ImageCodec(code))
                 if format == "heic"
-                    && [WINCODEC_ERR_COMPONENTNOTFOUND.0, MF_E_TOPO_CODEC_NOT_FOUND]
-                        .contains(&code) =>
+                    && [
+                        WINCODEC_ERR_COMPONENTNOTFOUND.0,
+                        WINCODEC_ERR_COMPONENTINITIALIZEFAILURE.0,
+                        MF_E_TOPO_CODEC_NOT_FOUND,
+                    ]
+                    .contains(&code) =>
             {
                 println!(
                     "input={format} bytes={} prepare_ms={prepare_ms:.2} codec_error={code:#010x}",

@@ -75,7 +75,11 @@ fn decodes_indexed_gif_and_handles_an_optional_webp_codec() {
             assert_eq!(webp.pixels(), [241, 107, 17, 255]);
         }
         Err(ImageError::Codec(code))
-            if code == windows::Win32::Foundation::WINCODEC_ERR_COMPONENTNOTFOUND.0 =>
+            if [
+                windows::Win32::Foundation::WINCODEC_ERR_COMPONENTNOTFOUND.0,
+                windows::Win32::Foundation::WINCODEC_ERR_COMPONENTINITIALIZEFAILURE.0,
+            ]
+            .contains(&code) =>
         {
             println!("WebP codec unavailable ({code:#010x})");
         }

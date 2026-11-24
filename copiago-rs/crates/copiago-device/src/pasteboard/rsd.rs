@@ -4,6 +4,7 @@ use copiago_core::{
     clip::{FileOffer, PasteboardChange},
     files::ReceivedFile,
     i18n::Language,
+    settings::Settings,
 };
 use idevice::{
     RemoteXpcClient, RsdService,
@@ -52,6 +53,17 @@ pub(crate) struct WatchOptions<'a> {
     pub data_dir: &'a Path,
     pub wireless: bool,
     pub language: Language,
+    pub follow_saved_language: bool,
+}
+
+impl WatchOptions<'_> {
+    pub(super) fn filename_language(&self) -> Language {
+        if self.follow_saved_language {
+            Settings::load(self.data_dir).language.resolve()
+        } else {
+            self.language
+        }
+    }
 }
 
 pub(crate) async fn watch_rsd(
@@ -83,7 +95,7 @@ pub(crate) async fn watch_rsd(
                 .map_err(|_| PasteboardError::NotificationsClosed)
         },
         options.wireless,
-        options.language,
+        || options.filename_language(),
         state,
         next_command,
         emit,
@@ -456,7 +468,7 @@ mod tests {
         let Ok(listing) = pull(backend, PullPolicy::AllPromised).await else {
             return false;
         };
-        let Ok(update) = read_clip(backend, listing, Language::ZhCn).await else {
+        let Ok(update) = read_clip(backend, listing, || Language::ZhCn).await else {
             return false;
         };
         matches!(update.event, Some(DeviceEvent::Clip { clip, .. }) if clip == *expected)

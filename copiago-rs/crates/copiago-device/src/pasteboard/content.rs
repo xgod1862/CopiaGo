@@ -2,6 +2,7 @@ use std::{io::Cursor, time::Duration};
 
 use copiago_core::{
     clip::{Clip, PasteboardChange},
+    diagnostic,
     i18n::{Language, Message},
 };
 use plist::{Dictionary, Value};
@@ -170,6 +171,29 @@ impl Snapshot {
         }
     }
 
+    fn log_types(&self, stage: &str) {
+        // UTI strings come from the peer. Only emit fixed categories and counts.
+        let mut counts = [0_u32; 5];
+        for name in self.types() {
+            let kind = if INLINE_TEXT.contains(&name) || DECLARED_TEXT.contains(&name) {
+                0
+            } else if IMAGE_FORMATS.iter().any(|(uti, _)| *uti == name) || name == WEB_ARCHIVE {
+                1
+            } else if is_video(name) {
+                2
+            } else if is_file_like(name) {
+                3
+            } else {
+                4
+            };
+            counts[kind] += 1;
+        }
+        let [text, image, video, file, other] = counts;
+        diagnostic::event(format_args!(
+            "{stage} types=text:{text},image:{image},video:{video},file:{file},other:{other}"
+        ));
+    }
+
     fn into_update(self, clip: Option<Clip>) -> Update {
         let event = match clip {
             Some(Clip::File(offer)) => Some(DeviceEvent::FileOffer(offer)),
@@ -177,15 +201,21 @@ impl Snapshot {
                 clip,
                 while_disconnected: false,
             }),
-            None => self
-                .unsupported_kind()
-                .map(|kind| DeviceEvent::Unsupported { kind }),
+            None => self.unsupported_kind().map(|kind| {
+                self.log_types("unsupported");
+                DeviceEvent::Unsupported { kind }
+            }),
         };
         Update {
             change: self.change,
             event,
             skipped: false,
         }
+    }
+
+    fn timed_out(self) -> Update {
+        self.log_types("pull timeout");
+        self.skip()
     }
 
     fn skip(self) -> Update {
@@ -345,7 +375,7 @@ pub(super) struct Update {
 pub(super) async fn read_clip(
     backend: &mut impl PasteboardBackend,
     listing: Snapshot,
-    language: Language,
+    language: impl FnOnce() -> Language,
 ) -> Result<Update, PasteboardError> {
     if let Some(uti) = file_offer::content_type(&listing).map(str::to_owned) {
         return match pull(backend, PullPolicy::Threshold(DESCRIPTION_BYTES)).await {
@@ -356,7 +386,7 @@ pub(super) async fn read_clip(
                 let offer = file_offer::describe(described, uti, listing.change.clone(), language);
                 Ok(listing.into_update(Some(Clip::File(offer))))
             }
-            Err(PasteboardError::RequestTimeout) => Ok(listing.skip()),
+            Err(PasteboardError::RequestTimeout) => Ok(listing.timed_out()),
             Err(error) => Err(error),
         };
     }
@@ -367,7 +397,7 @@ pub(super) async fn read_clip(
 
     let mut secondary = match pull(backend, PullPolicy::PromiseSecondary).await {
         Ok(snapshot) => snapshot,
-        Err(PasteboardError::RequestTimeout) => return Ok(listing.skip()),
+        Err(PasteboardError::RequestTimeout) => return Ok(listing.timed_out()),
         Err(error) => return Err(error),
     };
     if let Some((index, mut image)) = secondary.take_image() {
@@ -389,7 +419,10 @@ pub(super) async fn read_clip(
                 let image = resolved.take_image().map(|(_, image)| image);
                 Ok(resolved.into_update(image))
             }
-            Err(PasteboardError::RequestTimeout) => Ok(secondary.into_update(None)),
+            Err(PasteboardError::RequestTimeout) => {
+                secondary.log_types("pull timeout");
+                Ok(secondary.into_update(None))
+            }
             Err(error) => Err(error),
         };
     }

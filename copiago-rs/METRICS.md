@@ -231,3 +231,84 @@ cargo build --release --locked -p copiago-device --example connection_probe
 - 运行 `.\target\release\examples\connection_probe.exe --install-developer-image --seconds 1200`。预期缺服务后准备镜像，按需下载、签名和挂载，随后重连一次并输出 `connected wireless=true`。同一已配对手机在无线不可用时接线复验，预期 `connected wireless=false`。Personalized 使用设备缓存票据时从准备直接进入挂载。
 - 在测试机关闭开发者模式并重启解锁，再运行带 `--install-developer-image` 的探针。预期 `state=Developer`，显示「设置 → 隐私与安全性 → 开发者模式」的开启路径。在测试机开启并按提示重启后复验。 [Apple Developer Mode 文档](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device.md)
 - 用 `Get-Content -LiteralPath (Join-Path $env:ICB_DATA_DIR 'developer-setup.log') -Tail 20` 检查阶段和结果。TSS 证书验证失败显示 `error=SSLError`，Apple 拒绝请求显示 `error=TSSError`。记录验证重连耗时、专用工作集和下载/签名/安装日志。
+
+## M4 · T-APP-02 正式托盘宿主
+
+Windows 11 Pro 26H2，build 26300.9974，x64，Rust 1.100.0。最终 Release `copiago.exe` 为 **3,227,648 字节**。SHA-256 为 `D1234D4AD67F627B4453D43313CFBC477DC8F16044EC32C3A4A6383E01F31E06`。
+
+PID 28772，隔离数据目录仅允许当前 Windows 账户与 SYSTEM。夹具含虚构的断线配对文件和 Python 生成的 DPAPI 历史，两个来源各 50 条。关闭两方向自动同步、历史保存、通知和更新。每个状态用 `Get-Counter` 每秒采样一次，共 9 次。`ID Process`、`Working Set - Private`、`Private Bytes` 和 `Thread Count` 取同一实例。
+
+| 状态 | 专用工作集（字节） | Private Bytes（字节） | 线程 |
+| --- | ---: | ---: | ---: |
+| 初始托盘空闲 | 2,387,968–2,392,064 | 3,112,960 | 8 |
+| 历史弹窗打开 | 10,117,120–12,775,424 | 16,248,832–19,460,096 | 15 |
+| 设置弹窗打开 | 12,877,824–12,939,264 | 19,492,864–19,554,304 | 15 |
+| 隐藏动画完成后 | 4,665,344–5,046,272 | 6,668,288–7,630,848 | 14–15 |
+
+本轮采样的托盘空闲与可见弹窗均低于 10 MB / 20 MB 对应验收线。冷进程启动到 `event=ready` 为 201.81 ms，普通第二实例启动到原 PID 的历史页可见为 113.32 ms，计时含测试轮询。手机会话和大图、文件传输的瞬时峰值未在本轮测量。验收前后核对了前台 HWND 和 Windows 剪贴板序列号，结果一致。
+
+格式检查、Clippy 和 245 项测试通过，10 项默认忽略。
+
+### 本机验收
+
+| 项目 | 结果 |
+| --- | --- |
+| 默认 GUI、托盘、单实例、退出 | 带断线夹具的主进程 `--minimized` 启动后停在托盘。第二个 `--minimized` 进程静默退出，普通入口唤起同一 PID。定向托盘退出正常返回，`--headless` 经 stdout 重定向验证仍输出诊断。 |
+| 引导、历史、键盘和无障碍 | 首次启动及忘记后恢复引导，引导收到失焦消息后保持打开，Esc 可关闭。历史收到失焦消息后收起。跨进程 UIA 在应用窗口验证双来源各 50 条、单条删除、清空过期、两次确认、仅清当前列表、停用保存仍可读已有历史。定向键盘消息验证 Tab、Enter 和 Space。 |
+| 设置、忘记、数据互通 | 隔离 UIA 验证历史开关、拉取开关、文件阈值、中英切换即时生效、重启保留和未知键保留。确认后由正式设备线程处理隔离配对记录。持有禁止共享删除的句柄时，忘记返回失败并保留记录。释放句柄后再次确认成功。应用直接读取 Python 构造的 DPAPI 历史。运行 `cargo test` 验证全部设置字段、Run 值名及命令、实际状态下的开关和更新关闭/取消；Run 适配器使用独立临时注册表键。 |
+| 传输状态与恢复 | 已运行合成设备及存储测试，覆盖 Wi-Fi 优先和 USB 回退、文件阈值、过期、发件请求 ID 和回执、忘记失败后释放在途请求、暂存及自写抑制、未知文件名跟随即时语言。正式窗口收到合成唤醒和网络消息，三次相邻的网络消息合并为一次重连信号。 |
+| 更新 | 检查定时、关闭后取消、可用版本提示的数据和发布地址校验通过模拟。正式版本为 `2.0.0-beta`，本轮未在该 EXE 中打开新版发布页。 |
+
+iPhone 仍需在已授权的独立设备上完成 USB 信任、拒绝信任、拔线后无线、无线失败回退 USB、文字和各类图片、文件实际确认与粘贴、512 MiB 边界、视频提示、电脑发送与回声、断线较旧内容、手机重启时镜像挂载和开发者模式提示。当前机器无可用 USB iPhone，已配对记录的最新只读 Wi-Fi 探针未建立会话。本轮只运行了合成电源/网络事件，物理睡眠、实际 Wi-Fi/VPN 切换、24 h 稳定性、真实混合 DPI、讲述人语音、Windows 登录启动和安装覆盖升级均待复验。
+
+### GUI 与计数器复验
+
+从 `copiago-rs/` 运行。以下命令创建只有当前用户和 SYSTEM 可访问的独立数据根，准备断线夹具并避免抢占前台焦点。删去该夹具的虚构配对文件后用 `--minimized` 启动，可检查无配对时自动打开引导。可在目录中预先放入当前 Windows 账户使用 Python 1.2.0 生成的合成 `history.sqlite3`，复验有记录时的工作集。
+
+```powershell
+$env:RUSTUP_HOME = 'E:\rust\rustup'
+$env:CARGO_HOME = 'E:\rust\cargo'
+$env:PATH = "E:\rust\cargo\bin;$env:PATH"
+cargo build --release --locked -p copiago-app
+
+$fixtureId = [guid]::NewGuid().ToString('N')
+$fixture = Join-Path $env:TEMP ('CopiaGo-GUI-' + $fixtureId)
+New-Item -ItemType Directory -Path $fixture | Out-Null
+$acl = [Security.AccessControl.DirectorySecurity]::new()
+$acl.SetAccessRuleProtection($true, $false)
+$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$systemUser = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+foreach ($sid in @($currentUser, $systemUser)) {
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    $acl.AddAccessRule($rule)
+}
+Set-Acl -LiteralPath $fixture -AclObject $acl
+$env:ICB_DATA_DIR = $fixture
+$env:ICB_INSTANCE_NAMESPACE = 'tapp02-' + $fixtureId
+$env:ICB_NO_ACTIVATE = '1'
+$env:ICB_DIAGNOSTIC_FILE = Join-Path $fixture 'diagnostic.log'
+$deviceFixture = Join-Path $fixture 'device-data'
+New-Item -ItemType Directory -Path $deviceFixture | Out-Null
+[IO.File]::WriteAllText((Join-Path $deviceFixture 'remote_00008020-0000000000000000.plist'), 'invalid synthetic record')
+[IO.File]::WriteAllText((Join-Path $fixture 'settings.json'), '{"pull":false,"push":false,"notifications":false,"update_check":false}')
+$exe = (Resolve-Path .\target\release\copiago.exe).Path
+$process = Start-Process -FilePath $exe -ArgumentList '--minimized' -PassThru -WindowStyle Hidden
+
+function Measure-CopiaGo([int]$targetPid) {
+    $paths = '\Process(copiago*)\ID Process', '\Process(copiago*)\Working Set - Private', '\Process(copiago*)\Private Bytes', '\Process(copiago*)\Thread Count'
+    Get-Counter -Counter $paths -SampleInterval 1 -MaxSamples 9 | ForEach-Object {
+        $instance = $_.CounterSamples | Where-Object {
+            $_.Path -like '*\id process' -and [int]$_.CookedValue -eq $targetPid
+        } | Select-Object -First 1
+        if ($instance) {
+            $_.CounterSamples | Where-Object InstanceName -eq $instance.InstanceName |
+                Select-Object Timestamp, Path, CookedValue
+        }
+    }
+}
+Measure-CopiaGo $process.Id
+Start-Process -FilePath $exe -WindowStyle Hidden
+Measure-CopiaGo $process.Id
+```
+
+托盘菜单打开「连接与设置」后再次采样。关闭弹窗，等待收起动画再采样。通过托盘菜单的「退出」结束进程，诊断文件中应出现 `event=stopped`。真机步骤使用单独的受控测试设备和已知合成剪贴板数据。

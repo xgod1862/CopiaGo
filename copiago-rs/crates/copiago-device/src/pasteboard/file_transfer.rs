@@ -102,12 +102,9 @@ pub(crate) async fn describe_file(
     if listing.has_different_change(&described) {
         return Err(FileTransferError::OfferExpired);
     }
-    Ok(file_offer::describe(
-        described,
-        uti,
-        listing.change,
-        Language::ZhCn,
-    ))
+    Ok(file_offer::describe(described, uti, listing.change, || {
+        Language::ZhCn
+    }))
 }
 
 pub(super) async fn describe_snapshot(

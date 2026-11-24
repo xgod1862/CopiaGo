@@ -223,7 +223,7 @@ async fn watch_read_only(
         backend,
         receive,
         wireless,
-        language,
+        || language,
         &mut PasteboardState::default(),
         async || pending().await,
         emit,
@@ -287,7 +287,7 @@ fn text_at(count: i64, value: &str) -> Snapshot {
 
 async fn next_update(mut backend: FakeBackend) -> Update {
     let listing = pull(&mut backend, PullPolicy::AllPromised).await.unwrap();
-    let update = read_clip(&mut backend, listing, Language::ZhCn)
+    let update = read_clip(&mut backend, listing, || Language::ZhCn)
         .await
         .unwrap();
     backend.verify();
@@ -826,7 +826,7 @@ async fn watcher_dispatches_fetch_offer_and_emits_the_result() {
         &mut backend,
         async || pending().await,
         true,
-        Language::ZhCn,
+        || Language::ZhCn,
         &mut PasteboardState::default(),
         async || command.take(),
         |event| {
@@ -1202,7 +1202,7 @@ async fn reconnect_baseline_marks_only_the_disconnected_clip() {
                 pending().await
             },
             true,
-            Language::ZhCn,
+            || Language::ZhCn,
             &mut state,
             async || pending().await,
             |event| {
@@ -1254,7 +1254,7 @@ async fn reconnect_preserves_the_echo_window() {
             pending().await
         },
         true,
-        Language::ZhCn,
+        || Language::ZhCn,
         &mut state,
         async || pending().await,
         |event| {
@@ -1339,7 +1339,7 @@ async fn push_and_pull_round_trip_while_suppressing_both_kinds_of_echo() {
                 None => pending().await,
             },
             false,
-            Language::ZhCn,
+            || Language::ZhCn,
             &mut PasteboardState::default(),
             async || commands.recv().await,
             |event| {
@@ -1347,11 +1347,11 @@ async fn push_and_pull_round_trip_while_suppressing_both_kinds_of_echo() {
                     DeviceEvent::Status(..) => {
                         assert!(
                             sender
-                                .try_send(DeviceCommand::Push(pushed.take().unwrap()))
+                                .try_send(DeviceCommand::Push(pushed.take().unwrap(), None))
                                 .is_ok()
                         );
                     }
-                    DeviceEvent::PushResult(Ok(())) => successful_set = true,
+                    DeviceEvent::PushResult(None, Ok(())) => successful_set = true,
                     event => {
                         assert!(successful_set);
                         assert_clip(Some(event), Clip::Text("new phone content".to_owned()));
@@ -1447,16 +1447,18 @@ async fn failed_push_reports_an_error_and_leaves_the_session_available() {
             Ok(NOTIFICATIONS[0].to_owned())
         },
         false,
-        Language::ZhCn,
+        || Language::ZhCn,
         &mut PasteboardState::default(),
         async || commands.recv().await,
         |event| {
             match event {
                 DeviceEvent::Status(..) => {
-                    let push = DeviceCommand::Push(Clip::Text(PUSH_TEXT.to_owned()));
+                    let push = DeviceCommand::Push(Clip::Text(PUSH_TEXT.to_owned()), None);
                     assert!(sender.try_send(push).is_ok());
                 }
-                DeviceEvent::PushResult(Err(PasteboardError::RequestFailed)) => saw_error = true,
+                DeviceEvent::PushResult(None, Err(PasteboardError::RequestFailed)) => {
+                    saw_error = true
+                }
                 event => {
                     assert!(saw_error);
                     assert_clip(Some(event), Clip::Text("a phone copy".to_owned()));

@@ -217,6 +217,64 @@ impl Chrome {
         })
     }
 
+    pub(super) fn controls(&self, scroll: &ScrollView, now: Instant) -> Vec<HistoryControl> {
+        let language = self.state.language;
+        self.controls
+            .iter()
+            .map(|control| {
+                let source = match control.target {
+                    HistoryTarget::Tab(Source::Phone) => "iPhone",
+                    HistoryTarget::Tab(Source::Pc) => "电脑",
+                    HistoryTarget::Action(action) => match action {
+                        HistoryAction::OpenSettings => "连接与设置",
+                        HistoryAction::OpenUpdate => "发现新版本 {version}，点击查看",
+                        HistoryAction::Retry => "继续连接",
+                        HistoryAction::Clear(_) if self.state.clear => "确认清空",
+                        HistoryAction::Clear(_) => "清空",
+                        HistoryAction::Enable(Source::Phone) => "开启 iPhone 剪贴板历史",
+                        HistoryAction::Enable(Source::Pc) => "开启电脑剪贴板历史",
+                        HistoryAction::RespondToOffer { accept: true, .. } => "同步到电脑",
+                        HistoryAction::RespondToOffer { accept: false, .. } => "忽略",
+                        HistoryAction::Copy(_)
+                        | HistoryAction::Send(_)
+                        | HistoryAction::Delete(_) => {
+                            unreachable!("row actions are published by the history view")
+                        }
+                    },
+                    HistoryTarget::Row(_) => unreachable!("rows are published by the history view"),
+                };
+                let label = if control.target == HistoryTarget::Action(HistoryAction::OpenUpdate) {
+                    tr!(
+                        language,
+                        source,
+                        version = self.state.update.as_deref().unwrap_or_default()
+                    )
+                } else {
+                    tr!(language, source)
+                };
+                let bounds = if control.clipped {
+                    scroll
+                        .layout()
+                        .visible_bounds(control.bounds, scroll.offset_at(now))
+                } else {
+                    Some(control.bounds)
+                };
+                HistoryControl {
+                    target: control.target,
+                    label: label.into_owned(),
+                    bounds,
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn scrolled_bounds(&self, target: HistoryTarget) -> Option<Rect> {
+        self.controls
+            .iter()
+            .find(|control| control.clipped && control.target == target)
+            .map(|control| control.bounds)
+    }
+
     pub(super) fn interact(
         &mut self,
         animator: &Animator,

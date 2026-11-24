@@ -27,3 +27,6 @@ pub use device_info::DeviceInfo;
 mod storage_tests;
 #[cfg(all(test, windows))]
 mod test_support;
+
+#[cfg(windows)]
+pub mod diagnostic;

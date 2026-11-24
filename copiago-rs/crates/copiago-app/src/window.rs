@@ -1,12 +1,17 @@
 //! Win32 notifications and the hidden window owned by the main thread.
 
+use std::{cell::RefCell, collections::VecDeque, time::Instant};
+
 use std::ffi::c_void;
 use std::io;
 use std::ptr::{null, null_mut, with_exposed_provenance_mut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use windows_sys::Win32::{
-    Foundation::{ERROR_SUCCESS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{
+        ERROR_SUCCESS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WAIT_FAILED, WAIT_OBJECT_0,
+        WAIT_TIMEOUT, WPARAM,
+    },
     NetworkManagement::IpHelper::{
         CancelMibChangeNotify2, MIB_IPINTERFACE_ROW, MIB_NOTIFICATION_TYPE, MibInitialNotification,
         NotifyIpInterfaceChange,
@@ -21,21 +26,26 @@ use windows_sys::Win32::{
     },
     UI::WindowsAndMessaging::{
         CREATESTRUCTW, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow,
-        DispatchMessageW, GetMessageW, KillTimer, MSG, PBT_APMRESUMEAUTOMATIC, PostMessageW,
-        PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage, UnregisterClassW, WM_APP,
-        WM_CLOSE, WM_POWERBROADCAST, WM_TIMER, WNDCLASSW, WS_POPUP,
+        DispatchMessageW, GWLP_USERDATA, GetWindowLongPtrW, KillTimer, MSG, MWMO_INPUTAVAILABLE,
+        MsgWaitForMultipleObjectsEx, PBT_APMRESUMEAUTOMATIC, PM_REMOVE, PeekMessageW, PostMessageW,
+        QS_ALLINPUT, RegisterClassW, SetTimer, SetWindowLongPtrW, TranslateMessage,
+        UnregisterClassW, WM_APP, WM_CLOSE, WM_NCCREATE, WM_NULL, WM_POWERBROADCAST, WM_QUIT,
+        WM_TIMER, WNDCLASSW, WS_POPUP,
     },
 };
 use windows_sys::{core::PCWSTR, w};
 
-use copiago_win::clipboard::WM_CLIPBOARDUPDATE;
+use copiago_win::{clipboard::WM_CLIPBOARDUPDATE, tray::TrayAction};
 
-const CLASS: PCWSTR = w!("CopiaGo.Headless");
+const HEADLESS_CLASS: PCWSTR = w!("CopiaGo.Headless");
+const GUI_CLASS: PCWSTR = w!("CopiaGo.Host");
 const WM_APP_DEVICE: u32 = WM_APP + 1;
 const WM_APP_RESUME: u32 = WM_APP + 2;
 const WM_APP_NETWORK: u32 = WM_APP + 3;
 const WM_APP_WORKER_EXIT: u32 = WM_APP + 4;
 const WM_APP_FILE_ANSWER: u32 = WM_APP + 5;
+pub(super) const WM_APP_TRAY: u32 = WM_APP + 6;
+const WM_APP_UPDATE: u32 = WM_APP + 7;
 const NETWORK_TIMER: usize = 1;
 const NETWORK_SETTLE_MS: u32 = 300;
 
@@ -47,15 +57,37 @@ pub(super) enum WindowEvent {
     NetworkSettled,
     WorkerExited,
     FileAnswer,
+    Tray(TrayAction),
+    Update,
+    Close,
 }
 
+pub(super) enum DesktopMessage {
+    Native(MSG),
+    Activate,
+    Timeout,
+    Quit,
+}
+
+type WindowData = RefCell<VecDeque<WindowEvent>>;
+
 pub(super) struct Window {
+    class: PCWSTR,
+    events: Box<WindowData>,
     handle: HWND,
     instance: HINSTANCE,
 }
 
 impl Window {
     pub(super) fn new() -> io::Result<Self> {
+        Self::create(HEADLESS_CLASS)
+    }
+
+    pub(super) fn new_gui() -> io::Result<Self> {
+        Self::create(GUI_CLASS)
+    }
+
+    fn create(name: PCWSTR) -> io::Result<Self> {
         // SAFETY: A null module name requests the current executable's instance.
         let instance = unsafe { GetModuleHandleW(null()) };
         if instance.is_null() {
@@ -65,7 +97,7 @@ impl Window {
         let class = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
-            lpszClassName: CLASS,
+            lpszClassName: name,
             ..unsafe { std::mem::zeroed() }
         };
         // SAFETY: The class's name and procedure remain valid until it is unregistered.
@@ -73,13 +105,14 @@ impl Window {
             return Err(io::Error::last_os_error());
         }
 
+        let events: Box<WindowData> = Box::default();
         // SAFETY: The registered class and module belong to this thread's process.
         // WS_POPUP without WS_VISIBLE creates a hidden top-level window.
         let handle = unsafe {
             CreateWindowExW(
                 0,
-                CLASS,
-                CLASS,
+                name,
+                name,
                 WS_POPUP,
                 0,
                 0,
@@ -88,10 +121,15 @@ impl Window {
                 null_mut(),
                 null_mut(),
                 instance,
-                null::<CREATESTRUCTW>().cast(),
+                std::ptr::from_ref(events.as_ref()).cast(),
             )
         };
-        let window = Self { handle, instance };
+        let window = Self {
+            handle,
+            instance,
+            class: name,
+            events,
+        };
         if handle.is_null() {
             return Err(io::Error::last_os_error());
         }
@@ -106,38 +144,21 @@ impl Window {
         WindowWaker(self.handle.expose_provenance())
     }
 
+    pub(super) fn take_event(&self) -> Option<WindowEvent> {
+        self.events.borrow_mut().pop_front()
+    }
+
     pub(super) fn next_event(&self) -> io::Result<Option<WindowEvent>> {
-        // SAFETY: All fields can be initialized to zero before GetMessageW sets them.
-        let mut message: MSG = unsafe { std::mem::zeroed() };
         loop {
-            // SAFETY: message is writable and a null HWND selects this thread's whole queue.
-            match unsafe { GetMessageW(&mut message, null_mut(), 0, 0) } {
-                -1 => return Err(io::Error::last_os_error()),
-                0 => return Ok(None),
-                _ => {}
+            match self.take_event() {
+                Some(WindowEvent::Close) => return Ok(None),
+                Some(event) => return Ok(Some(event)),
+                None => {}
             }
-            if message.hwnd == self.handle {
-                let event = match message.message {
-                    WM_CLIPBOARDUPDATE => Some(WindowEvent::Clipboard),
-                    WM_APP_DEVICE => Some(WindowEvent::Device),
-                    WM_APP_RESUME => Some(WindowEvent::Resume),
-                    WM_APP_NETWORK => Some(WindowEvent::NetworkChanged),
-                    WM_TIMER if message.wParam == NETWORK_TIMER => {
-                        Some(WindowEvent::NetworkSettled)
-                    }
-                    WM_APP_WORKER_EXIT => Some(WindowEvent::WorkerExited),
-                    WM_APP_FILE_ANSWER => Some(WindowEvent::FileAnswer),
-                    _ => None,
-                };
-                if event.is_some() {
-                    return Ok(event);
-                }
-            }
-            // SAFETY: This is a message from the calling thread's queue. The window
-            // procedure does not borrow any Rust state from the dispatch loop.
-            unsafe {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
+            match next_message(None, None)? {
+                DesktopMessage::Native(message) => dispatch(&message),
+                DesktopMessage::Quit => return Ok(None),
+                DesktopMessage::Activate | DesktopMessage::Timeout => unreachable!(),
             }
         }
     }
@@ -161,7 +182,7 @@ impl Drop for Window {
             if !self.handle.is_null() {
                 DestroyWindow(self.handle);
             }
-            UnregisterClassW(CLASS, self.instance);
+            UnregisterClassW(self.class, self.instance);
         }
     }
 }
@@ -172,19 +193,105 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    match message {
+    if message == WM_NCCREATE {
+        // SAFETY: WM_NCCREATE supplies a live CREATESTRUCTW and the application
+        // passed the window's boxed event queue as lpCreateParams.
+        unsafe {
+            let create = &*(lparam as *const CREATESTRUCTW);
+            SetWindowLongPtrW(handle, GWLP_USERDATA, create.lpCreateParams as isize);
+        }
+    }
+    let event = match message {
         WM_POWERBROADCAST if wparam == PBT_APMRESUMEAUTOMATIC as WPARAM => {
             post(handle, WM_APP_RESUME);
-            1
+            return 1;
         }
-        WM_CLOSE => {
-            // SAFETY: The procedure runs on the window's owning thread and
-            // requests an orderly exit before the window is destroyed.
-            unsafe { PostQuitMessage(0) };
-            0
+        WM_CLOSE => Some(WindowEvent::Close),
+        WM_CLIPBOARDUPDATE => Some(WindowEvent::Clipboard),
+        WM_APP_DEVICE => Some(WindowEvent::Device),
+        WM_APP_RESUME => Some(WindowEvent::Resume),
+        WM_APP_NETWORK => Some(WindowEvent::NetworkChanged),
+        WM_TIMER if wparam == NETWORK_TIMER => Some(WindowEvent::NetworkSettled),
+        WM_APP_WORKER_EXIT => Some(WindowEvent::WorkerExited),
+        WM_APP_FILE_ANSWER => Some(WindowEvent::FileAnswer),
+        WM_APP_TRAY => TrayAction::from_wparam(wparam).map(WindowEvent::Tray),
+        WM_APP_UPDATE => Some(WindowEvent::Update),
+        _ => None,
+    };
+    if let Some(event) = event {
+        // SAFETY: The owning thread holds the boxed queue through window destruction.
+        // Its borrow ends before returning to the dispatcher.
+        let data =
+            unsafe { (GetWindowLongPtrW(handle, GWLP_USERDATA) as *const WindowData).as_ref() };
+        if let Some(data) = data {
+            data.borrow_mut().push_back(event);
+            if message == WM_CLOSE {
+                // A sent close can be dispatched inside PeekMessageW. Leave a posted
+                // message so the outer loop observes the queued close without waiting.
+                post(handle, WM_NULL);
+            }
         }
-        // SAFETY: The parameters came from Windows for this window procedure.
-        _ => unsafe { DefWindowProcW(handle, message, wparam, lparam) },
+        return 0;
+    }
+    // SAFETY: The parameters came from Windows for this window procedure.
+    unsafe { DefWindowProcW(handle, message, wparam, lparam) }
+}
+
+pub(super) fn next_message(
+    activation: Option<HANDLE>,
+    deadline: Option<Instant>,
+) -> io::Result<DesktopMessage> {
+    let handles = activation.as_slice();
+    loop {
+        // SAFETY: The current thread owns the queue and the buffer is writable.
+        let mut message: MSG = unsafe { std::mem::zeroed() };
+        if unsafe_peek(&mut message) {
+            return Ok(if message.message == WM_QUIT {
+                DesktopMessage::Quit
+            } else {
+                DesktopMessage::Native(message)
+            });
+        }
+        let timeout = deadline.map_or(u32::MAX, |deadline| {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            u32::try_from(remaining.as_nanos().div_ceil(1_000_000))
+                .unwrap_or(u32::MAX - 1)
+                .min(u32::MAX - 1)
+        });
+        // SAFETY: The optional borrowed event is owned by the current instance,
+        // which outlives this call. A zero handle count uses a null pointer.
+        let result = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                handles.len() as u32,
+                if handles.is_empty() {
+                    null()
+                } else {
+                    handles.as_ptr()
+                },
+                timeout,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        match result {
+            WAIT_FAILED => return Err(io::Error::last_os_error()),
+            WAIT_TIMEOUT => return Ok(DesktopMessage::Timeout),
+            WAIT_OBJECT_0 if activation.is_some() => return Ok(DesktopMessage::Activate),
+            _ => {}
+        }
+    }
+}
+
+fn unsafe_peek(message: &mut MSG) -> bool {
+    // SAFETY: The current thread owns the queue. A null HWND includes thread messages.
+    unsafe { PeekMessageW(message, null_mut(), 0, 0, PM_REMOVE) != 0 }
+}
+
+pub(super) fn dispatch(message: &MSG) {
+    // SAFETY: The message was removed from the calling thread's queue.
+    unsafe {
+        TranslateMessage(message);
+        DispatchMessageW(message);
     }
 }
 
@@ -194,6 +301,7 @@ fn post(handle: HWND, message: u32) -> bool {
 }
 
 /// The device thread may post wakeups while the main thread owns the window.
+#[derive(Clone, Copy)]
 pub(super) struct WindowWaker(usize);
 
 impl WindowWaker {
@@ -203,6 +311,10 @@ impl WindowWaker {
 
     pub(super) fn worker_exited(&self) {
         post(with_exposed_provenance_mut(self.0), WM_APP_WORKER_EXIT);
+    }
+
+    pub(super) fn update(&self) {
+        post(with_exposed_provenance_mut(self.0), WM_APP_UPDATE);
     }
 
     pub(super) fn file_answer(&self) -> bool {

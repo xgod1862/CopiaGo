@@ -1,40 +1,39 @@
 //! Connect the Win32 main loop to the device thread for console operation.
 
-mod clipboard;
 mod files;
-mod window;
 
 use std::{
     fmt,
     io::{self, IsTerminal, Write},
-    ops::ControlFlow,
     sync::mpsc,
-    thread,
     time::Instant,
 };
 
 use copiago_core::{
     clip::{Clip, FileOffer},
     files::{self as file_storage, Confirmation, OfferDecision, ReceivedFile},
-    paths::{self, RunMode},
+    paths,
     settings::Settings,
 };
 use copiago_device::{
     ConnState, DeviceCommand, DeviceEvent, DeviceRunOptions, FileTransferError, HostSignal,
-    PasteboardError, run_device,
+    PasteboardError,
 };
 use copiago_win::clipboard::Clipboard;
 use tokio::sync::mpsc as tokio_mpsc;
 
-use self::{
+use self::files::{Answer, PendingOffer};
+use crate::{
+    VERSION,
     clipboard::{ClipboardSync, PhoneClip, PushQueueError},
-    files::{Answer, PendingOffer},
+    launch::Launch,
     window::{ConsoleControl, NetworkNotifications, PowerNotifications, Window, WindowEvent},
+    worker::DeviceWorker,
 };
 
-pub(super) fn run() -> bool {
+pub(super) fn run(launch: Launch) -> bool {
     let log = Log(Instant::now());
-    match start(&log) {
+    match start(launch, &log) {
         Ok(()) => true,
         Err(error) => {
             log.event("fatal", format_args!("{error}"));
@@ -43,10 +42,12 @@ pub(super) fn run() -> bool {
     }
 }
 
-fn start(log: &Log) -> Result<(), HostError> {
-    let data_dir = paths::data_dir(RunMode::Development)
+fn start(launch: Launch, log: &Log) -> Result<(), HostError> {
+    let data_dir = launch
+        .data_dir(true)
         .map_err(|error| HostError::os("resolve_data_dir", error))?;
     paths::ensure_data_dir(&data_dir).map_err(|error| HostError::os("prepare_data_dir", error))?;
+    copiago_core::diagnostic::install_crash_hook(&data_dir, VERSION);
     if let Err(error) = file_storage::cleanup(&data_dir) {
         log.event(
             "file_cleanup_failed",
@@ -79,52 +80,21 @@ fn start(log: &Log) -> Result<(), HostError> {
     );
 
     let sync = ClipboardSync::new(settings, clipboard.sequence_number());
-    let (commands, mut receive_commands) = tokio_mpsc::channel(4);
-    let (signals, receive_signals) = tokio_mpsc::channel(2);
-    let (send_events, events) = mpsc::channel();
-    let waker = window.waker();
-    let worker = thread::Builder::new()
-        .name("copiago-device".to_owned())
-        .spawn(move || {
-            let result = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map(|runtime| {
-                    runtime.block_on(run_device(
-                        &data_dir,
-                        options,
-                        &mut receive_commands,
-                        receive_signals,
-                        |event| {
-                            if send_events.send(event).is_err() || !waker.device_event() {
-                                return ControlFlow::Break(());
-                            }
-                            ControlFlow::Continue(())
-                        },
-                    ));
-                });
-            waker.worker_exited();
-            result
-        })
+    let worker = DeviceWorker::start(data_dir, options, window.waker())
         .map_err(|error| HostError::os("start_device_thread", error))?;
 
     let mut host = Host {
         clipboard,
         sync,
-        commands,
-        signals,
-        events,
+        worker: &worker,
         file_answers,
         pending_offer: PendingOffer::default(),
         log,
     };
     let result = host.message_loop(&window);
-    let _ = host.commands.try_send(DeviceCommand::Shutdown);
-    drop(host);
     worker
-        .join()
-        .map_err(|_| HostError::new("device_thread_panicked"))?
-        .map_err(|error| HostError::os("start_device_runtime", error))?;
+        .shutdown()
+        .map_err(|error| HostError::os("stop_device_thread", error))?;
     result?;
     log.event("stopped", format_args!(""));
     Ok(())
@@ -133,9 +103,7 @@ fn start(log: &Log) -> Result<(), HostError> {
 struct Host<'a> {
     clipboard: Clipboard,
     sync: ClipboardSync,
-    commands: tokio_mpsc::Sender<DeviceCommand>,
-    signals: tokio_mpsc::Sender<HostSignal>,
-    events: mpsc::Receiver<DeviceEvent>,
+    worker: &'a DeviceWorker,
     file_answers: Option<mpsc::Receiver<Answer>>,
     pending_offer: PendingOffer,
     log: &'a Log,
@@ -150,7 +118,7 @@ impl Host<'_> {
             match event {
                 WindowEvent::Clipboard => self.on_windows_clipboard(),
                 WindowEvent::Device => {
-                    if let Ok(event) = self.events.try_recv() {
+                    if let Ok(event) = self.worker.events.try_recv() {
                         self.on_device_event(event);
                     }
                 }
@@ -169,6 +137,7 @@ impl Host<'_> {
                     }
                 }
                 WindowEvent::WorkerExited => return Err(HostError::new("device_thread_exited")),
+                WindowEvent::Close | WindowEvent::Tray(_) | WindowEvent::Update => {}
                 WindowEvent::FileAnswer => {
                     if let Some(answer) = self
                         .file_answers
@@ -184,7 +153,7 @@ impl Host<'_> {
     }
 
     fn signal(&mut self, signal: HostSignal) {
-        if self.signals.try_send(signal).is_ok() {
+        if self.worker.signals.try_send(signal).is_ok() {
             self.sync.connected(false);
             self.pending_offer.clear();
             let event = match signal {
@@ -198,7 +167,7 @@ impl Host<'_> {
     fn on_windows_clipboard(&mut self) {
         if !self
             .sync
-            .should_read_windows(self.clipboard.sequence_number())
+            .should_read_windows(self.clipboard.sequence_number(), false)
         {
             return;
         }
@@ -210,11 +179,17 @@ impl Host<'_> {
                 return;
             }
         };
-        match self.sync.queue_push(read, &self.commands) {
-            Ok(Some(kind)) => self
+        let Some((clip, kind)) = self.sync.read_windows(read) else {
+            return;
+        };
+        match self
+            .sync
+            .queue_push(clip, None, false, &self.worker.commands)
+        {
+            Ok(true) => self
                 .log
                 .event("push_queued", format_args!("kind={}", kind.as_str())),
-            Ok(None) => {}
+            Ok(false) => {}
             Err(error) => {
                 let reason = match error {
                     PushQueueError::Full => "queue_full",
@@ -246,8 +221,8 @@ impl Host<'_> {
                 self.pending_offer.clear();
                 self.on_phone_clipboard(clip, while_disconnected);
             }
-            DeviceEvent::PushResult(Ok(())) => self.log.event("push_complete", format_args!("")),
-            DeviceEvent::PushResult(Err(error)) => {
+            DeviceEvent::PushResult(_, Ok(())) => self.log.event("push_complete", format_args!("")),
+            DeviceEvent::PushResult(_, Err(error)) => {
                 if error == PasteboardError::PushBusy {
                     self.sync.allow_resend();
                 }
@@ -274,6 +249,7 @@ impl Host<'_> {
             }
             DeviceEvent::PairingPrompt(_) => self.log.event("pairing", format_args!("")),
             DeviceEvent::Error(_) => self.log.event("device_error", format_args!("")),
+            DeviceEvent::ForgetResult(ok) => self.log.event("forget", format_args!("success={ok}")),
         }
     }
 
@@ -327,7 +303,11 @@ impl Host<'_> {
 
     fn fetch_offer(&self, offer: FileOffer) {
         let bytes = offer.size;
-        match self.commands.try_send(DeviceCommand::FetchOffer(offer)) {
+        match self
+            .worker
+            .commands
+            .try_send(DeviceCommand::FetchOffer(offer))
+        {
             Ok(()) => self
                 .log
                 .event("file_requested", format_args!("bytes={bytes}")),
@@ -444,6 +424,7 @@ struct Log(Instant);
 
 impl Log {
     fn event(&self, event: &str, details: fmt::Arguments<'_>) {
+        copiago_core::diagnostic::event(format_args!("event={event} {details}"));
         let mut out = io::stdout().lock();
         let _ = writeln!(
             out,

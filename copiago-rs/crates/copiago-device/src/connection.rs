@@ -1,7 +1,8 @@
 //! Transport policy and lifecycle of the device worker.
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
+    collections::VecDeque,
     future::{Future, pending},
     ops::ControlFlow,
     path::Path,
@@ -12,6 +13,7 @@ use copiago_core::{
     DeviceInfo,
     clip::{Clip, FileOffer},
     ddi::DdiStage,
+    diagnostic,
     i18n::{Language, LanguagePreference, Message, message},
 };
 use idevice::usbmuxd::UsbmuxdAddr;
@@ -70,6 +72,8 @@ impl HostSignals for () {
 #[derive(Clone, Copy, Debug)]
 pub struct DeviceRunOptions {
     pub language: Language,
+    /// Format generated file names using the saved preference present when the offer arrives.
+    pub follow_saved_language: bool,
     /// Allows pairing, forgetting, saving device details and migrating existing records.
     /// Set false for a read-only probe.
     pub persist_device_data: bool,
@@ -81,6 +85,7 @@ impl Default for DeviceRunOptions {
     fn default() -> Self {
         Self {
             language: LanguagePreference::System.resolve(),
+            follow_saved_language: false,
             persist_device_data: true,
             allow_developer_setup: true,
         }
@@ -309,13 +314,11 @@ async fn run(
         match connect_or_wait(backend, inputs, emit, &mut state).await {
             Ok(()) | Err(Interrupted::Reconnect) => {}
             Err(Interrupted::Forget) => {
-                let event = if backend.forget().is_ok() {
+                let success = backend.forget().is_ok();
+                if success {
                     state.forget();
-                    DeviceEvent::DeviceInfo(DeviceInfo::default())
-                } else {
-                    DeviceEvent::Error(message!("无法删除配对记录"))
-                };
-                if emit(event).is_break() {
+                }
+                if emit(DeviceEvent::ForgetResult(success)).is_break() {
                     return;
                 }
             }
@@ -332,7 +335,15 @@ async fn connect_or_wait(
     emit: &impl Fn(DeviceEvent) -> ControlFlow<()>,
     state: &mut DeviceState,
 ) -> Result<(), Interrupted> {
-    let wait = match backend.paired_device() {
+    let pairing = backend.paired_device();
+    let records = match &pairing {
+        Ok(_) => "1",
+        Err(WifiProbeError::NoPairingRecord) => "0",
+        Err(WifiProbeError::MultiplePairingRecords) => "2+",
+        Err(_) => "unavailable",
+    };
+    diagnostic::event(format_args!("paired_records={records}"));
+    let wait = match pairing {
         Ok(device) => {
             state.select(&device);
             let error = connect_cycle(backend, inputs, emit, state, &device).await?;
@@ -443,7 +454,7 @@ async fn attempt(
     let active = ActiveSession {
         transport,
         ready: Cell::new(false),
-        outstanding_pushes: Cell::new(0),
+        outstanding_pushes: RefCell::default(),
         outstanding_file: Cell::new(false),
         commands: ClipboardQueue::new(MAX_QUEUED_PUSH_BYTES),
     };
@@ -455,9 +466,10 @@ async fn attempt(
         |event| {
             match &event {
                 DeviceEvent::Status(ConnState::Connected { .. }, _) => active.ready.set(true),
-                DeviceEvent::PushResult(_) => active
-                    .outstanding_pushes
-                    .set(active.outstanding_pushes.get() - 1),
+                DeviceEvent::PushResult(id, _) => {
+                    let queued = active.outstanding_pushes.borrow_mut().pop_front();
+                    debug_assert_eq!(queued, Some(*id));
+                }
                 DeviceEvent::FileResult(_) => active.outstanding_file.set(false),
                 _ => {}
             }
@@ -474,10 +486,10 @@ async fn attempt(
         Ok(Ok(())) | Err(Interrupted::Stop) => return Err(Interrupted::Stop),
         Err(other) => Err(other),
     };
-    for _ in 0..active.outstanding_pushes.get() {
+    for id in active.outstanding_pushes.into_inner() {
         emit_event(
             emit,
-            DeviceEvent::PushResult(Err(PasteboardError::Disconnected)),
+            DeviceEvent::PushResult(id, Err(PasteboardError::Disconnected)),
         )?;
     }
     if active.outstanding_file.get() {
@@ -492,19 +504,18 @@ async fn attempt(
 struct ActiveSession {
     transport: Transport,
     ready: Cell<bool>,
-    outstanding_pushes: Cell<usize>,
+    outstanding_pushes: RefCell<VecDeque<Option<u64>>>,
     outstanding_file: Cell<bool>,
     commands: ClipboardQueue,
 }
 
 impl ActiveSession {
-    fn queue_push(&self, clip: Clip) -> Result<(), PasteboardError> {
+    fn queue_push(&self, clip: Clip, id: Option<u64>) -> Result<(), PasteboardError> {
         if !self.ready.get() {
             return Err(PasteboardError::Disconnected);
         }
-        self.commands.send_push(clip)?;
-        self.outstanding_pushes
-            .set(self.outstanding_pushes.get() + 1);
+        self.commands.send_push(clip, id)?;
+        self.outstanding_pushes.borrow_mut().push_back(id);
         Ok(())
     }
 
@@ -616,13 +627,13 @@ impl Phase<'_> {
             {
                 return Err(Interrupted::UsbDetached);
             }
-            Input::Command(DeviceCommand::Push(clip)) => {
+            Input::Command(DeviceCommand::Push(clip, id)) => {
                 let result = match self {
-                    Self::Session(active) => active.queue_push(clip),
+                    Self::Session(active) => active.queue_push(clip, id),
                     _ => Err(PasteboardError::Disconnected),
                 };
                 if result.is_err() {
-                    emit_event(emit, DeviceEvent::PushResult(result))?;
+                    emit_event(emit, DeviceEvent::PushResult(id, result))?;
                 }
             }
             Input::Command(DeviceCommand::FetchOffer(offer)) => {

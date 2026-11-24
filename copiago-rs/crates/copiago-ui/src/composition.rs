@@ -9,7 +9,11 @@ pub use drawing::{Font, TextMeasurer, TextStyle, TextSurface};
 pub use thread::CompositionThread;
 pub use window::POPUP_SETTINGS_CHANGED;
 
-use std::{cell::OnceCell, rc::Rc};
+use std::{
+    cell::OnceCell,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use crate::{
     animation::MotionPolicy,
@@ -24,7 +28,8 @@ use windows::{
         Color,
         Composition::{
             CompositionColorBrush, CompositionRoundedRectangleGeometry, Compositor,
-            ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual, SpriteVisual, Visual,
+            ContainerVisual, Desktop::DesktopWindowTarget, LayerVisual, ShapeVisual, SpriteVisual,
+            Visual,
         },
     },
     Win32::{
@@ -41,6 +46,7 @@ use windows_numerics::{Vector2, Vector3};
 
 pub const DEFAULT_DPI: u32 = 96;
 const SHADOW_MARGIN: f32 = 40.0;
+const HIDE_MS: u32 = 200;
 
 pub const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color {
@@ -82,6 +88,8 @@ impl PopupBounds {
 pub struct PopupHost<'ui> {
     visible: Option<VisiblePopup>,
     windows: PopupWindows,
+    animate_dismissal: bool,
+    closing_until: Option<Instant>,
     _thread: &'ui CompositionThread,
 }
 
@@ -91,6 +99,8 @@ impl<'ui> PopupHost<'ui> {
         Ok(Self {
             visible: None,
             windows: PopupWindows::new()?,
+            animate_dismissal: false,
+            closing_until: None,
             _thread: thread,
         })
     }
@@ -235,6 +245,58 @@ impl<'ui> PopupHost<'ui> {
         Ok(())
     }
 
+    /// Resize the existing scene so the caller can transition both page visuals in place.
+    pub fn resize_at_tray(&mut self, bounds: PopupBounds) -> Result<()> {
+        let Some(visible) = self.visible.as_mut() else {
+            return Ok(());
+        };
+        let tray = visible
+            .tray
+            .ok_or_else(|| Error::new(E_INVALIDARG, "The popup has no tray anchor"))?
+            .refresh(visible.placement.position)?;
+        let placement = tray.place(bounds, visible.placement.dpi)?;
+        visible.scene.resize(placement)?;
+        self.windows.place(placement)?;
+        visible.placement = placement;
+        visible.tray = Some(tray);
+        self.place_accessibility(placement);
+        self.refresh_focus()
+    }
+
+    pub fn set_animate_dismissal(&mut self, enabled: bool) {
+        self.animate_dismissal = enabled;
+    }
+
+    pub fn activate(&self) -> Result<()> {
+        if self.visible.is_some() {
+            self.windows.show(true)?;
+        }
+        Ok(())
+    }
+
+    pub fn request_hide(&mut self, now: Instant) -> Result<()> {
+        if self.closing_until.is_some() {
+            return Ok(());
+        }
+        let policy = MotionPolicy::system();
+        if self.animate_dismissal
+            && policy.allows_motion()
+            && let Some(visible) = self.visible.as_ref()
+            && let Some(tray) = visible.tray
+        {
+            tray.animate_out(&visible.scene, policy)?;
+            self.windows.interaction().hide();
+            self.closing_until = Some(now + Duration::from_millis(u64::from(HIDE_MS)));
+        } else {
+            self.hide();
+        }
+        Ok(())
+    }
+
+    pub fn closing_until(&self) -> Option<Instant> {
+        self.closing_until
+    }
+
     /// Call before dispatching a message returned by GetMessageW. Returns true
     /// for messages handled here. The builder restores the card contents when
     /// Windows changes monitor DPI, including re-rasterizing text and icons.
@@ -247,13 +309,15 @@ impl<'ui> PopupHost<'ui> {
             return Ok(false);
         }
         match message.message {
-            CLOSE_POPUP => self.hide(),
+            CLOSE_POPUP => self.request_hide(Instant::now())?,
             DISMISS_POPUP => {
                 if self.windows.should_dismiss() {
-                    self.hide();
+                    self.request_hide(Instant::now())?;
                 }
             }
-            WM_KEYDOWN if message.wParam.0 == usize::from(VK_ESCAPE.0) => self.hide(),
+            WM_KEYDOWN if message.wParam.0 == usize::from(VK_ESCAPE.0) => {
+                self.request_hide(Instant::now())?;
+            }
             DPI_CHANGED => {
                 if let Some((dpi, position)) = self.windows.take_dpi_change()
                     && let Some(visible) = self.visible.as_ref()
@@ -277,6 +341,7 @@ impl<'ui> PopupHost<'ui> {
 
     /// Hide immediately and tear down the visual tree, surfaces, and graphics devices.
     pub fn hide(&mut self) {
+        self.closing_until = None;
         self.windows.interaction().hide();
         self.windows.hide();
         self.visible = None;
@@ -360,6 +425,9 @@ pub struct PopupScene {
     motion_root: ContainerVisual,
     content: ContainerVisual,
     focus_ring: OnceCell<FocusRing>,
+    shadow_layer: LayerVisual,
+    silhouette: RoundedRectangle,
+    background: RoundedRectangle,
     dpi: u32,
 }
 
@@ -403,9 +471,9 @@ impl PopupScene {
 
         let content = compositor.CreateContainerVisual()?;
         content.SetSize(size)?;
-        content.Children()?.InsertAtBottom(
-            &rounded_rectangle(compositor, size, bounds.radius, rgb(255, 255, 255))?.visual,
-        )?;
+        let background = rounded_rectangle(compositor, size, bounds.radius, rgb(255, 255, 255))?;
+        content.Children()?.InsertAtBottom(&background.visual)?;
+        content.SetClip(&compositor.CreateInsetClip()?)?;
         motion_root.Children()?.InsertAtTop(&content)?;
 
         Ok(Self {
@@ -415,8 +483,30 @@ impl PopupScene {
             motion_root,
             content,
             focus_ring: OnceCell::new(),
+            shadow_layer,
+            silhouette,
+            background,
             dpi: placement.dpi,
         })
+    }
+
+    fn resize(&self, placement: Placement) -> Result<()> {
+        let bounds = placement.bounds;
+        let size = bounds.size();
+        self.content.SetSize(size)?;
+        self.motion_root.SetSize(size)?;
+        self.shadow_layer.SetSize(Vector2::new(
+            placement.width as f32,
+            placement.height as f32,
+        ))?;
+        let radius = bounded_radius(size, bounds.radius)?;
+        for rect in [&self.silhouette, &self.background] {
+            rect.visual.SetSize(size)?;
+            rect.geometry.SetSize(size)?;
+            rect.geometry
+                .SetCornerRadius(Vector2::new(radius, radius))?;
+        }
+        Ok(())
     }
 
     pub fn compositor(&self) -> &Compositor {

@@ -35,6 +35,8 @@ const NOTIFICATIONS: [&str; 3] = [
     "com.apple.mobile.keybagd.lock_status",
 ];
 const METADATA_TIMEOUT: Duration = Duration::from_secs(8);
+// Matches copiago_win::image::MAX_IMAGE_BYTES for the optional RESOLVE path.
+const MAX_ALTERNATE_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const SET_TIMEOUT: Duration = Duration::from_secs(20);
 const ECHO_WINDOW: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -83,6 +85,12 @@ enum PullPolicy {
 
 trait PasteboardBackend {
     async fn pull(&mut self, policy: PullPolicy) -> Result<Snapshot, PasteboardError>;
+    async fn alternate_listing(&mut self) -> Result<Snapshot, PasteboardError>;
+    async fn resolve_alternate(
+        &mut self,
+        item_index: usize,
+        uti: &str,
+    ) -> Result<Vec<u8>, PasteboardError>;
     async fn set(&mut self, item: SetItem) -> Result<Option<PasteboardChange>, PasteboardError>;
     async fn fetch_file(&mut self, offer: FileOffer) -> Result<ReceivedFile, FileTransferError>;
 }

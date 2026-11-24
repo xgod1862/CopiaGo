@@ -1,14 +1,17 @@
-use std::io::Cursor;
+use std::{io::Cursor, time::Duration};
 
 use copiago_core::{
     clip::{Clip, PasteboardChange},
     i18n::{Language, Message},
 };
 use plist::{Dictionary, Value};
+use tokio::time::timeout;
 
 use crate::DeviceEvent;
 
-use super::{PasteboardBackend, PasteboardError, PullPolicy, file_offer, pull};
+use super::{
+    MAX_ALTERNATE_IMAGE_BYTES, PasteboardBackend, PasteboardError, PullPolicy, file_offer, pull,
+};
 
 pub(super) const INLINE_TEXT: [&str; 3] =
     ["public.utf8-plain-text", "public.plain-text", "public.text"];
@@ -16,6 +19,8 @@ pub(super) const PNG_UTI: &str = "public.png";
 const JPEG_UTI: &str = "public.jpeg";
 const HEIC_UTI: &str = "public.heic";
 const HEIC_ALTERNATIVES: [&str; 2] = [PNG_UTI, JPEG_UTI];
+const ALTERNATE_TIMEOUT: Duration = Duration::from_secs(6);
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
 // These also justify the lightweight content request. The current Python
 // reader still extracts text only from the inline UTF-8 representations.
 const DECLARED_TEXT: [&str; 3] = [
@@ -118,19 +123,23 @@ impl Snapshot {
             .any(|name| INLINE_TEXT.contains(&name) || DECLARED_TEXT.contains(&name))
     }
 
+    fn item_at(&self, index: usize) -> Option<&Item> {
+        self.items.iter().find(|item| item.index == index)
+    }
+
     fn take_image(&mut self) -> Option<(usize, Clip)> {
-        for (index, item) in self.items.iter_mut().enumerate() {
+        for item in &mut self.items {
             if let Some(image) = IMAGE_FORMATS
                 .into_iter()
                 .find_map(|(uti, _)| item.take_image(uti))
             {
-                return Some((index, image));
+                return Some((item.index, image));
             }
         }
 
-        self.items.iter_mut().enumerate().find_map(|(index, item)| {
+        self.items.iter_mut().find_map(|item| {
             let archive = item.take_inline(WEB_ARCHIVE)?.into_data()?;
-            Some((index, archive_image(archive)?))
+            Some((item.index, archive_image(archive)?))
         })
     }
 
@@ -205,16 +214,19 @@ impl Item {
         })
     }
 
-    fn declares_heic_alternative(&self) -> bool {
-        self.types
-            .iter()
-            .any(|uti| HEIC_ALTERNATIVES.contains(&uti.as_str()))
+    fn declares(&self, uti: &str) -> bool {
+        self.types.iter().any(|ty| ty == uti)
     }
 
-    fn take_heic_alternative(&mut self) -> Option<Clip> {
-        HEIC_ALTERNATIVES
-            .into_iter()
-            .find_map(|uti| self.take_image(uti))
+    fn permits_alternate(&self, uti: &str) -> bool {
+        self.declares(uti)
+            && self
+                .entries
+                .get(uti)
+                .and_then(Value::as_dictionary)
+                .and_then(|entry| entry.get("size"))
+                .and_then(Value::as_unsigned_integer)
+                .is_none_or(|size| size <= MAX_ALTERNATE_IMAGE_BYTES as u64)
     }
 }
 
@@ -267,6 +279,63 @@ fn is_file_like(uti: &str) -> bool {
         || uti.starts_with("public.zip")
 }
 
+async fn heic_alternate(
+    backend: &mut impl PasteboardBackend,
+    item: &Item,
+    change: &PasteboardChange,
+) -> Option<Clip> {
+    let mut candidates = HEIC_ALTERNATIVES
+        .into_iter()
+        .filter(|uti| item.declares(uti))
+        .peekable();
+    candidates.peek()?;
+    timeout(ALTERNATE_TIMEOUT, async {
+        let mut current = backend.alternate_listing().await.ok()?;
+        if current.change.as_ref() != Some(change) {
+            return None;
+        }
+        while let Some(uti) = candidates.next() {
+            if !current.item_at(item.index)?.permits_alternate(uti) {
+                continue;
+            }
+            let bytes = timeout(RESOLVE_TIMEOUT, backend.resolve_alternate(item.index, uti))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .filter(|bytes| looks_like_alternate(uti, bytes));
+            if bytes.is_none() && candidates.peek().is_none() {
+                break;
+            }
+            // A RESOLVE DATA reply does not carry the change ID. Check it again
+            // before accepting these bytes or resolving the next representation.
+            current = backend.alternate_listing().await.ok()?;
+            if current.change.as_ref() != Some(change) {
+                return None;
+            }
+            if let Some(bytes) = bytes
+                && current.item_at(item.index)?.declares(uti)
+            {
+                return Some(Clip::Image {
+                    bytes,
+                    uti: uti.to_owned(),
+                });
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn looks_like_alternate(uti: &str, bytes: &[u8]) -> bool {
+    match uti {
+        PNG_UTI => bytes.len() >= 33 && bytes.starts_with(b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR"),
+        JPEG_UTI => bytes.len() > 3 && bytes.starts_with(b"\xff\xd8\xff"),
+        _ => false,
+    }
+}
+
 pub(super) struct Update {
     pub change: Option<PasteboardChange>,
     pub event: Option<DeviceEvent>,
@@ -302,17 +371,10 @@ pub(super) async fn read_clip(
         Err(error) => return Err(error),
     };
     if let Some((index, mut image)) = secondary.take_image() {
-        // A JPEG or PNG of the same item can avoid a system HEVC dependency.
-        // AllResolved is optional here because we already have the original.
         if matches!(&image, Clip::Image { uti, .. } if uti == HEIC_UTI)
-            && secondary.change.is_some()
-            && secondary.items[index].declares_heic_alternative()
-            && let Ok(mut resolved) = pull(backend, PullPolicy::AllResolved).await
-            && resolved.change == secondary.change
-            && let Some(alternative) = resolved
-                .items
-                .get_mut(index)
-                .and_then(Item::take_heic_alternative)
+            && let Some(change) = secondary.change.as_ref()
+            && let Some(item) = secondary.item_at(index)
+            && let Some(alternative) = heic_alternate(backend, item, change).await
         {
             image = alternative;
         }

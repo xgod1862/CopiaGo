@@ -1,4 +1,4 @@
-//! Read file representations without assembling a RemoteXPC reply in memory.
+//! Receive pasteboard representations through bounded RemoteXPC frames.
 
 use std::{fmt, io, time::Duration};
 
@@ -26,10 +26,10 @@ mod reply;
 pub(crate) mod simulation;
 
 use frames::ReplyFrames;
+use reply::Destination;
 
 const MIB: u64 = 1024 * 1024;
 const MAX_METADATA_BODY: u64 = 2 * MIB;
-const MAX_FILE_BODY: u64 = MAX_FILE_BYTES + MAX_METADATA_BODY;
 
 /// Pasteboard request used to fetch the file bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +143,7 @@ pub(crate) async fn receive_file(
     if let Some(data) = &offer.data {
         check_size(
             data.len() as u64,
+            MAX_FILE_BYTES,
             Some(offer.size).filter(|size| *size != 0),
         )?;
         destination
@@ -190,8 +191,48 @@ pub(crate) async fn receive_file(
         .await
 }
 
-async fn listing(adapter: &mut AdapterHandle, port: u16) -> Result<Snapshot, FileTransferError> {
+pub(super) async fn listing(
+    adapter: &mut AdapterHandle,
+    port: u16,
+) -> Result<Snapshot, FileTransferError> {
     small_pull(adapter, port, PullPolicy::AllPromised, METADATA_TIMEOUT).await
+}
+
+/// Resolve one image representation. The caller bounds the timeout and checks the change ID.
+pub(super) async fn resolve_alternate_image(
+    adapter: &mut AdapterHandle,
+    port: u16,
+    item_index: usize,
+    uti: &str,
+) -> Result<Vec<u8>, FileTransferError> {
+    async {
+        let mut stream = adapter
+            .connect(port)
+            .await
+            .map_err(|_| FileTransferError::Request)?;
+        resolve_image_on_stream(&mut stream, item_index, uti).await
+    }
+    .with_subscriber(Dispatch::none())
+    .await
+}
+
+async fn resolve_image_on_stream(
+    stream: &mut impl ReadWrite,
+    item_index: usize,
+    uti: &str,
+) -> Result<Vec<u8>, FileTransferError> {
+    let method = Method::Resolve;
+    send(stream, fetch_request(method, uti, item_index, None)).await?;
+    let mut bytes = Vec::new();
+    receive_reply(
+        stream,
+        method,
+        uti,
+        None,
+        Destination::<async_io::Sink>::Image(&mut bytes),
+    )
+    .await?;
+    Ok(bytes)
 }
 
 async fn small_pull(
@@ -313,28 +354,41 @@ async fn receive(
         return Err(FileTransferError::InvalidReply);
     }
     send(stream, fetch_request(method, uti, item_index, expected)).await?;
+    receive_reply(
+        stream,
+        method,
+        uti,
+        change,
+        Destination::File {
+            output: destination,
+            expected,
+        },
+    )
+    .await
+}
+
+async fn receive_reply(
+    stream: &mut impl ReadWrite,
+    method: Method,
+    uti: &str,
+    change: Option<&PasteboardChange>,
+    mut destination: Destination<'_, impl AsyncWrite + Unpin>,
+) -> Result<ReceivedFile, FileTransferError> {
+    let max_body = destination.max_payload() + MAX_METADATA_BODY;
     let mut frames = ReplyFrames::new(stream);
     loop {
-        let size = frames.wrapper_size(MAX_FILE_BODY).await?;
+        let size = frames.wrapper_size(max_body).await?;
         if size != 0
-            && let Some(received) = reply::scan(
-                &mut frames,
-                size,
-                method,
-                uti,
-                expected,
-                change,
-                destination,
-            )
-            .await?
+            && let Some(received) =
+                reply::scan(&mut frames, size, method, uti, change, &mut destination).await?
         {
             return Ok(received);
         }
     }
 }
 
-fn check_size(size: u64, expected: Option<u64>) -> Result<(), FileTransferError> {
-    if size > MAX_FILE_BYTES {
+fn check_size(size: u64, limit: u64, expected: Option<u64>) -> Result<(), FileTransferError> {
+    if size > limit {
         return Err(FileTransferError::TooLarge);
     }
     if expected.is_some_and(|expected| size != expected) {

@@ -155,6 +155,22 @@ impl PasteboardBackend for RsdPasteboard<'_> {
         Snapshot::from_reply(reply)
     }
 
+    async fn alternate_listing(&mut self) -> Result<Snapshot, PasteboardError> {
+        file_transfer::listing(self.adapter, self.port)
+            .await
+            .map_err(|_| PasteboardError::RequestFailed)
+    }
+
+    async fn resolve_alternate(
+        &mut self,
+        item_index: usize,
+        uti: &str,
+    ) -> Result<Vec<u8>, PasteboardError> {
+        file_transfer::resolve_alternate_image(self.adapter, self.port, item_index, uti)
+            .await
+            .map_err(|_| PasteboardError::RequestFailed)
+    }
+
     async fn set(&mut self, item: SetItem) -> Result<Option<PasteboardChange>, PasteboardError> {
         let reply = self.request(set_request(item)).await?;
         set_reply(&reply)

@@ -7,7 +7,9 @@
 | M0 · T-CORE-01 骨架 | 105,984 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
 | M0 · 工程骨架 | 105,984 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
 | M1 · 集成候选 `07d2e93` | 1,956,352 字节 | 未测 | 未测 | 未测 | 未测 | 1,371.15–2,249.55 ms，中位数 1,922.97 ms（5 次） |
-| M2 · T-IMG-02 | 1,956,864 字节，比 `9be9333` 增加 1,024 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
+| M2 · T-IMG-02 初版 `d039a6a` | 1,956,864 字节，比 `9be9333` 增加 1,024 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
+| M2 · T-IMG-02 定向修订 | 2,465,280 字节，比 `a25cf2f` 的 2,453,504 字节增加 11,776 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
+| M2 · 配对、文件、历史和图片 | 2,465,280 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
 | 阶段 / 提交 | 未测 | 未测 | 未测 | 未测 | 未测 | 未测 |
 
 ## 测量方法
@@ -115,14 +117,18 @@ foreach ($size in 100, 500) {
 
 ## M2 · T-IMG-02 HEIC 方案评估
 
-采用方案 (b)。沿用内联 PNG、JPEG 优先级。选中 HEIC 且同一个剪贴板条目声明替代格式时，额外请求一次 `allResolved`，仅采纳变更标识（nonce 和 changeCount）与条目位置均匹配的 PNG 或 JPEG。额外请求最多等待 30 秒，也可能取回同次复制的其他表示。替代格式取用失败时保留原 HEIC，交给 WIC。方案依据是工程评估，真机可用性见下文。[拉取实现](crates/copiago-device/src/pasteboard/content.rs)
+采用方案 (b)。沿用内联 PNG、JPEG 优先级。选中 HEIC 且该条目声明替代格式时，按原始条目索引和 UTI 执行 `RESOLVE`，优先 PNG，其次 JPEG。每次请求前和采纳数据前以有界的 `allPromised` 复核原剪贴板变更标识（nonce 和 changeCount）。可选阶段总限时 6 秒，单次 `RESOLVE` 限时 2 秒。超长、签名明显不符或不可取的候选会跳过，最终可回退至原 HEIC 和 WIC。[拉取实现](crates/copiago-device/src/pasteboard/content.rs)
+
+复用 T-DEV-07 分帧接收器，有界元数据回复上限 2 MiB，`RESOLVE` 外层 XPC 正文上限 66 MiB，所选图片数据上限 64 MiB。图片长度校验通过后才按所需长度分配缓冲区。[分帧实现](crates/copiago-device/src/pasteboard/file_transfer.rs)
+
+定向修订与基线 `a25cf2f` 均在下述 Windows/Rust 环境使用 `cargo build --workspace --release --locked`，按 `Get-Item` 的 `Length` 比较 EXE。
 
 | 方案 | 在无系统 HEVC 解码器时的覆盖 | 体积和许可证 |
 | --- | --- | --- |
 | (a) 动态链接 libheif 和 libde265 | 本机既有 Pillow-HEIF 1.8.1 用 libheif 1.23.6 和 libde265 1.1.3 解出合成 HEIC。CopiaGo 独立 DLL 集成未测。 | 现有 Python wheel 中两个 DLL 合计 3,136,000 字节（2,176,000 和 960,000 字节）。这是参考构建大小，仅含解码器的发行构建体积未测。两库采用 LGPL，项目要求仅动态链接。发布依赖须覆盖对应源码与许可证，并允许替换兼容 DLL。<https://raw.githubusercontent.com/strukturag/libheif/v1.23.6/README.md> <https://raw.githubusercontent.com/strukturag/libheif/v1.23.6/COPYING> <https://raw.githubusercontent.com/strukturag/libde265/v1.1.3/COPYING> |
-| (b) 优先取手机提供的替代格式 | 选到 PNG 或 JPEG 时用 WIC 解码。只有 HEIC 数据时仍依赖 WIC 的系统编解码器。 | Release EXE 为 1,956,864 字节，比同工具链和配置编译的基线多 1,024 字节。新增 DLL 体积为 0 字节。[WIC 解码实现](crates/copiago-win/src/image.rs) <https://learn.microsoft.com/en-us/windows/win32/wic/native-wic-codecs> <https://learn.microsoft.com/en-us/windows/win32/wic/heif-codec> |
+| (b) 优先取手机提供的替代格式 | 选到 PNG 或 JPEG 时用 WIC 解码。只有 HEIC 数据时仍依赖 WIC 的系统编解码器。 | 新增 DLL 体积为 0 字节。初版与定向修订的 Release EXE 体积见上表。[WIC 解码实现](crates/copiago-win/src/image.rs) <https://learn.microsoft.com/en-us/windows/win32/wic/native-wic-codecs> <https://learn.microsoft.com/en-us/windows/win32/wic/heif-codec> |
 
-在 Windows 11 Pro 26H2 build 26300.9974、x64、Rust 1.100.0 下，以 `Get-AppxPackage` 检查当前测试账户，列出 `Microsoft.HEIFImageExtension 1.2.65.0`，无 HEVC 扩展。使用 Pillow 13.0.0 和既有 Pillow-HEIF 生成 160 × 96 的红绿合成图，JPEG 925 字节、HEIC 660 字节。独立 Release 测试进程运行 5 次，计时仅含剪贴板数据准备。[合成样本](crates/copiago-win/src/image/fixtures/)
+Windows 侧数据来自初版 `d039a6a`。环境为 Windows 11 Pro 26H2 build 26300.9974、x64、Rust 1.100.0。当前测试账户通过 `Get-AppxPackage` 查到 `Microsoft.HEIFImageExtension 1.2.65.0`，无 HEVC 扩展。使用 Pillow 13.0.0 和既有 Pillow-HEIF 生成 160 × 96 的红绿合成图，JPEG 925 字节、HEIC 660 字节。独立 Release 测试进程运行 5 次，计时仅含剪贴板数据准备。[合成样本](crates/copiago-win/src/image/fixtures/)
 
 | 测项 | 实测 |
 | --- | --- |
@@ -131,7 +137,7 @@ foreach ($size in 100, 500) {
 | Release 测试进程峰值，含上述两条路径 | 工作集 18,477,056–19,333,120 字节，提交量 3,842,048–3,883,008 字节。指标含测试进程开销。<https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters> |
 | 真机拉取到粘贴的耗时、内存及安装体积 | 未测。 |
 
-协议模拟覆盖了内联 JPEG 优先、PNG/JPEG 承诺数据、只有 HEIC、另一个条目声明替代格式、变更标识不同、替代未兑现和额外请求超时。模拟使用构造的 UTI。相册照片、截图、微信图片、Safari 图片各有 0 个真机样本，四类来源的实际 UTI 及无 HEVC 电脑端到端粘贴均待验。如相册只提供 HEIC，缺少系统解码器时需要本地解码方案。
+定向修订的协议模拟覆盖了原始条目索引、内联 JPEG 优先、PNG/JPEG 回退、变更标识前后复核、长度上限、错误签名和总限时。定向网络耗时、内存峰值未测。相册照片、截图、微信图片、Safari 图片各有 0 个真机样本，四类来源的实际 UTI 及无 HEVC 电脑端到端粘贴均待验。如相册只提供 HEIC，缺少系统解码器时需要本地解码方案。
 
 #### 复验
 
@@ -140,6 +146,7 @@ foreach ($size in 100, 500) {
 ```powershell
 Get-AppxPackage | Where-Object Name -Match 'HEIF|HEVC' | Select-Object Name, Version
 cargo test --release --locked -p copiago-win clipboard::tests::wic_prepares_jpeg_and_uses_the_optional_heic_codec -- --exact --nocapture
+cargo test --locked -p copiago-device --lib targeted_image_checks_payload_and_wrapper_limits_before_reading_data
 ```
 
 真机验证使用独立测试设备、已配对的受保护临时 `ICB_DATA_DIR` 和隔离 Windows 剪贴板。每次从相册复制一张已知 HEIC 照片、复制一张截图、从微信复制图片、从 Safari 复制网页图片后，运行探针并按来源记录各条目的有序 UTI。探针通过已认证的 Wi-Fi 连接执行 `PULL allPromised`，输出 UTI 和计时。期望相册条目存在可兑现的 `public.png` 或 `public.jpeg`，各来源实际的 UTI 以探针为准。

@@ -16,9 +16,9 @@ use windows::Win32::Graphics::Imaging::{
     WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::Graphics::Imaging::{
-    IWICBitmapFrameDecode, IWICBitmapFrameEncode, WICBitmapTransformFlipHorizontal,
-    WICBitmapTransformFlipVertical, WICBitmapTransformOptions, WICBitmapTransformRotate90,
-    WICBitmapTransformRotate180, WICBitmapTransformRotate270,
+    IWICBitmapFrameDecode, IWICBitmapFrameEncode, IWICBitmapSourceTransform,
+    WICBitmapTransformFlipHorizontal, WICBitmapTransformFlipVertical, WICBitmapTransformOptions,
+    WICBitmapTransformRotate90, WICBitmapTransformRotate180, WICBitmapTransformRotate270,
 };
 use windows::Win32::System::Com::StructuredStorage::{
     CreateStreamOnHGlobal, PROPVARIANT, PropVariantClear, PropVariantToUInt16,
@@ -27,7 +27,7 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
     CoUninitialize, IStream, STREAM_SEEK_END, STREAM_SEEK_SET,
 };
-use windows::core::{GUID, w};
+use windows::core::{GUID, Interface, w};
 
 /// Maximum encoded image size in bytes.
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -186,23 +186,112 @@ fn decode_to(encoded: &[u8], target: impl FnOnce(ImageSize) -> ImageSize) -> Res
         if target == size {
             return read_bgra(factory, source, size);
         }
-
-        // SAFETY: The scaler and source are in the active COM apartment and
-        // the dimensions are nonzero and bounded by the original pixel count.
-        let scaler = unsafe {
-            let scaler = factory.CreateBitmapScaler()?;
-            // Putting the scaler immediately after the frame lets WIC use
-            // the decoder's native downscaling, including the JPEG transform.
-            scaler.Initialize(
-                source,
-                target.width,
-                target.height,
-                WICBitmapInterpolationModeFant,
-            )?;
-            scaler
+        // A decoder that cannot shrink while decoding (progressive JPEG, PNG, TIFF…)
+        // materializes the whole image before the scaler sees a row: a 48 MP
+        // progressive JPEG peaked at ~146 MB. Above the budget, use the preview
+        // embedded in the file, or fail so the caller shows its generic icon.
+        // WIC's JPEG decoder reports DCT downscaling for progressive files too,
+        // but still decodes them at full size, so check the frame type itself.
+        let native = if is_progressive_jpeg(encoded) {
+            size.pixels()
+        } else {
+            native_decode_pixels(source, target).unwrap_or(size.pixels())
         };
-        read_bgra(factory, &scaler, target)
+        if native > MAX_FULL_DECODE_PIXELS {
+            return embedded_thumbnail(factory, source, target.width, target.height);
+        }
+        scale_to(factory, source, target)
     })
+}
+
+/// Whether a JPEG's first frame header is progressive (SOF2, SOF6, SOF10, SOF14).
+fn is_progressive_jpeg(data: &[u8]) -> bool {
+    if !data.starts_with(&[0xFF, 0xD8]) {
+        return false;
+    }
+    let mut at = 2;
+    while at + 4 <= data.len() {
+        if data[at] != 0xFF {
+            return false;
+        }
+        let marker = data[at + 1];
+        match marker {
+            0xFF => at += 1, // fill byte
+            0xD0..=0xD7 | 0x01 => at += 2,
+            0xC2 | 0xC6 | 0xCA | 0xCE => return true,
+            0xC0 | 0xC1 | 0xC3 | 0xC5 | 0xC7 | 0xC9 | 0xCB | 0xCD | 0xCF | 0xDA | 0xD9 => {
+                return false;
+            }
+            _ => at += 2 + usize::from(u16::from_be_bytes([data[at + 2], data[at + 3]])),
+        }
+    }
+    false
+}
+
+/// Largest image (in pixels) that scaled decoding may materialize at full size.
+/// About 4 bytes per pixel of decoder scratch keeps the peak under the 30 MB
+/// transient budget (REQUIREMENTS F-IMG-3).
+const MAX_FULL_DECODE_PIXELS: u64 = 6_000_000;
+
+impl ImageSize {
+    fn pixels(self) -> u64 {
+        u64::from(self.width) * u64::from(self.height)
+    }
+}
+
+/// Pixel count the decoder itself would produce for `target`, if it can
+/// downscale natively (baseline JPEG scales by 1/2, 1/4 or 1/8 in the DCT).
+fn native_decode_pixels(source: &IWICBitmapFrameDecode, target: ImageSize) -> Option<u64> {
+    let transform: IWICBitmapSourceTransform = source.cast().ok()?;
+    let (mut width, mut height) = (target.width, target.height);
+    // SAFETY: Both out-pointers are valid u32 locations for the duration of the call.
+    unsafe { transform.GetClosestSize(&mut width, &mut height).ok()? };
+    Some(u64::from(width) * u64::from(height))
+}
+
+fn embedded_thumbnail(
+    factory: &IWICImagingFactory,
+    source: &IWICBitmapFrameDecode,
+    max_width: u32,
+    max_height: u32,
+) -> Result<BgraImage> {
+    // SAFETY: The frame belongs to the active apartment; the thumbnail it
+    // returns (for JPEG, the EXIF preview) is small and decoded on demand.
+    let thumbnail = unsafe { source.GetThumbnail() }.map_err(|_| ImageError::ImageTooLarge)?;
+    let (mut width, mut height) = (0, 0);
+    // SAFETY: Both out-pointers are valid u32 locations for the duration of the call.
+    unsafe { thumbnail.GetSize(&mut width, &mut height)? };
+    let size = ImageSize::checked(width, height)?;
+    if size.pixels() > MAX_FULL_DECODE_PIXELS {
+        return Err(ImageError::ImageTooLarge);
+    }
+    let target = size.fit_within(max_width, max_height);
+    if target == size {
+        return read_bgra(factory, &thumbnail, size);
+    }
+    scale_to(factory, &thumbnail, target)
+}
+
+fn scale_to(
+    factory: &IWICImagingFactory,
+    source: &IWICBitmapSource,
+    target: ImageSize,
+) -> Result<BgraImage> {
+    // SAFETY: The scaler and source are in the active COM apartment and
+    // the dimensions are nonzero and bounded by the original pixel count.
+    let scaler = unsafe {
+        let scaler = factory.CreateBitmapScaler()?;
+        // Putting the scaler immediately after the frame lets WIC use
+        // the decoder's native downscaling, including the JPEG transform.
+        scaler.Initialize(
+            source,
+            target.width,
+            target.height,
+            WICBitmapInterpolationModeFant,
+        )?;
+        scaler
+    };
+    read_bgra(factory, &scaler, target)
 }
 
 /// Encodes straight-alpha BGRA as PNG.

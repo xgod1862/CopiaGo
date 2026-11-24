@@ -279,3 +279,23 @@ fn secure_delete_is_set_and_a_failed_prune_rolls_back_the_insert() {
     assert!(history.get(MAX_ITEMS as i64 + 1).unwrap().is_none());
     assert!(history.entries(Source::Phone).unwrap().is_empty());
 }
+#[test]
+fn image_without_a_thumbnail_is_saved_with_an_empty_preview() {
+    let dir = TestDir::new();
+    let history = history(&dir);
+    let bytes = vec![0xFF, 0xD8, 0xFF, 0xC2, 1, 2, 3];
+    let clip = Clip::Image {
+        bytes: bytes.clone(),
+        uti: "public.jpeg".into(),
+    };
+    assert!(
+        history
+            .add(Source::Phone, &clip, |_, _, _| Ok(Vec::new()))
+            .unwrap()
+    );
+    let entries = history.entries(Source::Phone).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].kind, "image");
+    assert!(entries[0].preview.is_empty());
+    assert!(history.get(entries[0].id).unwrap() == Some(StoredClip::Image(bytes)));
+}

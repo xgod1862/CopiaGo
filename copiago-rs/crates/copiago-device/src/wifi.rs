@@ -146,6 +146,22 @@ pub async fn probe_wifi_pasteboard_types(
     Ok(items)
 }
 
+/// Wait until the paired phone advertises itself on the local network.
+/// Never resolves when the record has no IRK or browsing is unavailable.
+pub(crate) async fn wait_for_advertisement(device: &PairedDevice) {
+    let irk = record::RemoteRecord::read(&device.path)
+        .ok()
+        .and_then(|record| record.peer_alt_irk().copied());
+    match irk {
+        Some(irk) => {
+            discovery::watch(&irk)
+                .with_subscriber(Dispatch::none())
+                .await
+        }
+        None => std::future::pending().await,
+    }
+}
+
 pub(crate) async fn open_wifi_tunnel(
     device: &PairedDevice,
     options: WifiProbeOptions,

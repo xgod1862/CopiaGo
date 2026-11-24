@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::{
-    animation::{Animator, MotionPolicy, Spring, Tween},
+    animation::{Animator, MotionPolicy, Tween},
     composition::{Font, PopupScene, RoundedRectangle, rounded_rectangle},
 };
 
@@ -18,8 +18,8 @@ use windows::{
 };
 use windows_numerics::{Vector2, Vector3};
 
-const REFLOW_MS: u32 = 420;
-const EXIT_MS: u32 = 250;
+const REFLOW_MS: u32 = 340;
+const EXIT_MS: u32 = 180;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ItemKind {
@@ -73,7 +73,8 @@ impl ItemAction {
                 if copied { '\u{E73E}' } else { '\u{E8C8}' },
                 ButtonStyle::Primary,
             ),
-            Self::Send => ('\u{E898}', ButtonStyle::Tinted),
+            // A paper plane reads as "send"; the old upload arrow looked like "pin to top".
+            Self::Send => ('\u{E724}', ButtonStyle::Tinted),
             Self::Delete => ('\u{E74D}', ButtonStyle::Danger),
         }
     }
@@ -220,27 +221,15 @@ impl ListItem {
         visual.Children()?.InsertAtTop(&entrance)?;
         entrance.Children()?.InsertAtTop(&press)?;
 
+        // A selected row reads through a soft accent tint rather than an outline.
         let colors = if selected {
-            (theme.white, theme.white)
+            (theme.tint, theme.tint_hover)
         } else {
             (theme.card, theme.card_hover)
         };
         let compositor = scene.compositor();
         let children = press.Children()?;
-        let background = if selected {
-            let border = rounded_rectangle(compositor, bounds.size(), 16.0, theme.accent)?;
-            children.InsertAtBottom(&border.visual)?;
-            let background = rounded_rectangle(
-                compositor,
-                Vector2::new(layout.width - 3.0, layout.height - 3.0),
-                14.5,
-                colors.0,
-            )?;
-            background.visual.SetOffset(xy(1.5, 1.5))?;
-            background
-        } else {
-            rounded_rectangle(compositor, bounds.size(), 16.0, colors.0)?
-        };
+        let background = rounded_rectangle(compositor, bounds.size(), 16.0, colors.0)?;
         children.InsertAtTop(&background.visual)?;
 
         let (glyph, tile_fill, tile_ink) = layout.kind.tile(theme);
@@ -399,15 +388,21 @@ impl ListItem {
             return Ok(());
         }
         let target = self.position.target();
-        let from = Vector2::new(target.X, target.Y - 18.0);
+        let from = Vector2::new(target.X, target.Y - 10.0);
         animator.implicit_offset(&self.visual, 0)?;
         self.visual.SetOffset(at(from))?;
         self.entrance.SetOpacity(0.0)?;
-        self.entrance.SetScale(Vector3::new(0.97, 0.97, 1.0))?;
+        self.entrance.SetScale(Vector3::new(0.98, 0.98, 1.0))?;
         animator.implicit_offset(&self.visual, REFLOW_MS)?;
         self.visual.SetOffset(at(target))?;
-        animator.opacity(&self.entrance, 1.0, Tween::delayed(300, 60))?;
-        animator.spring_scale(&self.entrance, 1.0, Spring::new(60, 0.7))?;
+        animator.opacity(&self.entrance, 1.0, Tween::delayed(220, 40))?;
+        animator.animate_v3(
+            &self.entrance.cast()?,
+            h!("Scale"),
+            Vector3::new(1.0, 1.0, 1.0),
+            Tween::new(REFLOW_MS).enter(),
+            |scale| self.entrance.SetScale(scale),
+        )?;
         self.position = OffsetTransition::new(from, target, now, REFLOW_MS);
         self.position_policy = Some(animator.policy());
         Ok(())
@@ -429,11 +424,11 @@ impl ListItem {
                     &clip.cast()?,
                     h!("BottomInset"),
                     self.layout.height,
-                    Tween::new(EXIT_MS),
+                    Tween::new(EXIT_MS).exit(),
                     |height| clip.SetBottomInset(height),
                 )?;
             }
-            animator.opacity(&self.entrance, 0.0, Tween::new(EXIT_MS))
+            animator.opacity(&self.entrance, 0.0, Tween::new(EXIT_MS).exit())
         })
     }
 

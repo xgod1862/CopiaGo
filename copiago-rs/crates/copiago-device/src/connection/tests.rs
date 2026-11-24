@@ -53,6 +53,8 @@ struct FakePhone {
     release_request: Notify,
     pushed: RefCell<Vec<Clip>>,
     fetched: RefCell<Vec<FileOffer>>,
+    /// Delay after which the phone announces itself while the worker waits.
+    advertises_after: Cell<Option<Duration>>,
 }
 
 impl FakePhone {
@@ -67,6 +69,7 @@ impl FakePhone {
             release_request: Notify::new(),
             pushed: RefCell::new(Vec::new()),
             fetched: RefCell::new(Vec::new()),
+            advertises_after: Cell::new(None),
         }
     }
 
@@ -136,6 +139,13 @@ impl Backend for FakePhone {
     async fn usb_id(&self, device: &PairedDevice) -> Result<Option<u32>, UsbProbeError> {
         self.record_call(Call::UsbList);
         Ok((self.attached.get() == Some(device.serial.as_str())).then_some(USB_ID))
+    }
+
+    async fn advertisement(&self, _device: &PairedDevice) {
+        match self.advertises_after.get() {
+            Some(delay) => sleep(delay).await,
+            None => pending().await,
+        }
     }
 
     async fn session(
@@ -902,4 +912,51 @@ async fn file_commands_reach_the_connected_session_and_do_not_survive_its_end() 
     };
     tokio::join!(run(&phone, &mut inputs, &emit), verify);
     assert!(phone.fetched.into_inner() == [offer.clone(), offer]);
+}
+
+/// Seconds between consecutive `Waiting` statuses while the phone stays away.
+async fn waiting_gaps(phone: &FakePhone, count: usize) -> Vec<u64> {
+    let (_send, mut commands) = mpsc::channel(8);
+    let mut inputs = Inputs {
+        commands: &mut commands,
+        signals: Some(()),
+        detached: None,
+    };
+    let times = RefCell::new(Vec::new());
+    run(phone, &mut inputs, &|event| {
+        if matches!(event, DeviceEvent::Status(ConnState::Waiting, _)) {
+            let mut times = times.borrow_mut();
+            times.push(Instant::now());
+            if times.len() > count {
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    })
+    .await;
+    times
+        .into_inner()
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).as_secs())
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_absent_phone_is_polled_slowly_after_the_fast_retries() {
+    let misses = FAST_RETRIES as usize + 2;
+    let phone = FakePhone::new(None, (0..misses + 1).map(|_| Session::Failure(OFFLINE)));
+    let gaps = waiting_gaps(&phone, misses).await;
+    let mut expected = vec![RETRY_DELAY.as_secs(); FAST_RETRIES as usize];
+    expected.extend([IDLE_RETRY.as_secs(); 2]);
+    assert_eq!(gaps, expected);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_advertisement_ends_the_slow_wait_early() {
+    let misses = FAST_RETRIES as usize + 1;
+    let phone = FakePhone::new(None, (0..misses + 1).map(|_| Session::Failure(OFFLINE)));
+    // Listening starts after the minimum delay; the announcement then ends the 30 s wait.
+    phone.advertises_after.set(Some(Duration::from_secs(10)));
+    let gaps = waiting_gaps(&phone, misses).await;
+    assert_eq!(gaps.last(), Some(&(RETRY_DELAY.as_secs() + 10)));
 }

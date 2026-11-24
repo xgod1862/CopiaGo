@@ -389,7 +389,7 @@ mod example {
             self.view
                 .as_mut()
                 .unwrap()
-                .set_interaction(self.hovered, self.pressed)
+                .set_interaction(self.hovered, self.pressed, Instant::now())
         }
     }
 

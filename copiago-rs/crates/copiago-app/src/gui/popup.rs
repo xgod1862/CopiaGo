@@ -482,7 +482,7 @@ impl<'a> Popup<'a> {
                         Some(Target::History(target)) => Some(target),
                         _ => None,
                     };
-                    history.set_interaction(hovered, pressed)?;
+                    history.set_interaction(hovered, pressed, now)?;
                 }
                 Body::Settings(settings) => {
                     let pressed = match self.pressed {

@@ -19,7 +19,7 @@ use crate::{
     components::{
         Interaction, ItemAction, ItemActions, ItemContent, ItemHit, ItemKind, ItemLayout,
         LIGHT_THEME, ListItem, ProgressBar, ProgressState, Rect, Removal, ScrollLayout, ScrollView,
-        Status, StatusPill, Toast, holder, xy,
+        Status, StatusPill, Toast, Tooltip, holder, xy,
     },
     composition::{Font, PopupBounds, PopupScene, TextMeasurer},
 };
@@ -188,6 +188,8 @@ pub struct HistoryView {
     scroll: ScrollView,
     fade: SpriteVisual,
     toast: Toast,
+    tooltip: Tooltip,
+    language: copiago_core::i18n::Language,
     rows: Vec<Row>,
 }
 
@@ -254,6 +256,8 @@ impl HistoryView {
         children.InsertAtTop(progress.visual())?;
         children.InsertAtTop(scroll.visual())?;
         children.InsertAtTop(toast.visual())?;
+        let tooltip = action_tooltip(scene, layout, page.language)?;
+        children.InsertAtTop(tooltip.visual())?;
         let mut view = Self {
             root,
             animator,
@@ -263,6 +267,8 @@ impl HistoryView {
             scroll,
             fade,
             toast,
+            tooltip,
+            language: page.language,
             rows: Vec::new(),
         };
         view.refresh(scene, page, layout, now)?;
@@ -291,6 +297,14 @@ impl HistoryView {
                 E_INVALIDARG,
                 "History layout needs a resized popup",
             ));
+        }
+        if page.language != self.language {
+            let tooltip = action_tooltip(scene, layout, page.language)?;
+            let children = self.root.Children()?;
+            children.Remove(self.tooltip.visual())?;
+            children.InsertAtTop(tooltip.visual())?;
+            self.tooltip = tooltip;
+            self.language = page.language;
         }
         let records = &page.list(page.tab).records;
         if layout.state.tab != page.tab
@@ -433,6 +447,7 @@ impl HistoryView {
         &mut self,
         hovered: Option<HistoryTarget>,
         pressed: Option<HistoryTarget>,
+        now: Instant,
     ) -> Result<()> {
         let state = |target| match (hovered == Some(target), pressed == Some(target)) {
             (true, true) => Interaction::Pressed,
@@ -451,10 +466,30 @@ impl HistoryView {
                 });
             row.visual.set_action_interaction(&self.animator, active)?;
         }
+        // Name the icon-only row action under a resting pointer. A press hides it.
+        let layout = self.scroll.layout();
+        let offset = self.scroll.offset_at(now);
+        let tip = match hovered {
+            Some(HistoryTarget::Action(action)) if pressed.is_none() => {
+                self.rows.iter().find_map(|row| {
+                    let (key, action) = match action {
+                        HistoryAction::Copy(id) if id == row.id => (0, ItemAction::Copy),
+                        HistoryAction::Send(id) if id == row.id => (1, ItemAction::Send),
+                        HistoryAction::Delete(id) if id == row.id => (2, ItemAction::Delete),
+                        _ => return None,
+                    };
+                    let bounds = row.visual.action_bounds_at(action, now)?;
+                    Some((key, layout.visible_bounds(bounds, offset)?))
+                })
+            }
+            _ => None,
+        };
+        self.tooltip.set(&self.animator, tip)?;
         Ok(())
     }
 
     pub fn scroll_wheel(&mut self, delta: i16, now: Instant) -> Result<()> {
+        self.tooltip.set(&self.animator, None)?;
         self.scroll.scroll_wheel(&self.animator, delta, now)
     }
 
@@ -787,4 +822,25 @@ fn viewport_fade(scene: &PopupScene) -> Result<SpriteVisual> {
     visual.SetOffset(xy(0.0, LIST_HEIGHT - 18.0))?;
     visual.SetBrush(&brush)?;
     Ok(visual)
+}
+
+/// Labels in the key order used by `HistoryView::set_interaction`.
+const ACTION_TIPS: [&str; 3] = ["复制", "发送到 iPhone", "删除"];
+
+fn action_tooltip(
+    scene: &PopupScene,
+    layout: &HistoryLayout,
+    language: copiago_core::i18n::Language,
+) -> Result<Tooltip> {
+    let labels = ACTION_TIPS.map(|label| tr!(language, label));
+    let labels = labels
+        .iter()
+        .map(|label| label.as_ref())
+        .collect::<Vec<_>>();
+    Tooltip::new(
+        scene,
+        Rect::new(0.0, 0.0, WIDTH, layout.bounds().height),
+        &labels,
+        &LIGHT_THEME,
+    )
 }

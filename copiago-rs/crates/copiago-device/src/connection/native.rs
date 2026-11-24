@@ -14,7 +14,7 @@ use crate::{
     usb::{PairingError, RsdTunnel, open_paired_usb_tunnel, pair_over_usb, paired_usb_id},
     wifi::{
         PairedDevice, WifiProbeOptions, WifiTunnel, find_paired_device, forget_remote_records,
-        open_wifi_tunnel,
+        open_wifi_tunnel, wait_for_advertisement,
     },
 };
 
@@ -56,6 +56,10 @@ impl Backend for NativeDevice<'_> {
 
     async fn usb_id(&self, device: &PairedDevice) -> Result<Option<u32>, UsbProbeError> {
         paired_usb_id(self.addr, device).await
+    }
+
+    async fn advertisement(&self, device: &PairedDevice) {
+        wait_for_advertisement(device).await;
     }
 
     async fn session(

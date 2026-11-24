@@ -321,7 +321,7 @@ impl Chrome {
         animator.offset(
             &indicator.visual,
             xy(x(self.state.tab) + 3.0, y + 3.0),
-            Tween::new(300),
+            Tween::new(280),
         )?;
         for (tab, name) in [(Source::Phone, "iPhone"), (Source::Pc, "电脑")] {
             let name = tr!(self.state.language, name);

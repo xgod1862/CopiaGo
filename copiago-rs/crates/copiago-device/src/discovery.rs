@@ -47,6 +47,24 @@ pub async fn discover(peer_alt_irk: Option<&[u8; 16]>) -> io::Result<Vec<Candida
     Ok(collect_candidates(deadline, peer_alt_irk, async || scan.next().await).await)
 }
 
+/// Resolve once Windows reports an advertisement that matches the pairing record.
+/// Windows keeps browsing in the background and delivers the phone's own announcement
+/// when it rejoins the network, so waiting here costs no polling. If browsing cannot
+/// start this never resolves and callers fall back to their timer.
+pub(crate) async fn watch(peer_alt_irk: &[u8; 16]) {
+    if let Ok(mut scan) = windows::Scan::start() {
+        while let Some(advertisement) = scan.next().await {
+            if advertisement
+                .into_candidate(Some(peer_alt_irk))
+                .is_some_and(|candidate| candidate.auth_tag_matches)
+            {
+                return;
+            }
+        }
+    }
+    std::future::pending().await
+}
+
 pub(crate) fn matched_addresses(candidates: &[Candidate]) -> Vec<SocketAddr> {
     candidates
         .iter()

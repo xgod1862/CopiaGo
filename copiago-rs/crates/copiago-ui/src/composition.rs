@@ -18,7 +18,7 @@ use std::{
 use crate::{
     animation::MotionPolicy,
     components::Rect,
-    focus::{Card, FocusElement, FocusEvent, FocusId, FocusRing},
+    focus::{Card, FocusElement, FocusEvent, FocusId},
 };
 use drawing::Drawing;
 use position::TrayPlacement;
@@ -28,8 +28,7 @@ use windows::{
         Color,
         Composition::{
             CompositionColorBrush, CompositionRoundedRectangleGeometry, Compositor,
-            ContainerVisual, Desktop::DesktopWindowTarget, LayerVisual, ShapeVisual, SpriteVisual,
-            Visual,
+            ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual, SpriteVisual, Visual,
         },
     },
     Win32::{
@@ -46,7 +45,7 @@ use windows_numerics::{Vector2, Vector3};
 
 pub const DEFAULT_DPI: u32 = 96;
 const SHADOW_MARGIN: f32 = 40.0;
-const HIDE_MS: u32 = 200;
+const HIDE_MS: u32 = 170;
 
 pub const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color {
@@ -402,9 +401,6 @@ impl<'ui> PopupHost<'ui> {
 
     fn refresh_focus(&self) -> Result<()> {
         let interaction = self.windows.interaction();
-        if let Some(scene) = self.scene() {
-            scene.show_focus(interaction.focus_bounds())?;
-        }
         interaction.announce_focus(self.hwnd());
         Ok(())
     }
@@ -424,9 +420,6 @@ pub struct PopupScene {
     root: ContainerVisual,
     motion_root: ContainerVisual,
     content: ContainerVisual,
-    focus_ring: OnceCell<FocusRing>,
-    shadow_layer: LayerVisual,
-    silhouette: RoundedRectangle,
     background: RoundedRectangle,
     dpi: u32,
 }
@@ -450,25 +443,6 @@ impl PopupScene {
         motion_root.SetCenterPoint(Vector3::new(size.X / 2.0, size.Y / 2.0, 0.0))?;
         root.Children()?.InsertAtTop(&motion_root)?;
 
-        // LayerVisual's shadow can cover the layer's own contents. Put only
-        // the silhouette in that layer and keep the card contents above it.
-        let shadow_layer = compositor.CreateLayerVisual()?;
-        // LayerVisual's offscreen raster is sized in pixels. Keeping its DIP
-        // size here clips the shadow's right and bottom edges at higher DPI.
-        shadow_layer.SetSize(Vector2::new(
-            placement.width as f32,
-            placement.height as f32,
-        ))?;
-        let silhouette = rounded_rectangle(compositor, size, bounds.radius, rgb(255, 255, 255))?;
-        shadow_layer.Children()?.InsertAtTop(&silhouette.visual)?;
-        let shadow = compositor.CreateDropShadow()?;
-        shadow.SetBlurRadius(28.0)?;
-        shadow.SetOffset(Vector3::new(0.0, 10.0, 0.0))?;
-        shadow.SetColor(rgb(23, 32, 43))?;
-        shadow.SetOpacity(0.20)?;
-        shadow_layer.SetShadow(&shadow)?;
-        motion_root.Children()?.InsertAtBottom(&shadow_layer)?;
-
         let content = compositor.CreateContainerVisual()?;
         content.SetSize(size)?;
         let background = rounded_rectangle(compositor, size, bounds.radius, rgb(255, 255, 255))?;
@@ -482,9 +456,6 @@ impl PopupScene {
             root,
             motion_root,
             content,
-            focus_ring: OnceCell::new(),
-            shadow_layer,
-            silhouette,
             background,
             dpi: placement.dpi,
         })
@@ -495,17 +466,12 @@ impl PopupScene {
         let size = bounds.size();
         self.content.SetSize(size)?;
         self.motion_root.SetSize(size)?;
-        self.shadow_layer.SetSize(Vector2::new(
-            placement.width as f32,
-            placement.height as f32,
-        ))?;
         let radius = bounded_radius(size, bounds.radius)?;
-        for rect in [&self.silhouette, &self.background] {
-            rect.visual.SetSize(size)?;
-            rect.geometry.SetSize(size)?;
-            rect.geometry
-                .SetCornerRadius(Vector2::new(radius, radius))?;
-        }
+        let rect = &self.background;
+        rect.visual.SetSize(size)?;
+        rect.geometry.SetSize(size)?;
+        rect.geometry
+            .SetCornerRadius(Vector2::new(radius, radius))?;
         Ok(())
     }
 
@@ -568,17 +534,6 @@ impl PopupScene {
         }
         let drawing = Drawing::new(&self.compositor)?;
         draw(self.drawing.get_or_init(|| drawing))
-    }
-
-    fn show_focus(&self, bounds: Option<Rect>) -> Result<()> {
-        if let Some(ring) = self.focus_ring.get() {
-            return ring.show(bounds);
-        }
-        if bounds.is_some() {
-            let ring = FocusRing::new(self)?;
-            self.focus_ring.get_or_init(|| ring).show(bounds)?;
-        }
-        Ok(())
     }
 }
 
@@ -699,7 +654,7 @@ mod focus_tests {
 
     #[test]
     #[ignore = "requires a desktop with Windows Composition"]
-    fn isolated_window_paints_focus_and_routes_keys_without_native_input() -> Result<()> {
+    fn isolated_window_tracks_focus_and_routes_keys_without_native_input() -> Result<()> {
         let thread = CompositionThread::new()?;
         let mut popup = PopupHost::new(&thread)?;
         popup.show(
@@ -731,8 +686,6 @@ mod focus_tests {
             popup.handle_focus_message(&message)?,
             Some(FocusEvent::Changed(Some(id)))
         );
-        let ring = popup.scene().unwrap().focus_ring.get().unwrap();
-        assert!(ring.is_visible()?);
         message.wParam = WPARAM(usize::from(VK_RETURN.0));
         assert_eq!(
             popup.handle_focus_message(&message)?,
@@ -741,7 +694,6 @@ mod focus_tests {
         // SAFETY: The test still owns this HWND and sends a local notification.
         unsafe { SendMessageW(popup.hwnd(), WM_KILLFOCUS, None, None) };
         popup.refresh_focus()?;
-        assert!(!ring.is_visible()?);
         assert_eq!(popup.handle_focus_message(&message)?, None);
         popup.hide();
         assert!(popup.scene().is_none());

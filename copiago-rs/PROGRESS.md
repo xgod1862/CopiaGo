@@ -32,6 +32,6 @@
 | T-WIN-02 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | Windows Shell 删除测试图标后由 TaskbarCreated 恢复，双进程只激活原 PID，开机启动隔离验证精确旧 Run 值。Explorer 实际重启、主题和用户登录待联验。 |
 | T-WIN-03 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | 启动 15 s 后单次检查，重新开启立即检查，关闭取消并清提示。真实 GitHub 稳定版提示和发布页跳转通过。2.0.0-beta 沿用 Python 规则无提示，正式 UI 随 T-APP-02 验收。 |
 | T-APP-02 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/13 | 正式托盘、两页、配对与传输联动完成；双进程、原生 UIA、设置和隔离旧记录通过。空闲 2.39 MB、弹窗最高 12.94 MB。真机及实际睡眠/VPN 待测。 |
-| T-PKG-01 | 待办 | — | |
+| T-PKG-01 | 已合并 | — | 默认 x64 安装包 3,638,100 字节，便携 ZIP 1,838,192。隔离实装 7,772,887 字节，双 PowerShell、卸载、签名入口和版本通过。 |
 | T-PKG-02 | 待办 | — | |
 | T-QA-01 | 待办 | — | |

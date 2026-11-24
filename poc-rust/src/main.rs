@@ -196,7 +196,7 @@ async fn open_wifi_tunnel(args: &Args) -> Res<(AdapterHandle, u16)> {
     eprintln!("RP record {} (host identifier {})", record.display(), rpf.identifier);
 
     let t = Instant::now();
-    let candidates = mdns::browse_remotepairing(Duration::from_secs(5)).await?;
+    let candidates = mdns::browse_remotepairing(Duration::from_secs(2)).await?;
     eprintln!("mDNS _remotepairing._tcp: {} answer(s) in {:.2}s", candidates.len(), t.elapsed().as_secs_f64());
     for c in &candidates {
         eprintln!("  {} {:?}:{} txt={:?}", c.name, c.addrs, c.port, c.txt);
@@ -345,6 +345,10 @@ async fn run(args: &Args) -> Res<()> {
         if let Some(original) = snap.text() {
             pb2.set_text(&original, GENERAL_PASTEBOARD).await?;
             eprintln!("restored original pasteboard text ({} bytes)", original.len());
+        }
+        // Fail only after restoring, so a regression run never reports a bad write as a pass.
+        if !ok {
+            return Err("pasteboard read-back did not match the text that was set".into());
         }
     }
     mem::report("after pasteboard");

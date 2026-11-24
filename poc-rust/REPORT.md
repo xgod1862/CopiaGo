@@ -98,7 +98,7 @@
 - 弹窗隐藏时会丢弃整个场景（视觉树、表面、D2D/D3D 设备），只保留托盘需要的部分。
 - **踩到的坑**：①`LayerVisual.Shadow` 在本机会盖住这一层自身的内容，所以改成"阴影层只放卡片轮廓，内容层放在它上面"的结构。②windows-rs 没法直接构造 `IReference<Vector3>`，Vector3 弹簧动画改成按分量（`Offset.Y`、`Scale.X` 等）分别用标量弹簧，效果相同。
 
-运行：`anim-demo\target\release\anim-demo.exe`。空格键隐藏/显示，Esc 退出；`--hw` 改用硬件 D3D 设备对比内存，`--hide-after N` 让弹窗 N 秒后自动隐藏，`--noshadow` 关闭阴影。
+运行：`anim-demo\target\release\anim-demo.exe`。空格键或 Ctrl+Alt+Space 隐藏/显示（窗口隐藏后只能用全局热键），Esc 或 Ctrl+Alt+Q 退出；`--hw` 改用硬件 D3D 设备对比内存，`--hide-after N` 让弹窗 N 秒后自动隐藏，`--noshadow` 关闭阴影。
 
 **对重写估算的影响**：之前估计"弹窗显示时 10–20 MB"偏保守，用 WARP 的话，显示时预计 5–10 MB（加上真实的历史缩略图后）。动画相关的额外工作量约 3–5 人日，结论不变。
 

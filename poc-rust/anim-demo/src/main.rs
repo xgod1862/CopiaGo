@@ -65,6 +65,8 @@ const TIMER_STEP: usize = 1;
 const TIMER_MEM: usize = 2;
 const TIMER_HIDE_DONE: usize = 3;
 const TIMER_AUTOHIDE: usize = 4;
+const HOTKEY_TOGGLE: i32 = 1;
+const HOTKEY_QUIT: i32 = 2;
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color { A: 255, R: r, G: g, B: b }
@@ -214,6 +216,9 @@ fn main() -> Result<()> {
         });
         with_app(|app| app.show())?;
         SetTimer(Some(hwnd), TIMER_MEM, 1000, None);
+        // A hidden window gets no key presses, so show/hide and quit also have global hotkeys.
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_TOGGLE, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SPACE.0 as u32);
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_QUIT, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, u32::from(b'Q'));
         // --hide-after N: hide once after N seconds (to measure the hidden, GPU-free state).
         let mut it = std::env::args().skip_while(|a| a != "--hide-after").skip(1);
         if let Some(secs) = it.next().and_then(|s| s.parse::<u32>().ok()) {
@@ -261,6 +266,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             Ok(())
         }
         WM_KEYDOWN if wp.0 == VK_SPACE.0 as usize => with_app(|app| if app.scene.is_some() { app.hide() } else { app.show() }),
+        WM_HOTKEY if wp.0 as i32 == HOTKEY_TOGGLE => with_app(|app| if app.scene.is_some() { app.hide() } else { app.show() }),
+        WM_HOTKEY if wp.0 as i32 == HOTKEY_QUIT => {
+            unsafe { PostQuitMessage(0) };
+            Ok(())
+        }
         WM_MOUSEMOVE => with_app(|app| app.mouse_move(x, y)),
         WM_MOUSELEAVE => with_app(|app| {
             app.tracking = false;

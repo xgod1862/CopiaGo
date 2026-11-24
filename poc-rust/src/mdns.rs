@@ -24,22 +24,14 @@ pub async fn browse_remotepairing(timeout: Duration) -> Result<Vec<Candidate>, B
                 // IPv4 first: link-local IPv6 needs a scope id the daemon may not report.
                 addrs.sort_by_key(|a| a.is_ipv6());
                 let txt = info.get_properties().iter().map(|p| (p.key().to_string(), p.val_str().to_string())).collect();
+                // Collect every answer in the window: the first device to answer is not
+                // necessarily the paired iPhone, and the caller tries each candidate in turn.
                 if !out.iter().any(|c| c.name == info.get_fullname()) {
                     out.push(Candidate { name: info.get_fullname().to_string(), addrs, port: info.get_port(), txt });
-                    // One phone is enough for the prototype; keep listening briefly for others.
-                    if out.len() == 1 {
-                        let _ = tokio::time::timeout(Duration::from_millis(500), async {}).await;
-                    }
-                }
-                if !out.is_empty() && Instant::now() + Duration::from_secs(1) > end {
-                    break;
                 }
             }
             Ok(Ok(_)) => {}
             Ok(Err(_)) | Err(_) => break,
-        }
-        if !out.is_empty() {
-            break;
         }
     }
     let _ = daemon.shutdown();

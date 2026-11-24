@@ -1,0 +1,27 @@
+[workspace]
+members = [
+    "crates/copiago-app",
+    "crates/copiago-core",
+    "crates/copiago-ddi",
+    "crates/copiago-device",
+    "crates/copiago-ui",
+    "crates/copiago-win",
+]
+resolver = "3"
+
+[workspace.package]
+version = "2.0.0-beta"
+edition = "2024"
+rust-version = "1.100"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

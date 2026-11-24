@@ -1,7 +1,7 @@
 # Line endings for a repository edited on both macOS and Windows.
 #
 # Text files are stored with LF in the repository and checked out with LF on every platform,
-# whatever core.autocrlf says. Python, PowerShell 5.1+/7, and Inno Setup 6 all read LF files.
+# whatever core.autocrlf says. Rust, PowerShell 5.1+/7, and Inno Setup 6 all read LF files.
 
 * text=auto eol=lf
 
@@ -30,4 +30,4 @@
 
 # Third-party license texts are kept byte-for-byte as shipped upstream, CRLF and mixed endings
 # included. They are bundled with the installer and must not be rewritten.
-source/licenses/** -text
+copiago-rs/installer/licenses/** -text

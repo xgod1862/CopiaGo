@@ -31,6 +31,8 @@ var
   StartupTaskDir: String;
   DefaultStartupTask: Boolean;
   PythonCleanupFailed: Boolean;
+  // Previous installation in the pre-rename default folder, moved to the CopiaGo folder.
+  RelocateFrom: String;
 
 function SamePath(A, B: String): Boolean;
 begin
@@ -119,20 +121,84 @@ begin
   end;
 end;
 
-function InstalledStartupIn(Directory: String): Boolean;
+function StartupValueIn(Value, Directory: String): Boolean;
 var
   Command, Prefix: String;
 begin
   // Match the exact commands written by either version in this directory.
   Prefix := '"' + AddBackslash(Directory);
-  Result := RegQueryStringValue(HKCU, '{#StartupKey}', '{#StartupValue}', Command) and
+  Result := RegQueryStringValue(HKCU, '{#StartupKey}', Value, Command) and
     ((Command = Prefix + '{#PythonExeName}" --minimized') or
      (Command = Prefix + '{#AppExeName}" --minimized'));
 end;
 
+function InstalledStartupIn(Directory: String): Boolean;
+begin
+  Result := StartupValueIn('{#StartupValue}', Directory) or
+    StartupValueIn('{#LegacyStartupValue}', Directory);
+end;
+
+function HasLegacyStartup: Boolean;
+begin
+  Result := StartupValueIn('{#LegacyStartupValue}', ExpandConstant('{app}')) or
+    ((RelocateFrom <> '') and StartupValueIn('{#LegacyStartupValue}', RelocateFrom));
+end;
+
+#ifndef TestId
+function OldDefaultDir: String;
+begin
+  Result := ExpandConstant('{localappdata}\Programs\iPhoneClipboard');
+end;
+
+procedure InitializeWizard;
+begin
+  // UsePreviousAppDir proposes the old folder. Only its default location moves; a folder
+  // the user picked stays where it is.
+  if SamePath(RemoveBackslashUnlessRoot(WizardForm.DirEdit.Text), OldDefaultDir) then
+  begin
+    RelocateFrom := OldDefaultDir;
+    WizardForm.DirEdit.Text := ExpandConstant('{localappdata}\Programs\CopiaGo');
+    Log('Moving the installation from ' + RelocateFrom + ' to ' + WizardForm.DirEdit.Text + '.');
+  end;
+end;
+
+procedure RelocateOldInstall;
+var
+  Old, NewData: String;
+begin
+  if RelocateFrom = '' then
+    Exit;
+  Old := AddBackslash(RelocateFrom);
+  NewData := ExpandConstant('{app}\data');
+  // Same volume, so the account folders move whole with their ACLs. Never merge. Whatever
+  // stays behind is kept: CopiaGo copies an account's data from here on first start while
+  // its new data folder is still empty, so a failed move recovers and can be retried.
+  if DirExists(Old + 'data') then
+    if DirExists(NewData) then
+    begin
+      Log('The destination already has data; keeping the old data folder.');
+      if DirExists(NewData + '\' + ExpandConstant('{username}')) and
+         DirExists(Old + 'data\' + ExpandConstant('{username}')) then
+        SuppressibleMsgBox(FmtMessage(CustomMessage('OldDataKept'), [Old + 'data']),
+          mbInformation, MB_OK, IDOK);
+    end
+    else if not RenameFile(Old + 'data', NewData) then
+      Log('Moving the old data folder failed; CopiaGo copies it on first start.');
+  DelTree(Old + '_internal', True, True, True);
+  DelTree(Old + 'licenses', True, True, True);
+  DeleteFile(Old + '{#PythonExeName}');
+  DeleteFile(Old + '{#AppExeName}');
+  DeleteFile(Old + 'LICENSE');
+  DeleteFile(Old + 'unins000.exe');
+  DeleteFile(Old + 'unins000.dat');
+  // Removes the folder only when nothing else is left in it.
+  RemoveDir(RelocateFrom);
+end;
+#endif
+
 function HasInstalledStartup: Boolean;
 begin
-  Result := InstalledStartupIn(ExpandConstant('{app}'));
+  Result := StartupValueIn('{#StartupValue}', ExpandConstant('{app}'));
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -159,6 +225,9 @@ begin
   if FileExists(AddBackslash(Directory) + '{#PythonExeName}') or
      FileExists(AddBackslash(Directory) + '{#AppExeName}') then
     SelectStartup := InstalledStartupIn(Directory)
+  else if RelocateFrom <> '' then
+    // Keep the sign-in choice of the copy being moved.
+    SelectStartup := InstalledStartupIn(RelocateFrom)
   else
     SelectStartup := DefaultStartupTask;
   if SelectStartup then
@@ -219,7 +288,11 @@ begin
     Exit;
   end;
 #endif
-  if not CloseInstalledCopies(WizardDirValue) then
+  // The user may have picked the old folder again on the directory page.
+  if (RelocateFrom <> '') and SamePath(RemoveBackslashUnlessRoot(WizardDirValue), RelocateFrom) then
+    RelocateFrom := '';
+  if not CloseInstalledCopies(WizardDirValue) or
+     ((RelocateFrom <> '') and not CloseInstalledCopies(RelocateFrom)) then
     Result := CustomMessage('CloseCopiaGoFailed');
 end;
 
@@ -229,6 +302,9 @@ var
 begin
   if CurStep <> ssPostInstall then
     Exit;
+#ifndef TestId
+  RelocateOldInstall;
+#endif
   PythonExe := ExpandConstant('{app}\{#PythonExeName}');
   if not FileExists(PythonExe) then
     Exit;

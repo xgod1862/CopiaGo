@@ -1,4 +1,4 @@
-//! Login-session single instance and activation compatible with the Python entry point.
+//! Login-session single instance and activation.
 
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -16,8 +16,8 @@ use windows_sys::w;
 
 use crate::tray::CLASS;
 
-const MUTEX_NAME: PCWSTR = w!("Local\\iPhoneClipboardPrototype");
-const EVENT_NAME: PCWSTR = w!("Local\\iPhoneClipboardShow");
+const MUTEX_NAME: PCWSTR = w!("Local\\CopiaGo.Instance");
+const EVENT_NAME: PCWSTR = w!("Local\\CopiaGo.Show");
 
 /// Keep this guard alive for the lifetime of the primary instance.
 pub struct Instance {
@@ -27,7 +27,7 @@ pub struct Instance {
 }
 
 impl Instance {
-    /// Acquires the same objects as the Python release. Call before preparing the data directory.
+    /// Acquires the CopiaGo instance objects. Call before preparing the data directory.
     ///
     /// `Ok(None)` means another instance is already running. Unless `minimized` is true,
     /// the other instance has been signalled to open its panel.
@@ -61,7 +61,7 @@ impl Instance {
         event_name: PCWSTR,
         minimized: bool,
     ) -> io::Result<Option<Self>> {
-        // SAFETY: The name is NUL-terminated. Default security and auto-reset match Python.
+        // SAFETY: The name is NUL-terminated. Default security and auto-reset.
         let show = unsafe { CreateEventW(null(), 0, 0, event_name) };
         if show.is_null() {
             return Err(io::Error::last_os_error());

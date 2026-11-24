@@ -1,5 +1,5 @@
 use crate::{
-    animation::{Animator, MotionPolicy, Spring, Tween, milliseconds},
+    animation::{Animator, Curve, MotionPolicy, Spring, Tween, milliseconds},
     composition::{Font, PopupScene, RoundedRectangle, rounded_rectangle},
 };
 
@@ -173,13 +173,13 @@ impl StatusPill {
         next.SetOpacity(if moving { 0.0 } else { 1.0 })?;
         self.visual.Children()?.InsertAtTop(&next)?;
         if moving {
-            animator.opacity(&next, 1.0, Tween::delayed(260, 60))?;
-            animator.offset(&next, offset, PILL_TRANSITION)?;
+            animator.opacity(&next, 1.0, Tween::delayed(220, 60))?;
+            animator.offset(&next, offset, PILL_TRANSITION.enter())?;
         }
         let old_offset = xy(self.label_offset.X, self.label_offset.Y - 6.0);
         animator.detach_after(&self.visual, &self.label, || {
-            animator.opacity(&self.label, 0.0, Tween::new(160))?;
-            animator.offset(&self.label, old_offset, Tween::new(220))
+            animator.opacity(&self.label, 0.0, Tween::new(140).exit())?;
+            animator.offset(&self.label, old_offset, Tween::new(180).exit())
         })?;
         self.label = next;
         self.label_offset = offset;
@@ -210,19 +210,24 @@ fn configure_dot(animator: &Animator, dot: &Visual, status: Status, pop: bool) -
         let compositor = animator.compositor();
         let pulse = compositor.CreateScalarKeyFrameAnimation()?;
         let scale = compositor.CreateVector3KeyFrameAnimation()?;
-        for (time, opacity, multiplier) in [(0.0, 1.0, 1.0), (0.5, 0.25, 1.35), (1.0, 1.0, 1.0)] {
-            pulse.InsertKeyFrame(time, opacity)?;
-            scale.InsertKeyFrame(time, Vector3::new(multiplier, multiplier, 1.0))?;
+        for (time, opacity, multiplier) in [(0.0, 1.0, 1.0), (0.5, 0.35, 1.25), (1.0, 1.0, 1.0)] {
+            let ease = animator.curve(Curve::Standard);
+            pulse.InsertKeyFrameWithEasingFunction(time, opacity, ease)?;
+            scale.InsertKeyFrameWithEasingFunction(
+                time,
+                Vector3::new(multiplier, multiplier, 1.0),
+                ease,
+            )?;
         }
-        pulse.SetDuration(milliseconds(1100))?;
-        scale.SetDuration(milliseconds(1100))?;
+        pulse.SetDuration(milliseconds(1400))?;
+        scale.SetDuration(milliseconds(1400))?;
         pulse.SetIterationBehavior(AnimationIterationBehavior::Forever)?;
         scale.SetIterationBehavior(AnimationIterationBehavior::Forever)?;
         dot.StartAnimation(h!("Opacity"), &pulse)?;
         dot.StartAnimation(h!("Scale"), &scale)?;
     } else if pop {
-        dot.SetScale(Vector3::new(1.6, 1.6, 1.0))?;
-        animator.spring_scale(dot, 1.0, Spring::new(60, 0.45))?;
+        dot.SetScale(Vector3::new(1.45, 1.45, 1.0))?;
+        animator.spring_scale(dot, 1.0, Spring::new(70, 0.62))?;
     }
     Ok(())
 }
@@ -445,8 +450,8 @@ impl Toast {
         }
         if animator.policy().allows_motion() {
             card.SetOpacity(0.0)?;
-            card.SetScale(Vector3::new(0.8, 0.8, 1.0))?;
-            animator.spring_scale(&card, 1.0, Spring::new(55, 0.55))?;
+            card.SetScale(Vector3::new(0.92, 0.92, 1.0))?;
+            animator.spring_scale(&card, 1.0, Spring::new(60, 0.78))?;
             let fade = animator.compositor().CreateScalarKeyFrameAnimation()?;
             fade.InsertKeyFrame(0.0, 0.0)?;
             fade.InsertKeyFrame(0.1, 1.0)?;

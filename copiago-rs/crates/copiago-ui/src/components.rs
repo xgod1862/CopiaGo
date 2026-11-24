@@ -6,12 +6,14 @@ mod item;
 mod scroll;
 mod status;
 mod theme;
+mod tooltip;
 
 pub use input::{Button, ButtonStyle, Interaction, Toggle};
 pub use item::{ItemAction, ItemActions, ItemContent, ItemKind, ItemLayout, ListItem, Removal};
 pub use scroll::{ItemHit, ScrollLayout, ScrollView};
 pub use status::{ProgressBar, ProgressState, StatusPill, Toast};
 pub use theme::{LIGHT_THEME, Status, StatusColors, Theme};
+pub use tooltip::Tooltip;
 
 use std::time::Instant;
 
@@ -190,16 +192,17 @@ fn easing_factor(progress: f32) -> f32 {
     }
 
     // Invert the standard curve's x coordinate, then evaluate its y component.
+    let [x1, y1, x2, y2] = crate::animation::Curve::Standard.points();
     let (mut low, mut high) = (0.0, 1.0);
     for _ in 0..14 {
         let t = (low + high) / 2.0;
-        if component(t, 0.1, 0.2) < progress {
+        if component(t, x1, x2) < progress {
             low = t;
         } else {
             high = t;
         }
     }
-    component((low + high) / 2.0, 0.9, 1.0)
+    component((low + high) / 2.0, y1, y2)
 }
 
 #[cfg(test)]

@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn includes_the_python_english_catalog() {
-        // Counted from source/iphone_clip/i18n.py::ENGLISH (Python 1.2.0).
+        // Counted from the Python 1.2.0 ENGLISH catalog in i18n.py.
         const PYTHON_ENGLISH_ENTRIES: usize = 170;
         assert!(ENGLISH.len() >= PYTHON_ENGLISH_ENTRIES);
         for &(source, english) in ENGLISH {

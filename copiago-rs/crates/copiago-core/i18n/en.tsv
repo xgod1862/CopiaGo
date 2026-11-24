@@ -1,4 +1,4 @@
-# English translations migrated from source/iphone_clip/i18n.py::ENGLISH.
+# English translations migrated from the Python 1.2.0 ENGLISH catalog (i18n.py).
 # Chinese source followed by a tab and its English translation. Preserve spacing.
 未连接	Not connected
 已连接	Connected
@@ -176,3 +176,4 @@ iPhone 文件 {timestamp}.{extension}	iPhone file {timestamp}.{extension}
 复制	Copy
 删除	Delete
 发送到 iPhone	Send to iPhone
+{count} 字	{count} chars

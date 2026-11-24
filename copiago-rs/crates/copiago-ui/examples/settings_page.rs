@@ -144,23 +144,38 @@ mod preview {
             y: coordinates.next().transpose()?.unwrap_or(80),
         };
         let data = fixture_dir()?;
-        let mut state = SettingsState::load(data, "2.0.0-beta");
-        if probe {
+        // COPIAGO_SHOT_SCREEN=guide opens the first-pairing guide of an unpaired PC, and
+        // COPIAGO_SHOT_LANG=en switches the UI to English, for README screenshots.
+        let shot_guide = env::var_os("COPIAGO_SHOT_SCREEN").is_some_and(|value| value == "guide");
+        let shot_english = env::var_os("COPIAGO_SHOT_LANG").is_some_and(|value| value == "en");
+        let mut state = SettingsState::load(data, env!("CARGO_PKG_VERSION"));
+        if shot_english {
+            state.activate(
+                SettingsAction::ChooseLanguage(LanguagePreference::En),
+                Instant::now(),
+            );
+        } else if probe {
             state.activate(
                 SettingsAction::ChooseLanguage(LanguagePreference::ZhCn),
                 Instant::now(),
             );
         }
         state.set_startup(StartupState::Available { enabled: false });
-        state.set_available_version(Some("2.0.1".into()));
-        state.set_connection(ConnectionState {
-            phase: ConnectionPhase::Connected { wireless: true },
-            device: Some(DeviceInfo {
-                name: "测试 iPhone".into(),
-                model: "iPhone 15 Pro Max".into(),
-                os_version: "27.2.1".into(),
-            }),
-            ..ConnectionState::default()
+        if !shot_guide {
+            state.set_available_version(Some("2.0.1".into()));
+        }
+        state.set_connection(if shot_guide {
+            ConnectionState::default()
+        } else {
+            ConnectionState {
+                phase: ConnectionPhase::Connected { wireless: true },
+                device: Some(DeviceInfo {
+                    name: "测试 iPhone".into(),
+                    model: "iPhone 15 Pro Max".into(),
+                    os_version: "27.2.1".into(),
+                }),
+                ..ConnectionState::default()
+            }
         });
 
         // SAFETY: Set the DPI awareness for this example before creating its first window.
@@ -181,7 +196,11 @@ mod preview {
         let thread = CompositionThread::new()?;
         let mut popup = PopupHost::new(&thread)?;
         let mut live = None;
-        let mut screen = SettingsScreen::Settings;
+        let mut screen = if shot_guide {
+            SettingsScreen::PairingGuide
+        } else {
+            SettingsScreen::Settings
+        };
         popup.show(position, SettingsView::BOUNDS, !probe, |scene| {
             live = Some(Preview::new(scene, policy(), &state, screen)?);
             Ok(())

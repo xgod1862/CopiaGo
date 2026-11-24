@@ -42,7 +42,7 @@ impl Interaction {
         } else {
             1.0
         };
-        animator.spring_scale(visual, target, Spring::new(55, 0.5))
+        animator.spring_scale(visual, target, Spring::new(55, 0.82))
     }
 }
 

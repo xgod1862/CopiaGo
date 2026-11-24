@@ -2,11 +2,9 @@
 
 mod automation;
 mod model;
-mod visual;
 
 pub(crate) use automation::PopupInteraction;
 pub(crate) use model::Card;
-pub(crate) use visual::FocusRing;
 
 use crate::components::Rect;
 

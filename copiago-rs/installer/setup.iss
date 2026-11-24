@@ -1,8 +1,10 @@
 ﻿#define AppName "CopiaGo"
 #define RepoRoot SourcePath + "\..\.."
+; Program name and Run value from Python 1.2.0, used only to upgrade and clean up.
 #define PythonExeName "iPhoneClipboard.exe"
+#define LegacyStartupValue "iPhoneClipboardPrototype"
 #define AppExeName "copiago.exe"
-#define StartupValue "iPhoneClipboardPrototype"
+#define StartupValue "CopiaGo"
 #ifndef PayloadDir
   #error Define PayloadDir with the path to the staged release files.
 #endif
@@ -47,7 +49,7 @@ OutputBaseFilename={#AppName}-Test-{#AppVersion}-{#PackageArch}-{#TestId}
 #else
 AppId={{D402F563-DC4B-402B-8F7A-240F830C76F5}
 AppName={#AppName}
-DefaultDirName={localappdata}\Programs\iPhoneClipboard
+DefaultDirName={localappdata}\Programs\CopiaGo
 UsePreviousAppDir=yes
 AppMutex={code:UninstallAppMutex}
 OutputBaseFilename={#AppName}-Setup-{#AppVersion}-{#PackageArch}
@@ -74,7 +76,7 @@ VersionInfoVersion={#FileVersion}
 VersionInfoTextVersion={#AppVersion}
 VersionInfoProductVersion={#FileVersion}
 VersionInfoProductTextVersion={#AppVersion}
-SetupIconFile={#RepoRoot}\source\iphone_clip\assets\jade.ico
+SetupIconFile={#RepoRoot}\copiago-rs\assets\copiago.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 #ifdef SignRelease
 SignTool=CopiaGoRelease
@@ -82,7 +84,7 @@ SignTool=CopiaGoRelease
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimp"; MessagesFile: "{#RepoRoot}\source\ChineseSimplified.isl"
+Name: "chinesesimp"; MessagesFile: "{#RepoRoot}\copiago-rs\installer\ChineseSimplified.isl"
 
 [Files]
 #ifdef SignRelease
@@ -104,6 +106,8 @@ english.OpenCopiaGo=Open CopiaGo and connect an iPhone
 chinesesimp.OpenCopiaGo=打开并连接 iPhone
 english.DeleteClipData=Also remove iPhone pairing records and clipboard history?%nChoose No to keep these for a future installation.
 chinesesimp.DeleteClipData=是否同时删除 iPhone 配对记录和剪贴板历史？%n选择「否」会保留这些数据，重新安装后可直接使用。
+english.OldDataKept=The new installation folder already has CopiaGo data, so it was kept and nothing was overwritten.%nYour data from the previous folder is still in:%n%1
+chinesesimp.OldDataKept=新安装目录中已有 CopiaGo 数据，已保留且未覆盖。%n旧目录中的数据仍在：%n%1
 
 [Tasks]
 Name: startup; Description: "{cm:StartAtSignIn}"; Flags: checkedonce
@@ -111,6 +115,8 @@ Name: startup; Description: "{cm:StartAtSignIn}"; Flags: checkedonce
 [Registry]
 Root: HKCU; Subkey: "{#StartupKey}"; ValueType: string; ValueName: "{#StartupValue}"; ValueData: """{app}\{#AppExeName}"" --minimized"; Tasks: startup; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "{#StartupKey}"; ValueType: none; ValueName: "{#StartupValue}"; Tasks: not startup; Check: HasInstalledStartup; Flags: deletevalue dontcreatekey
+; Replace the pre-rename Run value when it starts a copy in this directory.
+Root: HKCU; Subkey: "{#StartupKey}"; ValueType: none; ValueName: "{#LegacyStartupValue}"; Check: HasLegacyStartup; Flags: deletevalue dontcreatekey
 ; The app can enable startup after setup.
 Root: HKCU; Subkey: "{#StartupKey}"; ValueType: none; ValueName: "{#StartupValue}"; Flags: uninsdeletevalue dontcreatekey
 
@@ -134,7 +140,8 @@ function UninstallAppMutex(Param: String): String;
 begin
   Result := '';
   if IsUninstaller then
-    Result := 'Local\iPhoneClipboardPrototype';
+    // Also close a pre-rename build that still holds the old mutex.
+    Result := 'Local\CopiaGo.Instance,Local\iPhoneClipboardPrototype';
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -144,6 +151,7 @@ begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
   DataDir := ExpandConstant('{app}\data\{username}');
+  // Python 1.2.0 data directory: migrated on first start, offered for removal here.
   LegacyDir := ExpandConstant('{localappdata}\iPhoneClipboardPrototype');
   BackupDir := LegacyDir + '.before-rust-upgrade';
   if (DirExists(DataDir) or DirExists(LegacyDir) or DirExists(BackupDir)) and not UninstallSilent then

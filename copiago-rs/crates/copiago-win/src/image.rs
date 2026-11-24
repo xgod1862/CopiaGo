@@ -176,9 +176,13 @@ pub fn decode_scaled(encoded: &[u8], max_width: u32, max_height: u32) -> Result<
     if max_width == 0 || max_height == 0 {
         return Err(ImageError::InvalidImage);
     }
+    decode_to(encoded, |size| size.fit_within(max_width, max_height))
+}
+
+fn decode_to(encoded: &[u8], target: impl FnOnce(ImageSize) -> ImageSize) -> Result<BgraImage> {
     let input = EncodedImage::new(encoded)?;
     input.with_frame(|factory, source, size| {
-        let target = size.fit_within(max_width, max_height);
+        let target = target(size);
         if target == size {
             return read_bgra(factory, source, size);
         }
@@ -194,7 +198,7 @@ pub fn decode_scaled(encoded: &[u8], max_width: u32, max_height: u32) -> Result<
             native_decode_pixels(source, target).unwrap_or(size.pixels())
         };
         if native > MAX_FULL_DECODE_PIXELS {
-            return embedded_thumbnail(factory, source, max_width, max_height);
+            return embedded_thumbnail(factory, source, target.width, target.height);
         }
         scale_to(factory, source, target)
     })

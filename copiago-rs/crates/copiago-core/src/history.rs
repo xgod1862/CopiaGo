@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, ErrorKind, Read};
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use windows_sys::Win32::{Foundation::SYSTEMTIME, System::SystemInformation::GetLocalTime};
 use zeroize::Zeroizing;
@@ -26,6 +27,8 @@ const MAX_ITEMS: usize = 50;
 const MAX_BYTES: i64 = 128 * 1024 * 1024;
 const MAX_ITEM_BYTES: usize = 32 * 1024 * 1024;
 const TEXT_PREVIEW_CHARS: usize = 96;
+// Count characters only for texts whose encrypted cell is at most this large.
+const COUNT_TEXT_BYTES: i64 = 1024 * 1024;
 const THUMBNAIL_WIDTH: u32 = 88;
 const THUMBNAIL_HEIGHT: u32 = 56;
 
@@ -47,11 +50,16 @@ impl Source {
 
 /// List metadata and the decrypted preview. `created` is local time to the minute.
 /// `preview` is UTF-8 text, a PNG thumbnail, or UTF-8 `name\nsize` for a file.
+#[derive(Default)]
 pub struct Entry {
     pub id: i64,
     pub created: String,
     pub kind: String,
     pub preview: Vec<u8>,
+    /// Payload size in bytes, estimated from the encrypted cell to within a cipher block.
+    pub size: u64,
+    /// Character count of a text item, when it is small enough to read while listing.
+    pub chars: Option<usize>,
 }
 
 /// The full stored payload. The database schema does not keep pasteboard UTIs or offer metadata.
@@ -157,19 +165,37 @@ impl History {
             return Ok(Vec::new());
         };
         let mut statement = db.prepare(
-            c"SELECT id, created, kind, preview FROM items WHERE source = ? ORDER BY id DESC",
-            &[Param::Text(source.as_str())],
+            c"SELECT id, created, kind, preview, length(payload),
+                     CASE WHEN kind = 'text' AND length(payload) <= ? THEN payload END
+              FROM items WHERE source = ? ORDER BY id DESC",
+            &[
+                Param::Integer(COUNT_TEXT_BYTES),
+                Param::Text(source.as_str()),
+            ],
         )?;
+        let overhead = dpapi_overhead();
         let mut entries = Vec::new();
         while let Some(mut row) = statement.next()? {
             let Ok(preview) = unprotect_history(row.blob(3)?) else {
                 continue;
             };
+            let stored = u64::try_from(row.integer(4)?).unwrap_or_default();
+            let text = row.blob(5)?;
+            let chars = (!text.is_empty())
+                .then(|| unprotect_history(text).ok())
+                .flatten()
+                .map(|raw| {
+                    String::from_utf8_lossy(&Zeroizing::new(raw))
+                        .chars()
+                        .count()
+                });
             entries.push(Entry {
                 id: row.integer(0)?,
                 created: row.text(1)?.to_owned(),
                 kind: row.text(2)?.to_owned(),
                 preview,
+                size: stored.saturating_sub(overhead),
+                chars,
             });
         }
         Ok(entries)
@@ -277,6 +303,16 @@ fn has_source(db: &Connection) -> io::Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// Bytes DPAPI adds to a payload, so the cell length estimates the original size.
+/// Cipher padding makes the result accurate to half a block either way.
+fn dpapi_overhead() -> u64 {
+    static OVERHEAD: OnceLock<u64> = OnceLock::new();
+    *OVERHEAD.get_or_init(|| {
+        // An empty input still encrypts one full padding block of 16 bytes.
+        protect_history(&[]).map_or(0, |blob| (blob.len() as u64).saturating_sub(8))
+    })
 }
 
 fn text_preview(text: &str) -> Vec<u8> {

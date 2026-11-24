@@ -688,8 +688,9 @@ mod tests {
 
 /// PNG thumbnail for a history entry. An image too large to shrink within the
 /// memory budget (e.g. a big progressive JPEG without an embedded preview) is
-/// still saved, with an empty preview: both the Rust and the Python popup then
-/// show the generic image icon, and the picture can be copied again from history.
+/// still saved, with an empty preview: the popup shows the generic image icon
+/// (as does Python 1.2.0, which reads the same database), and the picture can
+/// still be copied again from history.
 fn history_preview(bytes: &[u8], width: u32, height: u32) -> io::Result<Vec<u8>> {
     match decode_scaled(bytes, width, height) {
         Ok(picture) => encode_png(&picture).map_err(io::Error::other),

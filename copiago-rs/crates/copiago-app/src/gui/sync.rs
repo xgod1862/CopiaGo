@@ -8,7 +8,7 @@ use copiago_core::{
     i18n::{Language, Message, message},
     settings::SyncKind,
 };
-use copiago_device::{DeviceCommand, FileTransferError, PasteboardError};
+use copiago_device::{DeviceCommand, FileProgress, FileTransferError, PasteboardError};
 use copiago_ui::history::{HistoryAction, HistoryList, HistoryOffer, HistoryRowId, StatusTone};
 use copiago_win::{
     clipboard::ClipboardError,
@@ -35,27 +35,75 @@ struct Offered {
 }
 
 struct Transfer {
+    id: u64,
     name: String,
-    display: Option<(u64, Message, u64)>,
+    progress: Option<TransferProgress>,
+}
+
+struct TransferProgress {
+    received: u64,
+    total: Option<u64>,
+}
+
+impl TransferProgress {
+    fn percent(&self) -> Option<u8> {
+        self.total.map(|total| {
+            self.received
+                .saturating_mul(100)
+                .checked_div(total)
+                .unwrap_or(100)
+                .min(100) as u8
+        })
+    }
+
+    fn message(&self) -> Message {
+        if let Some(total) = self.total {
+            message!(
+                "{received} / {total} · {percent}%",
+                received = human_size(self.received),
+                total = human_size(total),
+                percent = self.percent().unwrap()
+            )
+        } else {
+            message!(
+                "已传 {received} · 总大小未知",
+                received = human_size(self.received)
+            )
+        }
+    }
+
+    fn status(&self, name: &str) -> Message {
+        message!(
+            "正在同步「{name}」 · {progress}",
+            name = short_name(name),
+            progress = self.message()
+        )
+    }
 }
 
 impl FileUi {
     pub fn presentation(&self, language: Language) -> Option<HistoryOffer> {
-        let (id, name, size, reason, busy) = if let Some(waiting) = &self.waiting {
-            (
-                waiting.id,
-                &waiting.offer.name,
-                waiting.offer.size,
-                &waiting.reason,
-                false,
-            )
-        } else {
-            let transfer = self.active.as_ref()?;
-            let (id, reason, size) = transfer.display.as_ref()?;
-            (*id, &transfer.name, *size, reason, true)
-        };
-        let size = size_message(size).render(language);
-        let extension = name
+        if let Some(active) = &self.active
+            && let Some(progress) = &active.progress
+        {
+            return Some(HistoryOffer {
+                id: active.id,
+                name: active.name.clone(),
+                metadata: active
+                    .name
+                    .rsplit_once('.')
+                    .map_or(String::new(), |(_, suffix)| suffix.to_uppercase()),
+                reason: progress.message(),
+                busy: true,
+                percent: progress.percent(),
+            });
+        }
+
+        let waiting = self.waiting.as_ref()?;
+        let size = size_message(waiting.offer.size).render(language);
+        let extension = waiting
+            .offer
+            .name
             .rsplit_once('.')
             .map_or(String::new(), |(_, suffix)| suffix.to_uppercase());
         let metadata = if extension.is_empty() {
@@ -64,12 +112,26 @@ impl FileUi {
             format!("{extension} · {size}")
         };
         Some(HistoryOffer {
-            id,
-            name: name.clone(),
+            id: waiting.id,
+            name: waiting.offer.name.clone(),
             metadata,
-            reason: reason.clone(),
-            busy,
+            reason: waiting.reason.clone(),
+            busy: false,
+            percent: None,
         })
+    }
+
+    fn allocate_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
+    }
+
+    fn update_progress(&mut self, id: u64, report: FileProgress) -> Option<Message> {
+        let active = self.active.as_mut().filter(|active| active.id == id)?;
+        let progress = active.progress.as_mut()?;
+        progress.received = report.received_bytes;
+        progress.total = Some(report.total_bytes);
+        Some(progress.status(&active.name))
     }
 
     pub fn clear(&mut self) {
@@ -438,9 +500,8 @@ impl Host<'_> {
             ),
             StatusTone::Muted,
         );
-        self.offer.next_id += 1;
         self.offer.waiting = Some(Offered {
-            id: self.offer.next_id,
+            id: self.offer.allocate_id(),
             offer,
             reason,
             auto: decision == OfferDecision::Receive,
@@ -461,8 +522,7 @@ impl Host<'_> {
         }
         let waiting = self.offer.waiting.take().unwrap();
         if accept {
-            let display = (waiting.id, waiting.reason, waiting.offer.size);
-            self.fetch_file(waiting.offer, Some(display));
+            self.fetch_file(waiting.offer, Some(waiting.id));
         } else {
             self.set_status(
                 message!("已忽略「{name}」", name = short_name(&waiting.offer.name)),
@@ -474,19 +534,21 @@ impl Host<'_> {
 
     pub(super) fn clear_waiting_offer(&mut self) {
         self.offer.waiting = None;
-        if let Some(active) = &mut self.offer.active {
-            active.display = None;
-        }
     }
 
-    fn fetch_file(&mut self, offer: FileOffer, display: Option<(u64, Message, u64)>) {
+    fn fetch_file(&mut self, offer: FileOffer, id: Option<u64>) {
+        let id = id.unwrap_or_else(|| self.offer.allocate_id());
         let name = offer.name.clone();
         let short = short_name(&name);
         let bytes = offer.size;
+        let progress = offer.data.is_none().then_some(TransferProgress {
+            received: 0,
+            total: (bytes != 0).then_some(bytes),
+        });
         if self
             .worker
             .commands
-            .try_send(DeviceCommand::FetchOffer(offer))
+            .try_send(DeviceCommand::FetchOffer(offer, id))
             .is_err()
         {
             let notice = message!("iPhone 未连接，无法同步文件");
@@ -495,8 +557,9 @@ impl Host<'_> {
             diagnostic::event(format_args!("event=file_failed reason=queue"));
             return;
         }
-        self.offer.active = Some(Transfer { name, display });
-        let notice = if bytes == 0 {
+        let notice = if let Some(progress) = &progress {
+            progress.status(&name)
+        } else if bytes == 0 {
             message!("正在同步「{name}」…", name = short)
         } else {
             message!(
@@ -505,12 +568,23 @@ impl Host<'_> {
                 size = human_size(bytes)
             )
         };
+        self.offer.active = Some(Transfer { id, name, progress });
         self.set_status(notice, StatusTone::Muted);
         diagnostic::event(format_args!("event=file_requested bytes={bytes}"));
     }
 
-    pub(super) fn on_file_result(&mut self, result: Result<ReceivedFile, FileTransferError>) {
-        let Some(active) = self.offer.active.take() else {
+    pub(super) fn on_file_progress(&mut self, id: u64, report: FileProgress) {
+        if let Some(notice) = self.offer.update_progress(id, report) {
+            self.set_status(notice, StatusTone::Muted);
+        }
+    }
+
+    pub(super) fn on_file_result(
+        &mut self,
+        id: u64,
+        result: Result<ReceivedFile, FileTransferError>,
+    ) {
+        let Some(active) = self.offer.active.take_if(|active| active.id == id) else {
             return;
         };
         let name = short_name(&active.name);
@@ -629,11 +703,57 @@ fn clipboard_error(error: ClipboardError) -> Message {
     })
 }
 
+/// PNG thumbnail for a history entry. An image too large to shrink within the
+/// memory budget (e.g. a big progressive JPEG without an embedded preview) is
+/// still saved, with an empty preview: the popup shows the generic image icon
+/// (as does Python 1.2.0, which reads the same database), and the picture can
+/// still be copied again from history.
+fn history_preview(bytes: &[u8], width: u32, height: u32) -> io::Result<Vec<u8>> {
+    match decode_scaled(bytes, width, height) {
+        Ok(picture) => encode_png(&picture).map_err(io::Error::other),
+        Err(ImageError::ImageTooLarge) => Ok(Vec::new()),
+        Err(other) => Err(io::Error::other(other)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::clipboard::ClipboardSync;
     use copiago_core::settings::Settings;
+
+    #[test]
+    fn streaming_card_tracks_only_the_current_transfer() {
+        let mut file = FileUi {
+            active: Some(Transfer {
+                id: 2,
+                name: "sample.zip".into(),
+                progress: Some(TransferProgress {
+                    received: 0,
+                    total: None,
+                }),
+            }),
+            next_id: 2,
+            ..FileUi::default()
+        };
+        let card = file.presentation(Language::ZhCn).unwrap();
+        assert_eq!(card.percent, None);
+        assert_eq!(card.reason.render(Language::ZhCn), "已传 0 B · 总大小未知");
+        let report = FileProgress {
+            received_bytes: 40,
+            total_bytes: 100,
+        };
+        assert!(file.update_progress(1, report).is_none());
+        assert_eq!(file.presentation(Language::En).unwrap().percent, None);
+        assert!(file.update_progress(2, report).is_some());
+        let card = file.presentation(Language::En).unwrap();
+        assert_eq!(card.id, 2);
+        assert_eq!(card.percent, Some(40));
+        assert_eq!(card.reason.render(Language::En), "40 B / 100 B · 40%");
+        file.clear();
+        assert!(file.update_progress(2, report).is_none());
+        assert!(file.presentation(Language::En).is_none());
+    }
 
     #[test]
     fn forget_failure_retires_transfers_without_discarding_held_copy() {
@@ -664,8 +784,12 @@ mod tests {
                 auto: false,
             }),
             active: Some(Transfer {
+                id: 1,
                 name: "canceled.bin".into(),
-                display: Some((1, message!("同步中…"), 1)),
+                progress: Some(TransferProgress {
+                    received: 0,
+                    total: Some(1),
+                }),
             }),
             next_id: 2,
         };
@@ -683,18 +807,5 @@ mod tests {
 
         retire_forgotten_session(&mut clipboard, &mut file, &mut pushes, true);
         assert!(!clipboard.has_pending());
-    }
-}
-
-/// PNG thumbnail for a history entry. An image too large to shrink within the
-/// memory budget (e.g. a big progressive JPEG without an embedded preview) is
-/// still saved, with an empty preview: the popup shows the generic image icon
-/// (as does Python 1.2.0, which reads the same database), and the picture can
-/// still be copied again from history.
-fn history_preview(bytes: &[u8], width: u32, height: u32) -> io::Result<Vec<u8>> {
-    match decode_scaled(bytes, width, height) {
-        Ok(picture) => encode_png(&picture).map_err(io::Error::other),
-        Err(ImageError::ImageTooLarge) => Ok(Vec::new()),
-        Err(other) => Err(io::Error::other(other)),
     }
 }

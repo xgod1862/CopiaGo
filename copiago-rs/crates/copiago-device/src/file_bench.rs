@@ -9,7 +9,7 @@ use tokio::{
 };
 
 use crate::{
-    UsbProbeError, WifiProbeError,
+    FileProgress, UsbProbeError, WifiProbeError,
     pasteboard::{
         PASTEBOARD_SERVICE,
         file_transfer::{MAX_FILE_BYTES, describe_file, receive_file, simulation},
@@ -25,6 +25,12 @@ pub use crate::pasteboard::file_transfer::{FileTransferError, Method};
 pub enum Link {
     Wifi,
     Usb,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SimulationLink {
+    InProcess,
+    Loopback,
 }
 
 /// Timing and byte count for one file request. The caller measures disk flush.
@@ -145,7 +151,7 @@ impl Sample<'_> {
             return Err(BenchmarkError::SampleMismatch);
         }
         let started = Instant::now();
-        let bytes = receive_file(adapter, service.port, &offer, self.method, out)
+        let bytes = receive_file(adapter, service.port, &offer, self.method, out, &mut |_| {})
             .await
             .map_err(BenchmarkError::Transfer)?;
         Ok(TransferReport {
@@ -162,15 +168,21 @@ pub async fn simulate(
     method: Method,
     bytes: u64,
     out: &mut (impl AsyncWrite + Unpin),
+    link: SimulationLink,
+    progress: &mut dyn FnMut(FileProgress),
 ) -> Result<(TransferReport, [u8; 32]), FileTransferError> {
     if bytes > MAX_FILE_BYTES {
         return Err(FileTransferError::TooLarge);
     }
     let started = Instant::now();
-    let (bytes, digest) = timeout(
-        Duration::from_secs(120),
-        simulation::run(method, bytes, out),
-    )
+    let (bytes, digest) = timeout(Duration::from_secs(120), async {
+        match link {
+            SimulationLink::InProcess => simulation::run(method, bytes, out, progress).await,
+            SimulationLink::Loopback => {
+                simulation::run_loopback(method, bytes, out, progress).await
+            }
+        }
+    })
     .await
     .map_err(|_| FileTransferError::TimedOut)??;
     Ok((

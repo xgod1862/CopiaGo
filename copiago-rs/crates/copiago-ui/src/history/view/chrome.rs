@@ -173,7 +173,7 @@ impl Chrome {
         chrome.tabs(scene, animator, layout, previous_tab)?;
         chrome.footer(scene, layout)?;
         if let Some(offer) = &style.offer {
-            chrome.offer(scene, animator, &layout.measure, offer)?;
+            chrome.offer(scene, &layout.measure, offer)?;
         } else if style.count(style.tab) == 0 {
             chrome.empty(scene, &layout.measure)?;
         }
@@ -464,7 +464,6 @@ impl Chrome {
     fn offer(
         &mut self,
         scene: &PopupScene,
-        animator: &Animator,
         measure: &TextMeasurer,
         offer: &HistoryOffer,
     ) -> Result<()> {
@@ -505,44 +504,52 @@ impl Chrome {
             LIGHT_THEME.muted,
             false,
         )?;
+        let reason = offer.reason.render(language);
+        if offer.busy {
+            let track = Rect::new(PAD + 14.0, 81.0, INNER - 28.0, 5.0);
+            shape(scene, &self.scrolled, track, 2.5, LIGHT_THEME.tint)?;
+            if let Some(percent) = offer.percent.filter(|&percent| percent != 0) {
+                let width = track.width * f32::from(percent.min(100)) / 100.0;
+                let fill = Rect::new(track.x, track.y, width, track.height);
+                shape(
+                    scene,
+                    &self.scrolled,
+                    fill,
+                    2.5_f32.min(width / 2.0),
+                    LIGHT_THEME.accent,
+                )?;
+            }
+            return label(
+                scene,
+                &self.scrolled,
+                Rect::new(PAD + 14.0, 54.0, INNER - 28.0, 22.0),
+                &reason,
+                (Font::Regular, NOTE_SIZE),
+                color,
+                false,
+            );
+        }
         let mut right = WIDTH - PAD - 12.0;
         for (accept, text, style) in [
-            (
-                true,
-                if offer.busy {
-                    "同步中…"
-                } else {
-                    "同步到电脑"
-                },
-                ButtonStyle::Primary,
-            ),
+            (true, "同步到电脑", ButtonStyle::Primary),
             (false, "忽略", ButtonStyle::Neutral),
         ] {
-            if offer.busy && !accept {
-                continue;
-            }
             let value = tr!(language, text);
             let width = button_width(measure, &value, 28.0)?;
-            let mut button = Button::text(
+            let button = Button::text(
                 scene,
                 Rect::new(right - width, 58.0, width, 30.0),
                 style,
                 &value,
                 &LIGHT_THEME,
             )?;
-            button.set_enabled(animator, !offer.busy)?;
             let action = HistoryAction::RespondToOffer {
                 id: offer.id,
                 accept,
             };
-            self.button(
-                button,
-                (!offer.busy).then_some(HistoryTarget::Action(action)),
-                true,
-            )?;
+            self.button(button, Some(HistoryTarget::Action(action)), true)?;
             right -= width + 8.0;
         }
-        let reason = offer.reason.render(language);
         label(
             scene,
             &self.scrolled,

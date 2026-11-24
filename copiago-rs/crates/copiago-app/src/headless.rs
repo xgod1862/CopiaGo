@@ -230,7 +230,14 @@ impl Host<'_> {
                     .event("push_failed", format_args!("reason={error}"));
             }
             DeviceEvent::FileOffer(offer) => self.on_file_offer(offer),
-            DeviceEvent::FileResult(result) => self.on_file_result(result),
+            DeviceEvent::FileProgress(id, progress) => self.log.event(
+                "file_progress",
+                format_args!(
+                    "id={id} bytes={} total={}",
+                    progress.received_bytes, progress.total_bytes
+                ),
+            ),
+            DeviceEvent::FileResult(_, result) => self.on_file_result(result),
             DeviceEvent::Unsupported { .. } => {
                 self.pending_offer.clear();
                 self.log.event("unsupported", format_args!(""));
@@ -265,7 +272,10 @@ impl Host<'_> {
                     file_storage::MAX_FILE_BYTES
                 ),
             ),
-            OfferDecision::Receive => self.fetch_offer(offer),
+            OfferDecision::Receive => {
+                let id = self.pending_offer.allocate_id();
+                self.fetch_offer(offer, id);
+            }
             OfferDecision::Confirm(reason) => {
                 let id = self.pending_offer.set(offer);
                 let reason = match reason {
@@ -294,23 +304,23 @@ impl Host<'_> {
             return;
         };
         if answer.accept {
-            self.fetch_offer(offer);
+            self.fetch_offer(offer, answer.id);
         } else {
             self.log
                 .event("file_ignored", format_args!("id={}", answer.id));
         }
     }
 
-    fn fetch_offer(&self, offer: FileOffer) {
+    fn fetch_offer(&self, offer: FileOffer, id: u64) {
         let bytes = offer.size;
         match self
             .worker
             .commands
-            .try_send(DeviceCommand::FetchOffer(offer))
+            .try_send(DeviceCommand::FetchOffer(offer, id))
         {
             Ok(()) => self
                 .log
-                .event("file_requested", format_args!("bytes={bytes}")),
+                .event("file_requested", format_args!("id={id} bytes={bytes}")),
             Err(tokio_mpsc::error::TrySendError::Full(_)) => {
                 self.log
                     .event("file_failed", format_args!("reason=queue_full"));

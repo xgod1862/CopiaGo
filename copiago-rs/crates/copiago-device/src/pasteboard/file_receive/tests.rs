@@ -103,7 +103,8 @@ async fn check_streamed_file(size: u64) {
     let mut digest = None;
     let started = Instant::now();
     let received = receive(&root.0, offer(size), async |offer, dest| {
-        let (bytes, sha) = simulation::run(Method::Threshold, offer.size, dest).await?;
+        let (bytes, sha) =
+            simulation::run(Method::Threshold, offer.size, dest, &mut |_| {}).await?;
         digest = Some(sha);
         Ok(bytes)
     })

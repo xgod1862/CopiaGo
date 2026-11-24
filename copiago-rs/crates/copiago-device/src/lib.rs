@@ -20,7 +20,7 @@ mod wifi;
 #[cfg(windows)]
 pub use connection::{DeviceRunOptions, HostSignal, HostSignals, run_device};
 #[cfg(windows)]
-pub use contract::{ConnState, DeviceCommand, DeviceEvent};
+pub use contract::{ConnState, DeviceCommand, DeviceEvent, FileProgress};
 #[cfg(windows)]
 pub use pasteboard::{FileTransferError, PasteboardError};
 #[cfg(windows)]

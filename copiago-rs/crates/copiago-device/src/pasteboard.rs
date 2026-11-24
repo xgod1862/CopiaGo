@@ -14,7 +14,7 @@ use tokio::{
     time::{Instant, sleep_until, timeout},
 };
 
-use crate::{ConnState, DeviceCommand, DeviceEvent};
+use crate::{ConnState, DeviceCommand, DeviceEvent, FileProgress};
 
 mod content;
 mod file_offer;
@@ -92,7 +92,11 @@ trait PasteboardBackend {
         uti: &str,
     ) -> Result<Vec<u8>, PasteboardError>;
     async fn set(&mut self, item: SetItem) -> Result<Option<PasteboardChange>, PasteboardError>;
-    async fn fetch_file(&mut self, offer: FileOffer) -> Result<ReceivedFile, FileTransferError>;
+    async fn fetch_file(
+        &mut self,
+        offer: FileOffer,
+        progress: &mut dyn FnMut(FileProgress),
+    ) -> Result<ReceivedFile, FileTransferError>;
 }
 
 #[derive(PartialEq, Eq)]
@@ -235,9 +239,11 @@ async fn watch_updates(
                             return Ok(None);
                         }
                     }
-                    Some(DeviceCommand::FetchOffer(offer)) => {
-                        let result = backend.fetch_file(offer).await;
-                        if emit(DeviceEvent::FileResult(result)).is_break() {
+                    Some(DeviceCommand::FetchOffer(offer, id)) => {
+                        let result = backend.fetch_file(offer, &mut |progress| {
+                            let _ = emit(DeviceEvent::FileProgress(id, progress));
+                        }).await;
+                        if emit(DeviceEvent::FileResult(id, result)).is_break() {
                             return Ok(None);
                         }
                     }

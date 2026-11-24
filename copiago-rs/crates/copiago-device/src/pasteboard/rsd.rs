@@ -17,7 +17,7 @@ use plist::Value;
 use tokio::time::timeout;
 use tracing::{Dispatch, instrument::WithSubscriber};
 
-use crate::{DeviceCommand, DeviceEvent};
+use crate::{DeviceCommand, DeviceEvent, FileProgress};
 
 use super::{
     FileTransferError, METADATA_TIMEOUT, NOTIFICATIONS, PasteboardBackend, PasteboardError,
@@ -188,10 +188,21 @@ impl PasteboardBackend for RsdPasteboard<'_> {
         set_reply(&reply)
     }
 
-    async fn fetch_file(&mut self, offer: FileOffer) -> Result<ReceivedFile, FileTransferError> {
+    async fn fetch_file(
+        &mut self,
+        offer: FileOffer,
+        progress: &mut dyn FnMut(FileProgress),
+    ) -> Result<ReceivedFile, FileTransferError> {
         file_receive::receive(self.data_dir, offer, async |offer, writer| {
-            file_transfer::receive_file(self.adapter, self.port, offer, Method::Threshold, writer)
-                .await
+            file_transfer::receive_file(
+                self.adapter,
+                self.port,
+                offer,
+                Method::Threshold,
+                writer,
+                progress,
+            )
+            .await
         })
         .await
     }

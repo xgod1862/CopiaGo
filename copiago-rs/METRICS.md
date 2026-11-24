@@ -519,3 +519,22 @@ $lateEvents = @($events | Select-Object -Skip ($firstWiFi + 1) | Where-Object {
 连机托盘 2 s 采样，窗口 1 s 采样。CPU 为 0.171875 s / 184.22 s，单逻辑核 0.0933%，包含 2 s 元数据轮询，本次满足 N-3。连机托盘 91 点首末相隔 181.11 s，专用工作集首末变化 −114,688 B，Private Bytes 变化 −208,896 B，无重连或同步活动。N-4 连续 24 h 未测。 [计数器命令](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.diagnostics/get-counter?view=powershell-7.5)
 
 第 8 节的升级后直接连机、最终 Wi-Fi 冷启、连机内存和空闲 CPU 已补齐。USB、剪贴板收发与文件传输、重启挂载、实际睡眠和 24 小时端到端按 [交付报告](RUN-REPORT.md) 复验。渐进 JPEG 与 HEIC 限制见审查前问题清单。
+
+## 文件实时传输进度
+
+2026-11-25，Windows 11 Pro 26H2 build 26300.9974 x64、Rust 1.100.0、NTFS 临时输出目录。基线为包含 #15 的主分支提交 `7e3a6f7`。用 Release 探针对 `thresholdData` 走相同的 XPC 流式接收器。每组 5 次，交替运行基线、实时进度版及实时进度版的 TCP 回环，30 次均通过落盘字节数和 SHA-256 校验。[探针](crates/copiago-device/examples/file_bench.rs)
+
+| 路径 | 样本 MiB | 接收吞吐 MiB/s（中位数） | 含同步落盘 MiB/s 中位数 | 最大工作集峰值 B | 每次进度事件数 |
+| --- | ---: | ---: | ---: | ---: | ---: |
++| 主分支基线 · 进程内 | 100 | 988.87–1040.12（1030.66） | 695.46 | 8,974,336 | — |
+| 主分支基线 · 进程内 | 500 | 987.41–1039.99（1024.15） | 674.30 | 8,966,144 | — |
+| 实时进度 · 进程内 | 100 | 1028.67–1053.05（1045.75） | 713.76 | 8,957,952 | 2 |
+| 实时进度 · 进程内 | 500 | 1024.78–1047.59（1040.32） | 673.21 | 8,953,856 | 4 |
+| 实时进度 · TCP 回环 | 100 | 315.18–373.31（362.37） | 308.48 | 8,957,952 | 3 |
+| 实时进度 · TCP 回环 | 500 | 378.39–387.70（384.39） | 252.01 | 8,962,048 | 8 |
+
+接收时间含模拟对端处理、协议解帧和缓冲写入。同步落盘计入 flush 和 `sync_all`，读回散列校验单独计时。工作集为探针进程，TCP 回环通过本机地址 `127.0.0.1`。进度计数包含 0% 和 100%。分帧测试覆盖中间进度、填充排除和频率限制，另通过 512 MiB 上限的完整落盘与散列校验。Windows 原生历史窗口以 96 DPI 渲染了 40% 的合成文件卡片。[接收测试](crates/copiago-device/src/pasteboard/file_transfer/simulation/tests.rs) · [落盘测试](crates/copiago-device/src/pasteboard/file_receive/tests.rs) · [文件卡片示例](crates/copiago-ui/examples/history_page.rs)
+
+复测使用上面 M2 大文件压测所列的临时 `ICB_DATA_DIR`。构建 `cargo build --release --locked -p copiago-device --example file_bench` 后，分别运行 `file_bench.exe simulate threshold 100` 和 `file_bench.exe loopback threshold 100`，再将样本改为 500 MiB。每项应得到正确的 `bytes` 和 `sha256_match=true`。文件卡片可用 `cargo run --locked -p copiago-ui --example history_page -- transfer 160 120 --timed` 查看。
+
+真机 Wi‑Fi 和 USB 吞吐未测。只读探测两次未能连接 Wi‑Fi RemotePairing 端点，USB 未发现设备。连接恢复后可按上面的真机样本流程复验，分别检查自动接收与手动确认的文件卡片。

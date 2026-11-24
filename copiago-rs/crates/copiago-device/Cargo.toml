@@ -6,5 +6,22 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+copiago-core = { path = "../copiago-core" }
+idevice = { version = "=0.1.68", default-features = false, features = [
+    "ring",
+    "usbmuxd",
+    "core_device_proxy",
+    "tunnel_tcp_stack",
+    "rsd",
+] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+zeroize = "1.9"
+
+[target.'cfg(windows)'.dev-dependencies]
+plist = { version = "1", default-features = false }
+tokio = { version = "1", default-features = false, features = ["io-util"] }
+
 [lints]
 workspace = true

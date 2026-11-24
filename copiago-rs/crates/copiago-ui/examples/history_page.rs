@@ -29,7 +29,7 @@ mod example {
         composition::{CompositionThread, POPUP_SETTINGS_CHANGED, PopupHost, PopupScene},
         history::{
             HistoryAction, HistoryLayout, HistoryList, HistoryOffer, HistoryPage, HistoryStatus,
-            HistoryTarget, HistoryView, StatusTone, ThumbnailPixels,
+            HistoryTarget, HistoryView, StatusTone, ThumbnailPixels, ThumbnailRequest,
         },
     };
     use copiago_win::image::decode_scaled;
@@ -70,6 +70,8 @@ mod example {
             created: format!("{created}T{time}"),
             kind: kind.to_owned(),
             preview: preview.to_owned(),
+            size: preview.len() as u64 * 40,
+            chars: (kind == "text").then(|| String::from_utf8_lossy(preview).chars().count()),
         };
         let phone = vec![
             entry(
@@ -190,13 +192,15 @@ mod example {
                     created: entry.created.clone(),
                     kind: entry.kind.clone(),
                     preview: entry.preview.clone(),
+                    size: entry.size,
+                    chars: entry.chars,
                 })
                 .collect(),
         }
     }
 
-    fn thumbnail(bytes: &[u8]) -> Option<ThumbnailPixels> {
-        let picture = decode_scaled(bytes, 88, 56).ok()?;
+    fn thumbnail(request: ThumbnailRequest<'_>) -> Option<ThumbnailPixels> {
+        let picture = decode_scaled(request.preview?, 88, 56).ok()?;
         let (width, height) = picture.dimensions();
         Some(ThumbnailPixels {
             width,
@@ -532,9 +536,9 @@ mod example {
         );
         view.restore_scroll(1000.0, now)?;
         let mut decoded = 0;
-        view.refresh_thumbnails(scene, &driver.page, now, |bytes| {
+        view.refresh_thumbnails(scene, &driver.page, now, |request| {
             decoded += 1;
-            thumbnail(bytes)
+            thumbnail(request)
         })?;
         assert!((1..=6).contains(&decoded));
         println!("decoded_on_jump={decoded}");

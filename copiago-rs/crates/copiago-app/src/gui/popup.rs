@@ -13,6 +13,7 @@ use copiago_ui::{
     focus::{FocusElement, FocusEvent, FocusId, FocusRole},
     history::{
         HistoryAction, HistoryLayout, HistoryPage, HistoryTarget, HistoryView, ThumbnailPixels,
+        ThumbnailRequest,
     },
     page_transition::{PageDirection, transition_pages},
     settings_page::{ControlRole, SettingsAction, SettingsScreen, SettingsState, SettingsView},
@@ -73,6 +74,8 @@ pub(super) enum Input {
 
 pub(super) struct Models<'a> {
     pub history: &'a HistoryPage,
+    /// The encrypted store, for decoding full-size history images.
+    pub store: &'a copiago_core::history::History,
     pub settings: &'a SettingsState,
 }
 
@@ -546,7 +549,9 @@ impl<'a> Popup<'a> {
                 }
             }
             Body::History(view) => {
-                view.refresh_thumbnails(scene, models.history, now, thumbnail)?;
+                view.refresh_thumbnails(scene, models.history, now, |request| {
+                    thumbnail(models.store, request)
+                })?;
                 let controls = view.controls(models.history, now);
                 let list = FocusId(0);
                 let mut last_row = None;
@@ -637,8 +642,18 @@ fn control_down() -> bool {
     (unsafe { GetKeyState(i32::from(VK_CONTROL.0)) }) < 0
 }
 
-fn thumbnail(bytes: &[u8]) -> Option<ThumbnailPixels> {
-    let picture = decode_scaled(bytes, 88, 56).ok()?;
+/// Decode the original image to cover the row's slot, falling back to the stored preview.
+fn thumbnail(
+    store: &copiago_core::history::History,
+    request: ThumbnailRequest<'_>,
+) -> Option<ThumbnailPixels> {
+    let original = match store.get(request.id.id) {
+        Ok(Some(copiago_core::history::StoredClip::Image(bytes))) => {
+            decode_scaled(&bytes, request.width, request.height).ok()
+        }
+        _ => None,
+    };
+    let picture = original.or_else(|| decode_scaled(request.preview?, 88, 56).ok())?;
     let (width, height) = picture.dimensions();
     Some(ThumbnailPixels {
         width,

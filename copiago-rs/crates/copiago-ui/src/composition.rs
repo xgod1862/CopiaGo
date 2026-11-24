@@ -5,7 +5,7 @@ mod position;
 mod thread;
 mod window;
 
-pub use drawing::{Font, TextMeasurer, TextStyle, TextSurface};
+pub use drawing::{Font, MAX_THUMBNAIL_SIDE, TextMeasurer, TextStyle, TextSurface};
 pub use thread::CompositionThread;
 pub use window::POPUP_SETTINGS_CHANGED;
 

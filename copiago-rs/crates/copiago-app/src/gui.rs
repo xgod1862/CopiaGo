@@ -223,6 +223,7 @@ impl Host<'_> {
                         &message,
                         Models {
                             history: &self.history_page,
+                            store: &self.history,
                             settings: &self.settings,
                         },
                         now,
@@ -285,6 +286,7 @@ impl Host<'_> {
             self.activate,
             Models {
                 history: &self.history_page,
+                store: &self.history,
                 settings: &self.settings,
             },
             now,
@@ -308,6 +310,7 @@ impl Host<'_> {
             screen,
             Models {
                 history: &self.history_page,
+                store: &self.history,
                 settings: &self.settings,
             },
             now,
@@ -329,6 +332,7 @@ impl Host<'_> {
                     target,
                     Models {
                         history: &self.history_page,
+                        store: &self.history,
                         settings: &self.settings,
                     },
                     now,
@@ -358,6 +362,7 @@ impl Host<'_> {
         let result = self.popup.render(
             Models {
                 history: &self.history_page,
+                store: &self.history,
                 settings: &self.settings,
             },
             now,
@@ -406,6 +411,7 @@ impl Host<'_> {
         let result = self.popup.tick(
             Models {
                 history: &self.history_page,
+                store: &self.history,
                 settings: &self.settings,
             },
             now,

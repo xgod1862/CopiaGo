@@ -21,7 +21,7 @@ use crate::{
         LIGHT_THEME, ListItem, ProgressBar, ProgressState, Rect, Removal, ScrollLayout, ScrollView,
         Status, StatusPill, Toast, Tooltip, holder, xy,
     },
-    composition::{Font, PopupBounds, PopupScene, TextMeasurer},
+    composition::{Font, MAX_THUMBNAIL_SIDE, PopupBounds, PopupScene, TextMeasurer},
 };
 
 use super::text::{fit, human_size, short_time, wrap};
@@ -32,7 +32,7 @@ const WIDTH: f32 = 392.0;
 const PAD: f32 = 18.0;
 const INNER: f32 = WIDTH - 2.0 * PAD;
 const HEADER: f32 = 64.0;
-const LIST_HEIGHT: f32 = 310.0;
+const LIST_HEIGHT: f32 = 356.0;
 const OFFER_SPACE: f32 = 104.0;
 const TEXT_SIZE: f32 = ItemLayout::TITLE_SIZE;
 const NOTE_SIZE: f32 = 12.0;
@@ -96,7 +96,11 @@ impl HistoryPage {
             } else {
                 ItemActions::None
             };
-            let mut item = ItemLayout::new(INNER, ItemLayout::ROW_HEIGHT, kind, actions);
+            let mut item = if kind == ItemKind::Image {
+                ItemLayout::image(INNER, png_aspect(&record.entry.preview), actions)
+            } else {
+                ItemLayout::new(INNER, ItemLayout::ROW_HEIGHT, kind, actions)
+            };
             if selected && matches!(kind, ItemKind::Text | ItemKind::Link) {
                 selected_title = wrap(&preview_text(record), item.wrap_width(), 3, |line| {
                     measure.width(line, Font::Semibold, TEXT_SIZE)
@@ -162,8 +166,18 @@ enum ThumbnailState {
     Invalid,
 }
 
-/// Decoder result for a stored history preview. Pixels are tightly packed
-/// top-down straight-alpha BGRA. The largest supported preview is 88 × 56.
+/// What the host should decode for one visible image row.
+pub struct ThumbnailRequest<'a> {
+    pub id: HistoryRowId,
+    /// The stored 88 × 56 PNG, when valid. Use it if the original cannot be read.
+    pub preview: Option<&'a [u8]>,
+    /// Pixel size of the image slot. Decode to fit inside it, keeping the aspect ratio.
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Decoder result for a history image. Pixels are tightly packed top-down
+/// straight-alpha BGRA, at most `MAX_THUMBNAIL_SIDE` on each edge.
 pub struct ThumbnailPixels {
     pub width: u32,
     pub height: u32,
@@ -383,7 +397,20 @@ impl HistoryView {
                 .map(|index| previous.swap_remove(index));
             let mut row = match old {
                 Some(row) if row.paint == paint => row,
-                old => {
+                mut old => {
+                    // Selection repaints a row. Carry its decoded picture over instead of
+                    // decoding the original again.
+                    let reused = match &mut old {
+                        Some(old)
+                            if old.thumbnail == ThumbnailState::Loaded
+                                && old.paint.revision == paint.revision
+                                && old.visual.layout().tile().size()
+                                    == placed.item.tile().size() =>
+                        {
+                            old.visual.take_thumbnail()?
+                        }
+                        _ => None,
+                    };
                     let origin = if let Some(old) = &old {
                         children.Remove(old.visual.visual())?;
                         old.visual.bounds_at(now).origin()
@@ -399,11 +426,18 @@ impl HistoryView {
                     if old.is_none() && animate_insert {
                         visual.animate_in(&self.animator, now)?;
                     }
+                    let thumbnail = match &reused {
+                        Some(picture) => {
+                            visual.adopt_thumbnail(picture)?;
+                            ThumbnailState::Loaded
+                        }
+                        None => ThumbnailState::NotRequested,
+                    };
                     Row {
                         id: placed.id,
                         visual,
                         paint,
-                        thumbnail: ThumbnailState::NotRequested,
+                        thumbnail,
                     }
                 }
             };
@@ -572,7 +606,7 @@ impl HistoryView {
         scene: &PopupScene,
         page: &HistoryPage,
         now: Instant,
-        mut decode: impl FnMut(&[u8]) -> Option<ThumbnailPixels>,
+        mut decode: impl FnMut(ThumbnailRequest<'_>) -> Option<ThumbnailPixels>,
     ) -> Result<()> {
         let layout = self.scroll.layout();
         let offset = self.scroll.offset_at(now);
@@ -597,15 +631,29 @@ impl HistoryView {
             {
                 continue;
             }
+            let tile = row.visual.layout().tile().size();
+            let pixels =
+                |dips: f32| ((dips * scene.scale()).ceil() as u32).clamp(1, MAX_THUMBNAIL_SIDE);
             let picture = page
                 .record(row.id)
                 .filter(|record| record.revision == row.paint.revision)
-                .map(|record| record.entry.preview.as_slice())
-                .filter(|&preview| bounded_png(preview))
-                .and_then(&mut decode);
+                .and_then(|record| {
+                    decode(ThumbnailRequest {
+                        id: row.id,
+                        preview: Some(record.entry.preview.as_slice())
+                            .filter(|&preview| bounded_png(preview)),
+                        width: pixels(tile.X),
+                        height: pixels(tile.Y),
+                    })
+                });
             if let Some(picture) = picture {
-                let tile = row.visual.layout().tile().size();
-                let sprite = scene.thumbnail(picture.width, picture.height, &picture.bgra, tile)?;
+                // Show the whole picture, scaled to fit and centred in its slot.
+                let size = if row.visual.layout().has_media() {
+                    contain(picture.width, picture.height, tile)
+                } else {
+                    tile
+                };
+                let sprite = scene.thumbnail(picture.width, picture.height, &picture.bgra, size)?;
                 row.visual
                     .set_thumbnail(&self.animator, Some(&sprite.cast()?))?;
                 row.thumbnail = ThumbnailState::Loaded;
@@ -648,6 +696,19 @@ impl LayoutRow {
     ) -> Result<ListItem> {
         let language = style.language;
         let mut detail = short_time(&record.entry.created, style.today, language);
+        match self.item.kind {
+            ItemKind::Image if record.entry.size > 0 => {
+                detail.push_str(" · ");
+                detail.push_str(&human_size(record.entry.size));
+            }
+            ItemKind::Text | ItemKind::Link => {
+                if let Some(count) = record.entry.chars {
+                    detail.push_str(" · ");
+                    detail.push_str(&tr!(language, "{count} 字", count = count.to_string()));
+                }
+            }
+            _ => {}
+        }
         let title = match self.item.kind {
             ItemKind::Image => capitalized(&tr!(language, "图片")),
             ItemKind::File => {
@@ -842,5 +903,24 @@ fn action_tooltip(
         Rect::new(0.0, 0.0, WIDTH, layout.bounds().height),
         &labels,
         &LIGHT_THEME,
+    )
+}
+
+/// Width over height from a stored preview's PNG header.
+fn png_aspect(bytes: &[u8]) -> Option<f32> {
+    if !bounded_png(bytes) {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    Some(width as f32 / height as f32)
+}
+
+/// The largest size with the picture's aspect ratio that fits inside `slot`.
+fn contain(width: u32, height: u32, slot: Vector2) -> Vector2 {
+    let scale = (slot.X / width as f32).min(slot.Y / height as f32);
+    Vector2::new(
+        (width as f32 * scale).round().clamp(1.0, slot.X),
+        (height as f32 * scale).round().clamp(1.0, slot.Y),
     )
 }

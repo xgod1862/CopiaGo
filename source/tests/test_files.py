@@ -133,6 +133,44 @@ class BridgeFileTests(unittest.TestCase):
             self.run_with({"allPromised": snapshot({}, count=2), "thresholdData": snapshot({})}, fetch)
         self.assertEqual(FakeService.calls, ["allPromised"])  # nothing transferred for a stale offer
 
+    def test_fetch_reports_progress_of_the_transfer_only(self):
+        bridge = device.Bridge(lambda *a: None, lambda *a: None)
+        offer = device.FileOffer("季度汇报.pptx", PPTX, 10, ("n", 1))
+        reports, listing_progress = [], []
+
+        class Connection:
+            on_progress = None
+
+        class ProgressService(FakeService):
+            def __init__(self, rsd):
+                self.service = Connection()
+
+            async def get(self, name, policy):
+                if next(iter(policy)) == "thresholdData":
+                    self.service.on_progress(4, 10)
+                    self.service.on_progress(10, 10)
+                else:
+                    listing_progress.append(self.service.on_progress)
+                return await super().get(name, policy)
+
+        async def fetch():
+            bridge.rsd, bridge.rsd_lock = object(), asyncio.Lock()
+            return await bridge._fetch(offer, lambda received, total: reports.append((received, total)))
+
+        FakeService.answers = {"allPromised": snapshot({}), "thresholdData": snapshot({PPTX: {"data": b"0123456789"}})}
+        FakeService.calls = []
+        with mock.patch("pymobiledevice3.remote.core_device.pasteboard_service.PasteboardService", ProgressService):
+            asyncio.run(fetch())
+        self.assertEqual(reports, [(4, 10), (10, 10)])
+        self.assertEqual(listing_progress, [None])  # the quick listing request is not part of the transfer
+
+    def test_throttled_progress_drops_bursts_but_keeps_the_end(self):
+        reports = []
+        forward = device.throttled(lambda received, total: reports.append(received), interval=60)
+        for received in range(1, 11):
+            forward(received, 10)
+        self.assertEqual(reports, [1, 10])
+
 
 if __name__ == "__main__":
     unittest.main()

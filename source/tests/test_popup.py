@@ -52,6 +52,15 @@ class PopupRenderTests(unittest.TestCase):
         self.assertNotIn(("copy", 1), actions)
         self.assertEqual(frame.getpixel((0, 0))[3], 0)  # rounded corner is transparent
 
+    def test_transferring_file_card_shows_progress_without_buttons_to_press(self):
+        popup = self.popup()
+        popup.history_on = True
+        popup.set_offer({"name": "季度汇报.pptx", "meta": "PPTX · 100.0 MB", "reason": "42.0 MB / 100.0 MB · 42%",
+                         "busy": True, "progress": 0.42, "percent": 42})
+        popup.frame()
+        actions = [hit[4] for hit in popup.hits]
+        self.assertNotIn(("offer", False), actions)  # no "ignore" while the bytes are on their way
+
     def test_settings_page_offers_switches_forget_and_back(self):
         popup = self.popup()
         popup.page = "settings"

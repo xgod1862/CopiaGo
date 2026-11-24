@@ -49,6 +49,20 @@ class FileTooLarge(Exception):
     pass
 
 
+def throttled(report: Callable[[int, int], None], interval: float = 0.2) -> Callable[[int, int], None]:
+    """Pass progress on at most every ``interval`` seconds; the final, complete count always passes."""
+    last = -interval
+
+    def forward(received: int, total: int) -> None:
+        nonlocal last
+        now = time.monotonic()
+        if received >= total or now - last >= interval:
+            last = now
+            report(received, total)
+
+    return forward
+
+
 def _entry(snapshot: dict, uti: str) -> dict:
     for item in (snapshot.get("pasteboard") or {}).get("items", ()):
         entry = (item.get("data") or {}).get(uti)
@@ -391,13 +405,16 @@ class Bridge:
         if current is not None:
             self.last_change = current  # our own change: not something to copy back
 
-    def fetch(self, offer: FileOffer):
-        """Transfer an offered file from any thread; returns a concurrent future of a Clip."""
+    def fetch(self, offer: FileOffer, progress: Callable[[int, int], None] | None = None):
+        """Transfer an offered file from any thread; returns a concurrent future of a Clip.
+
+        ``progress(received, total)`` is called on the bridge thread, at most about five times a second.
+        """
         if self.loop is None:
             raise ConnectionError("iPhone 未连接")
-        return asyncio.run_coroutine_threadsafe(self._fetch(offer), self.loop)
+        return asyncio.run_coroutine_threadsafe(self._fetch(offer, progress), self.loop)
 
-    async def _fetch(self, offer: FileOffer) -> Clip:
+    async def _fetch(self, offer: FileOffer, progress: Callable[[int, int], None] | None = None) -> Clip:
         from pymobiledevice3.remote.core_device.pasteboard_service import (
             GENERAL_PASTEBOARD,
             POLICY_ALL_PROMISED,
@@ -419,6 +436,8 @@ class Bridge:
                 listing = await asyncio.wait_for(service.get(GENERAL_PASTEBOARD, POLICY_ALL_PROMISED), 8)
                 if offer.change is not None and change_id(listing) != offer.change:
                     raise OfferExpired()
+                if progress is not None:
+                    service.service.on_progress = throttled(progress)
                 snapshot = await asyncio.wait_for(service.get(GENERAL_PASTEBOARD, policy_threshold(limit)), timeout)
         data = _inline(snapshot, offer.uti)
         if data is None:

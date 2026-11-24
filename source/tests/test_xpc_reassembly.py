@@ -3,6 +3,7 @@ import time
 import unittest
 from collections import deque
 from types import SimpleNamespace
+from unittest import mock
 
 from pymobiledevice3.remote.remotexpc import RemoteXPCConnection
 from pymobiledevice3.remote.xpc_message import create_xpc_wrapper
@@ -74,6 +75,24 @@ class ReassemblyTests(unittest.TestCase):
         # The library's own loop needs well over ten seconds for 64 MB.
         self.assertLess(time.perf_counter() - started, 5)
         self.assertEqual(len(ours[0]["data"]), 64 * 1024 * 1024)
+
+    def test_progress_is_reported_while_a_reply_arrives(self):
+        message = create_xpc_wrapper({"data": b"z" * 100000})
+        connection = FakeConnection(frames(message))
+        reports = []
+        connection.on_progress = lambda received, total: reports.append((received, total))
+        asyncio.run(xpc_reassembly.receive_response(connection))
+        self.assertEqual({total for _, total in reports}, {len(message)})
+        received = [count for count, _ in reports]
+        self.assertEqual(received, sorted(received))
+        self.assertEqual(received[0], FRAME)
+        self.assertEqual(received[-1], len(message))
+
+    def test_single_frame_reply_reports_nothing(self):
+        connection = FakeConnection([create_xpc_wrapper({"n": "1"})])
+        connection.on_progress = mock.Mock()
+        asyncio.run(xpc_reassembly.receive_response(connection))
+        connection.on_progress.assert_not_called()
 
     def test_install_replaces_method_once(self):
         try:

@@ -6,6 +6,9 @@ N bytes costs about N² / 16 KB of copying: 100 MB took over two minutes for tha
 
 This replacement keeps the bytes in a ``bytearray`` and parses once the wrapper header says the
 whole message has arrived. Everything after the parse is the library's own logic, unchanged.
+
+A connection may carry an ``on_progress(received, total)`` attribute; while a reply spans
+several frames it is called with the bytes received so far and the reply's full size.
 """
 
 from __future__ import annotations
@@ -39,7 +42,11 @@ async def receive_response(self) -> dict[str, Any]:
             continue
         # Parsing only the header still rejects a stream that does not start with the magic.
         header = XpcWrapperHeader.parse(bytes(buffer[:header_size]))
-        if len(buffer) < header_size + header.size:
+        total = header_size + header.size
+        progress = getattr(self, "on_progress", None)
+        if progress is not None and (buffer is not frame.data or len(buffer) < total):
+            progress(min(len(buffer), total), total)
+        if len(buffer) < total:
             self._previous_frame_data = buffer if isinstance(buffer, bytearray) else bytearray(buffer)
             continue
         self._previous_frame_data = b""

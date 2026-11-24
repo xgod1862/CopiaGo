@@ -702,8 +702,6 @@ class Window:
         self.clear_offer()
         name = files.short_name(offer.name)
         size = files.human_size(offer.size) if offer.size else message("大小未知")
-        extension = offer.name.rpartition(".")[2].upper()
-        meta = message("{extension} · {size}", extension=extension, size=size)
         if "file" not in self.types["pull"]:
             return  # turned off in settings: nothing to say
         if offer.size > files.MAX_FILE_BYTES:
@@ -720,7 +718,7 @@ class Window:
         else:
             reason = message("已关闭自动同步，需要时点「同步到电脑」")
         self.offer = offer
-        self.popup.set_offer({"name": offer.name, "meta": meta, "reason": reason, "busy": False})
+        self.popup.set_offer({**self.offer_card(offer), "reason": reason, "busy": False})
         self.status_color = MUTED
         self.set_status(message("收到文件「{name}」{size}，等你选择是否同步", name=name, size=size))
         if self.pull_switch.is_set() and not self.popup.visible:
@@ -741,15 +739,27 @@ class Window:
         self.offer = None
         self.popup.set_offer(None)
 
+    @staticmethod
+    def offer_card(offer):
+        size = files.human_size(offer.size) if offer.size else message("大小未知")
+        extension = offer.name.rpartition(".")[2].upper()
+        return {"name": offer.name, "meta": message("{extension} · {size}", extension=extension, size=size)}
+
     def fetch_offer(self, offer):
-        if self.popup.offer is not None:
+        if offer.data is None:
+            # The bytes are still on the iPhone: show the file at once and fill in the transfer as it goes.
+            self.offer = offer
+            self.popup.set_offer({**(self.popup.offer or self.offer_card(offer)), "busy": True, "progress": 0.0,
+                                  "reason": message("正在从 iPhone 传输…")})
+        elif self.popup.offer is not None:
             self.popup.set_offer({**self.popup.offer, "busy": True})
         name = files.short_name(offer.name)
         self.status_color = MUTED
         self.set_status(message("正在同步「{name}」{size}…", name=name, size=files.human_size(offer.size))
                         if offer.size else message("正在同步「{name}」…", name=name))
         try:
-            future = self.bridge.fetch(offer)
+            future = self.bridge.fetch(offer, lambda received, total: self.events.put(
+                ("file_progress", (offer, received, total))))
         except ConnectionError:
             self.events.put(("file_error", (offer, message("iPhone 未连接，无法同步文件"))))
             return
@@ -768,6 +778,19 @@ class Window:
                 self.events.put(("file_ready", (offer, result.result())))
 
         future.add_done_callback(done)
+
+    def file_progress(self, offer, received, total):
+        if self.offer is not offer or self.popup.offer is None or not total:
+            return  # the card was dismissed, or something newer replaced it
+        fraction = min(received / total, 1.0)
+        percent = int(fraction * 100)
+        if self.popup.offer.get("percent") == percent:
+            return
+        size = offer.size or total  # the reply carries a little framing besides the file
+        reason = message("{done} / {size} · {percent}%", done=files.human_size(int(size * fraction)),
+                         size=files.human_size(size), percent=percent)
+        self.popup.set_offer({**self.popup.offer, "progress": fraction, "percent": percent, "reason": reason})
+        self.set_status(message("正在同步「{name}」{percent}%", name=files.short_name(offer.name), percent=percent))
 
     def file_ready(self, offer, clip):
         try:
@@ -921,6 +944,8 @@ class Window:
                 self.handle_offer(event)
             elif state == "update":
                 self.show_release(event)
+            elif state == "file_progress":
+                self.file_progress(*event)
             elif state == "file_ready":
                 self.file_ready(*event)
             elif state == "file_error":

@@ -795,8 +795,16 @@ class HistoryPopup:
             ignore_width = round(small_font.getlength(tr("忽略"))) + px(28)
             self.button(layer, right - ignore_width, button_y, ignore_width, px(30), tr("忽略"), ("offer", False))
             right -= ignore_width + px(8)
-        draw.text((pad + px(14), button_y + px(15)), fit(str(offer["reason"]), small_font, right - pad - px(18)),
+        progress = offer.get("progress")
+        text_y = button_y + px(15) if progress is None else button_y + px(8)
+        draw.text((pad + px(14), text_y), fit(str(offer["reason"]), small_font, right - pad - px(18)),
                   font=small_font, fill=(138, 83, 0, 255), anchor="lm")
+        if progress is not None:
+            bar_x, bar_y, bar_width = pad + px(14), button_y + px(21), right - pad - px(18)
+            layer.alpha_composite(shape(bar_width, px(5), px(2.5), (240, 214, 170, 255)), (bar_x, bar_y))
+            done = round(bar_width * min(max(progress, 0.0), 1.0))
+            if done >= px(5):
+                layer.alpha_composite(shape(done, px(5), px(2.5), ACCENT), (bar_x, bar_y))
         # self.button records hits in layer coordinates; move them into window coordinates.
         self.hits = [(x0, y0 + list_top, x1, y1 + list_top, action) if action[0] == "offer" and y1 <= layer.height
                      else (x0, y0, x1, y1, action) for x0, y0, x1, y1, action in self.hits]

@@ -159,6 +159,8 @@ ENGLISH = {
     "已忽略「{name}」": "Ignored “{name}”.",
     "正在同步「{name}」…": "Syncing “{name}”…",
     "正在同步「{name}」{size}…": "Syncing “{name}” ({size})…",
+    "正在同步「{name}」{percent}%": "Syncing “{name}” · {percent}%",
+    "正在从 iPhone 传输…": "Transferring from iPhone…",
     "iPhone 未连接，无法同步文件": "Connect your iPhone before syncing a file.",
     "手机上已复制了别的内容，这个文件不再可用": "The file is no longer available because something else was copied on your iPhone.",
     "「{name}」太大，未能同步": "“{name}” was too large to sync.",

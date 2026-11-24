@@ -210,10 +210,7 @@ impl ScrollView {
             return Ok(());
         }
         self.layout = ScrollLayout::new(self.layout.viewport, content_height)?;
-        let target = self.layout.clamp(self.target_offset());
-        self.position = OffsetTransition::stationary(Vector2::new(0.0, target), now);
-        self.content.SetOffset(xy(0.0, -target))?;
-        self.place_thumb(target)
+        self.jump_to(self.target_offset(), now)
     }
 
     pub fn scroll_wheel(&mut self, animator: &Animator, delta: i16, now: Instant) -> Result<()> {
@@ -253,6 +250,17 @@ impl ScrollView {
             self.layout.reveal(child, self.target_offset()),
             now,
         )
+    }
+
+    pub(crate) fn jump_to(&mut self, offset: f32, now: Instant) -> Result<()> {
+        use windows::core::h;
+
+        let offset = self.layout.clamp(offset);
+        self.content.StopAnimation(h!("Offset"))?;
+        self.thumb.visual.StopAnimation(h!("Offset"))?;
+        self.position = OffsetTransition::stationary(Vector2::new(0.0, offset), now);
+        self.content.SetOffset(xy(0.0, -offset))?;
+        self.place_thumb(offset)
     }
 
     fn thumb_origin(&self, bounds: Rect) -> windows_numerics::Vector3 {

@@ -9,6 +9,8 @@ pub mod composition;
 #[cfg(windows)]
 pub mod focus;
 #[cfg(windows)]
+pub mod history;
+#[cfg(windows)]
 pub mod page_transition;
 #[cfg(windows)]
 pub mod settings_page;

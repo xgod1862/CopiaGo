@@ -111,7 +111,7 @@ pub(crate) fn holder(scene: &PopupScene, bounds: Rect) -> Result<ContainerVisual
     Ok(visual)
 }
 
-fn text(
+pub(crate) fn text(
     scene: &PopupScene,
     value: &str,
     font: Font,

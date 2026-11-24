@@ -282,7 +282,9 @@ dependencies = [
 name = "copiago-ui"
 version = "2.0.0-beta"
 dependencies = [
+ "chrono",
  "copiago-core",
+ "copiago-win",
  "windows",
  "windows-core",
  "windows-future",

@@ -56,7 +56,7 @@ fn start(log: &Log) -> Result<(), HostError> {
     let settings = Settings::load(&data_dir);
     let options = DeviceRunOptions {
         language: settings.language.resolve(),
-        persist_device_data: true,
+        ..DeviceRunOptions::default()
     };
 
     let window = Window::new().map_err(|error| HostError::os("create_window", error))?;

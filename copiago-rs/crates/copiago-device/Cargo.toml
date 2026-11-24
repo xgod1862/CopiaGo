@@ -8,6 +8,7 @@ publish.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 copiago-core = { path = "../copiago-core" }
+copiago-ddi = { path = "../copiago-ddi" }
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 futures-util = { version = "0.3", default-features = false }
 idevice = { version = "=0.1.68", default-features = false, features = [

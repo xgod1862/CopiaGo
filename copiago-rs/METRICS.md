@@ -191,3 +191,32 @@ cargo build --release --locked -p copiago-app
 - 复制 512 MiB 样本并确认，预期 `event=file_complete bytes=536870912`。复制大于 512 MiB 的样本，预期 `event=file_failed reason=too_large`。在已开始的大文件传输中断开连接或退出后，核对临时 `.incoming-*` 目录已清理。
 - 退出 headless，运行 `cargo run --release --locked -p copiago-device --example connection_probe -- --check-expired-offer --seconds 60`。等待连接后复制 25 MiB 文件，看到 `first_promised_offer_saved` 后再复制另一个合成文件，预期探针提交过期的 `FetchOffer` 并报告 `offer_expired`。
 - 接上同一台已配对 iPhone，在 Wi-Fi 无法建立时预期 `transport=usb`，重复文件接收检查。
+
+## M3 · T-DDI-02 签名与挂载
+
+- Windows x64 build 26300、Rust 1.100.0。Release `copiago.exe` 为 2,747,904 字节，较 `fd44c1e` 的 2,464,768 字节增加 283,136 字节。工作区格式检查、Clippy（含全部 target）和 192 项测试通过，6 项默认忽略。新增的 9 个包在 Cargo 元数据中均使用 MIT 或 MIT/Apache-2.0。
+- 3 次 Release 合成 Cryptex 传输均完成 5 段载荷，按识别出的标识和版本替换未挂载的旧 DDI 并确认安装记录。17,239,040 字节镜像从准备到确认用时 31.89–34.72 ms，传输中采样的专用工作集为 18,374,656–18,411,520 字节，峰值私有提交量为 19,189,760–19,230,720 字节，总工作集峰值为 42,250,240–42,811,392 字节。采样使用 `K32GetProcessMemoryInfo` 的 `PROCESS_MEMORY_COUNTERS_EX2`。
+- 两份 T-DDI-01 固定 27B52 镜像清单使用合成标识和 nonce 做离线请求对照。Personalized 的 140 组 board/chip 请求和 Cryptex 的 2 组生产标志请求均与 Python 11.61.1 一致，随机 UUID 单独验证为大写 v4。
+- TSS 直接连接 `gs.apple.com:443`，用 rustls/ring 校验 Apple 根和服务器证书。专用根 SHA-256 为 `B0B1730ECBC7FF4505142C49F1295E6EDA6BCAED7E2C68C5BE91B5A11001F024`。本机 Release 发送空 plist 的冒烟用时 0.63 s，独立验证同一端点返回 HTTP 200 和 TSS `STATUS=94`。此响应只验证 HTTPS 和 Apple 业务接口可达。 [Apple PKI](https://www.apple.com/certificateauthority/) [Apple 根证书指纹表](https://support.apple.com/en-us/126047)
+- CopiaGo 按 Python 的字段顺序和 256 KiB 轮转格式写入 `developer-setup.log`。测试覆盖状态码、统计字段、轮转覆盖以及含合成设备标识的异常文本过滤。
+- 真机首次签名、重启后的实际挂载、USB/Wi-Fi 重连、开发者模式提示、端到端耗时和内存待验。
+
+### 复验
+
+从 `copiago-rs` 运行。使用当前用户和 SYSTEM 专用的临时 `ICB_DATA_DIR`，并准备授权测试手机的配对记录。
+
+```powershell
+$env:RUSTUP_HOME = 'E:\rust\rustup'
+$env:CARGO_HOME = 'E:\rust\cargo'
+$env:PATH = "E:\rust\cargo\bin;$env:PATH"
+$env:TEMP = $env:ICB_DATA_DIR
+$env:TMP = $env:ICB_DATA_DIR
+cargo test --release --locked -p copiago-ddi --lib setup::tests::cryptex::replaces_only_unmounted_ddi_and_uploads_its_five_cryptex_payloads -- --exact --nocapture
+cargo test --release --locked -p copiago-ddi --lib setup::tests::apple_tss_returns_a_business_response_without_device_identifiers -- --ignored --exact --nocapture
+cargo build --release --locked -p copiago-device --example connection_probe
+```
+
+- 重启测试 iPhone 并解锁。运行 `.\target\release\examples\connection_probe.exe --seconds 15`，观察 `developer_services_missing` 和只读探针的安装类状态。
+- 运行 `.\target\release\examples\connection_probe.exe --install-developer-image --seconds 1200`。预期缺服务后准备镜像，按需下载、签名和挂载，随后重连一次并输出 `connected wireless=true`。同一已配对手机在无线不可用时接线复验，预期 `connected wireless=false`。Personalized 使用设备缓存票据时从准备直接进入挂载。
+- 在测试机关闭开发者模式并重启解锁，再运行带 `--install-developer-image` 的探针。预期 `state=Developer`，显示「设置 → 隐私与安全性 → 开发者模式」的开启路径。在测试机开启并按提示重启后复验。 [Apple Developer Mode 文档](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device.md)
+- 用 `Get-Content -LiteralPath (Join-Path $env:ICB_DATA_DIR 'developer-setup.log') -Tail 20` 检查阶段和结果。TSS 证书验证失败显示 `error=SSLError`，Apple 拒绝请求显示 `error=TSSError`。记录验证重连耗时、专用工作集和下载/签名/安装日志。

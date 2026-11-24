@@ -2,3 +2,6 @@
 
 #[cfg(windows)]
 pub mod download;
+
+#[cfg(windows)]
+pub mod setup;

@@ -16,7 +16,7 @@ pub const MAGIC: &[u8] = b"ICB-DPAPI1\0";
 
 /// Seals a pairing record or device info with the CopiaGo header.
 pub fn protect(data: &[u8]) -> io::Result<Vec<u8>> {
-    crypt(data, Some(w!("iPhone Clipboard pairing record")), MAGIC)
+    crypt(data, Some(w!("CopiaGo pairing record")), MAGIC)
 }
 
 /// Opens a sealed record or returns the bytes of an older plaintext record.
@@ -29,7 +29,7 @@ pub fn unprotect(data: &[u8]) -> io::Result<Vec<u8>> {
 
 /// Seals a history cell in the raw DPAPI format used by SQLite preview and payload columns.
 pub fn protect_history(data: &[u8]) -> io::Result<Vec<u8>> {
-    crypt(data, Some(w!("iPhone Clipboard")), &[])
+    crypt(data, Some(w!("CopiaGo")), &[])
 }
 
 /// Opens a history cell in raw DPAPI format.

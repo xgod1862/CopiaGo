@@ -45,7 +45,7 @@ def verify(history):
         for blob in blobs:
             assert not blob.startswith(b"ICB-DPAPI1\0")
             description, _ = win32crypt.CryptUnprotectData(blob, None, None, None, 1)
-            assert description == "iPhone Clipboard"
+            assert description == "CopiaGo"
 
 
 if __name__ == "__main__":

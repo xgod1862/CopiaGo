@@ -16,6 +16,8 @@ mod upgrade;
 pub(crate) use acl::create_private_dir;
 pub use acl::ensure_data_dir;
 
+// Data folder of Python 1.2.0 (named before the CopiaGo rename). Read only to migrate.
+// Data folder of Python 1.2.0, named before the CopiaGo rename. Read only to migrate.
 const LEGACY_DIR_NAME: &str = "iPhoneClipboardPrototype";
 pub const DEVICE_DATA_DIR: &str = "device-data";
 

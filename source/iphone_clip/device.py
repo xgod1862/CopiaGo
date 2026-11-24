@@ -538,6 +538,9 @@ class Bridge:
         from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
         from pymobiledevice3.exceptions import AlreadyMountedError
 
+        from iphone_clip import xpc_reassembly
+
+        xpc_reassembly.install()
         self.status("connecting", message("正在建立无线连接…" if wireless else "正在建立USB连接…"))
         for attempt in range(2):
             async with UserspaceRsdTunnel(serial=serial, autopair=False, remotepairing=wireless) as rsd:

@@ -86,6 +86,10 @@ impl ClipboardSync {
         Ok(Some(kind))
     }
 
+    pub(super) fn allow_resend(&mut self) {
+        self.last_sent = None;
+    }
+
     pub(super) fn receive_phone(&mut self, clip: Clip, stale: bool, sequence: u32) -> PhoneClip {
         let kind = match clip {
             Clip::Text(_) => SyncKind::Text,
@@ -236,9 +240,16 @@ mod tests {
                 if png == bytes && uti == "public.png"
         ));
         assert!(matches!(
-            sync.queue_push(ClipboardRead::Png(bytes), &send),
+            sync.queue_push(ClipboardRead::Png(bytes.clone()), &send),
             Ok(None)
         ));
         assert!(receive.try_recv().is_err());
+
+        // A device queue rejection after submission must allow the next copy.
+        sync.allow_resend();
+        assert!(matches!(
+            sync.queue_push(ClipboardRead::Png(bytes), &send),
+            Ok(Some(SyncKind::Image))
+        ));
     }
 }

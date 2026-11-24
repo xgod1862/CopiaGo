@@ -18,7 +18,8 @@ use copiago_core::{
     settings::Settings,
 };
 use copiago_device::{
-    ConnState, DeviceCommand, DeviceEvent, DeviceRunOptions, HostSignal, run_device,
+    ConnState, DeviceCommand, DeviceEvent, DeviceRunOptions, HostSignal, PasteboardError,
+    run_device,
 };
 use copiago_win::clipboard::Clipboard;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -217,6 +218,9 @@ impl Host<'_> {
             }
             DeviceEvent::PushResult(Ok(())) => self.log.event("push_complete", format_args!("")),
             DeviceEvent::PushResult(Err(error)) => {
+                if error == PasteboardError::PushBusy {
+                    self.sync.allow_resend();
+                }
                 self.log
                     .event("push_failed", format_args!("reason={error}"));
             }

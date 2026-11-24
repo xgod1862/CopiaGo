@@ -1,0 +1,61 @@
+name: Rust CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'copiago-rs/**'
+  push:
+    branches: [main]
+    paths:
+      - 'copiago-rs/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quality-gates:
+    name: Rust quality gates
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: copiago-rs
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.22.0 --locked
+
+      - name: Check dependency licenses
+        run: cargo deny --locked check licenses
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Build release
+        run: cargo build --workspace --release --locked
+
+      - name: Check executable size
+        run: |
+          $exe = Get-Item -LiteralPath 'target/release/copiago.exe' -ErrorAction Stop
+          $limit = 6000000
+          Write-Host "$($exe.Name) is $($exe.Length) bytes. Budget is $limit bytes."
+          if ($exe.Length -gt $limit) {
+            throw "$($exe.Name) exceeds the executable size budget."
+          }

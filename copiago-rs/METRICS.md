@@ -10,7 +10,7 @@
 | M2 · T-IMG-02 初版 `d039a6a` | 1,956,864 字节，比 `9be9333` 增加 1,024 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
 | M2 · T-IMG-02 定向修订 | 2,465,280 字节，比 `a25cf2f` 的 2,453,504 字节增加 11,776 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
 | M2 · 配对、文件、历史和图片 | 2,465,280 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
-| 阶段 / 提交 | 未测 | 未测 | 未测 | 未测 | 未测 | 未测 |
+| M3 · 镜像下载、签名及挂载 `76463e3` | 2,748,416 字节 | 未测 | 未测 | 未测 | 未测 | 未测 |
 
 ## 测量方法
 
@@ -26,7 +26,7 @@
 | M0 · 工程骨架 | Windows 11 Pro build 26300、x64、Rust 1.100.0 | `cargo build --workspace --release --locked --target-dir target/m0-stage-release`，新目标目录 1 次 | 工作区构建 3.97 s。文件及产品版本 2.0.0-beta。 |
 | M1 · T-APP-01 基线 `3f1ef14` | Windows 11 Pro 26H2 build 26300.9974、x64、Rust 1.100.0，同一局域网内的 iPhone 15 Pro Max（iOS 27.2.1） | Release 运行 `copiago.exe --headless`。首次观察到 Wi-Fi 连接后，按 15 s 调度采样 121 次 | 专用工作集 2,097,152–2,179,072 字节，峰值低于 M1 的 5 MB 目标。Private Bytes 2,629,632–2,797,568 字节，总工作集 12,529,664–12,701,696 字节，2–8 个线程、185–193 个句柄。 |
 | M1 · 集成候选 `07d2e93` | 同上 | `cargo build --workspace --release --locked`。5 次独立启动、1 次应用内存采样、2 次模拟事件触发真实 Wi-Fi 重连 | 首次启动连接后第 16.409 s 的 headless 专用工作集为 2,183,168 字节，Private Bytes 为 2,887,680 字节，总工作集 12,591,104 字节，8 个线程、193 个句柄。模拟唤醒到观察到恢复为 2,158.95 ms，模拟网络变化为 2,442.79 ms（含网络事件合并延迟）。 |
-| 阶段 / 提交 | 未测 | 未测 | |
+| M3 · 集成候选 `76463e3` | Windows 11 Pro 26H2 build 26300.9974、x64、Rust 1.100.0 | `cargo build --workspace --release --locked --target-dir target/stage-release-m3`，新目标目录 1 次 | 工作区构建 37.05 s，EXE 2,748,416 字节。 |
 
 ### M1 测量范围
 
@@ -191,6 +191,17 @@ cargo build --release --locked -p copiago-app
 - 复制 512 MiB 样本并确认，预期 `event=file_complete bytes=536870912`。复制大于 512 MiB 的样本，预期 `event=file_failed reason=too_large`。在已开始的大文件传输中断开连接或退出后，核对临时 `.incoming-*` 目录已清理。
 - 退出 headless，运行 `cargo run --release --locked -p copiago-device --example connection_probe -- --check-expired-offer --seconds 60`。等待连接后复制 25 MiB 文件，看到 `first_promised_offer_saved` 后再复制另一个合成文件，预期探针提交过期的 `FetchOffer` 并报告 `offer_expired`。
 - 接上同一台已配对 iPhone，在 Wi-Fi 无法建立时预期 `transport=usb`，重复文件接收检查。
+
+## M3 · T-DDI-01 镜像下载
+
+Windows 11 Pro 26H2 build 26300.9974、x64、Rust 1.100.0。Release 下载探针 296,960 字节，使用受保护的临时 `ICB_DATA_DIR`，两套镜像均经 WinHTTP 从 GitHub Raw 下载。8 个文件独立核对大小与 SHA-256，全部符合 Python 固定清单。热缓存两套各 10 ms，均无下载。
+
+| 镜像 | 下载字节 | 耗时 | 采样 Private Bytes 峰值 | 采样总工作集峰值 |
+| --- | ---: | ---: | ---: | ---: |
+| Cryptex | 18,045,645 | 2.304 s | 2,670,592 | 12,607,488 |
+| Personalized | 17,886,923 | 1.754 s | 2,621,440 | 12,566,528 |
+
+从 `copiago-rs` 运行 `cargo run --release --locked -p copiago-ddi --example ddi_download -- cryptex` 和同一命令的 `personalized`。在空临时目录应下载成功，重跑返回缓存。使用 `Get-FileHash -Algorithm SHA256` 逐项核对。[固定清单](crates/copiago-ddi/src/download/pinned.rs)
 
 ## M3 · T-DDI-02 签名与挂载
 

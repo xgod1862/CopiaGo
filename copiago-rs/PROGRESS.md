@@ -23,15 +23,15 @@
 | T-IMG-02 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/11 | 同一条目定向请求 PNG/JPEG，总限时 6 s、图片 ≤64 MiB；无替代时 WIC，四种来源及相册端到端待验。 |
 | T-DDI-01 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/12 | WinHTTP 续传、换源、取消和原子发布。两套镜像真下载，8/8 Python 固定大小及 SHA-256 匹配，热缓存零下载。 |
 | T-DDI-02 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/12 | 按 Python 选择镜像，签名与挂载后重拨一次。142 组 Python 离线请求对照、合成挂载与 Apple TLS 冒烟通过。实际签名、重启后挂载、USB/Wi‑Fi 和开发者模式待验。 |
-| T-UI-01 | 已合并 | — | Composition/WARP 宿主、跨进程透明区穿透和显隐资源释放通过。模拟 150%/200% 像素验收通过，隐藏专用工作集峰值 2,797,568 字节。真实混合 DPI 待复验。 |
-| T-UI-02 | 已合并 | — | 通用合成动画和全部组件已集成，普通/减少动画原生展示、滚动命中和视觉树清理通过。展示可见专用工作集峰值 5,308,416 字节。 |
-| T-UI-03 | 已合并 | — | Python 双标签、选择/复制/发送、清空确认已实现；四组 96 DPI 原尺寸对照，50 条图像只解码视口。150 ms 失焦和 Esc 原生通过。 |
-| T-UI-04 | 已合并 | — | 全部设置、即时语言和忘记二次确认通过隔离测试；设备卡、配对、镜像、错误和两种动画原生预览通过。真实驱动与设备由 T-APP-02 联验。 |
-| T-UI-05 | 已合并 | — | Tab/Shift+Tab、Enter/Space、焦点可见和跨进程 UIA 通过，普通/减少动画两轮验证。实际讲述人音频及正式页面待联验。 |
-| T-UI-06 | 已合并 | — | 真实 Shell 图标与双屏定位、无激活显示和保锚重建通过。四边、负坐标、溢出及 150%/200% 模拟通过，真实混合 DPI 待验。 |
-| T-WIN-02 | 已合并 | — | Windows Shell 删除测试图标后由 TaskbarCreated 恢复，双进程只激活原 PID，开机启动隔离验证精确旧 Run 值。Explorer 实际重启、主题和用户登录待联验。 |
-| T-WIN-03 | 已合并 | — | 启动 15 s 后单次检查，重新开启立即检查，关闭取消并清提示。真实 GitHub 稳定版提示和发布页跳转通过。2.0.0-beta 沿用 Python 规则无提示，正式 UI 随 T-APP-02 验收。 |
-| T-APP-02 | 待真机验证 | — | 正式托盘、两页、配对与传输联动完成；双进程、原生 UIA、设置和隔离旧记录通过。空闲 2.39 MB、弹窗最高 12.94 MB。真机及实际睡眠/VPN 待测。 |
+| T-UI-01 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | Composition/WARP 宿主、跨进程透明区穿透和显隐资源释放通过。模拟 150%/200% 像素验收通过，隐藏专用工作集峰值 2,797,568 字节。真实混合 DPI 待复验。 |
+| T-UI-02 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | 通用合成动画和全部组件已集成，普通/减少动画原生展示、滚动命中和视觉树清理通过。展示可见专用工作集峰值 5,308,416 字节。 |
+| T-UI-03 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | Python 双标签、选择/复制/发送、清空确认已实现；四组 96 DPI 原尺寸对照，50 条图像只解码视口。150 ms 失焦和 Esc 原生通过。 |
+| T-UI-04 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | 全部设置、即时语言和忘记二次确认通过隔离测试；设备卡、配对、镜像、错误和两种动画原生预览通过。真实驱动与设备由 T-APP-02 联验。 |
+| T-UI-05 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | Tab/Shift+Tab、Enter/Space、焦点可见和跨进程 UIA 通过，普通/减少动画两轮验证。实际讲述人音频及正式页面待联验。 |
+| T-UI-06 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | 真实 Shell 图标与双屏定位、无激活显示和保锚重建通过。四边、负坐标、溢出及 150%/200% 模拟通过，真实混合 DPI 待验。 |
+| T-WIN-02 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | Windows Shell 删除测试图标后由 TaskbarCreated 恢复，双进程只激活原 PID，开机启动隔离验证精确旧 Run 值。Explorer 实际重启、主题和用户登录待联验。 |
+| T-WIN-03 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/13 | 启动 15 s 后单次检查，重新开启立即检查，关闭取消并清提示。真实 GitHub 稳定版提示和发布页跳转通过。2.0.0-beta 沿用 Python 规则无提示，正式 UI 随 T-APP-02 验收。 |
+| T-APP-02 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/13 | 正式托盘、两页、配对与传输联动完成；双进程、原生 UIA、设置和隔离旧记录通过。空闲 2.39 MB、弹窗最高 12.94 MB。真机及实际睡眠/VPN 待测。 |
 | T-PKG-01 | 待办 | — | |
 | T-PKG-02 | 待办 | — | |
 | T-QA-01 | 待办 | — | |

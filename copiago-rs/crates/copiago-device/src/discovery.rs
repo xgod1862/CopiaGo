@@ -11,7 +11,7 @@ mod windows;
 
 pub const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// An advertised endpoint to try with RemotePairing pair-verify.
+/// A RemotePairing advertisement and its match result.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Candidate {
     ipv4: Option<SocketAddrV4>,
@@ -38,13 +38,21 @@ impl Candidate {
 ///
 /// A matching IPv4 advertisement completes discovery early. Other candidates are
 /// collected up to the five-second deadline and ordered by tag match, then IPv4.
-/// A legacy record without an IRK or an advertisement without a tag yields
-/// candidates for pair-verify. A present tag that fails validation is discarded
-/// when an IRK is available. The caller must pair-verify every candidate.
+/// Unmatched advertisements without a tag or saved IRK are available for
+/// diagnostics. Automatic connections use only matched addresses and still
+/// require pair-verify.
 pub async fn discover(peer_alt_irk: Option<&[u8; 16]>) -> io::Result<Vec<Candidate>> {
     let deadline = Instant::now() + DISCOVERY_TIMEOUT;
     let mut scan = windows::Scan::start()?;
     Ok(collect_candidates(deadline, peer_alt_irk, async || scan.next().await).await)
+}
+
+pub(crate) fn matched_addresses(candidates: &[Candidate]) -> Vec<SocketAddr> {
+    candidates
+        .iter()
+        .filter(|candidate| candidate.auth_tag_matches)
+        .flat_map(Candidate::addresses)
+        .collect()
 }
 
 struct Advertisement {

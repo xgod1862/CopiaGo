@@ -53,13 +53,19 @@ fn validates_tag_against_saved_irk_and_advertised_identifier() {
 }
 
 #[test]
-fn candidates_with_missing_tags_or_keys_require_legacy_pair_verify() {
+fn automatic_connection_excludes_advertisements_without_matching_material() {
     let tagless = advertisement(true, false)
         .into_candidate(Some(&TEST_IRK))
         .unwrap();
     let old_record = advertisement(true, true).into_candidate(None).unwrap();
-    assert!(!tagless.auth_tag_matches());
-    assert!(!old_record.auth_tag_matches());
+    let matched = advertisement(true, true)
+        .into_candidate(Some(&TEST_IRK))
+        .unwrap();
+    assert!(matched_addresses(&[tagless, old_record]).is_empty());
+    assert_eq!(
+        matched_addresses(&[tagless, matched, old_record]),
+        matched.addresses().collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(start_paused = true)]

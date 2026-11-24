@@ -80,13 +80,13 @@ impl RemoteRecord {
     }
 
     pub(super) fn peer_alt_irk(&self) -> Option<&[u8; 16]> {
-        let fields = self.fields.0.as_dictionary()?;
-        ["peer_alt_irk", "alt_irk"].into_iter().find_map(|key| {
-            fields
-                .get(key)?
-                .as_data()
-                .and_then(|data| data.try_into().ok())
-        })
+        self.fields
+            .0
+            .as_dictionary()?
+            .get("peer_alt_irk")?
+            .as_data()?
+            .try_into()
+            .ok()
     }
 
     pub(super) fn persist_identifier(&mut self, write: bool) -> IdentifierMigration {

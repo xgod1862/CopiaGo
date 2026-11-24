@@ -158,7 +158,7 @@ copiago-rs/
 | F-DEV-8 | 服务列表中没有 `com.apple.coredevice.pasteboardservice` 时进入开发者镜像流程（F-DDI），完成后重连一次；仍没有则报"install"类错误（与 `DeveloperSetupError("install")` 对应）。 |
 | F-DEV-9 | 连接后读取设备信息：RSD 的 ProductType/ProductVersion + 隧道内 lockdown 的 DeviceName（3 s 超时，失败用已保存的名字），发出 `DeviceInfo` 事件并保存。机型名映射表从 `device_info.py::model_name` 迁移。 |
 | F-DEV-10 | **忘记设备**：删除所有 `remote_*.plist` 和 device-info，断开当前连接，回到 `Setup`。 |
-| F-DEV-11 | **Wi‑Fi 发现**用 `DnsServiceBrowse` + `DnsServiceResolve`，在每块 IPv4 网卡上查询（排除 127./169.254./0.），IPv4 优先。用 idevice `remote_pairing::PeerDevice::validate_auth_tag` 校验 `_remotepairing._tcp` 的 TXT 与配对记录，匹配结果用于选择候选。旧记录或广播缺少匹配材料时仍可尝试 `pair-verify`。所有候选均由 `pair-verify` 完成认证。每轮发现最多等待 5 s，连接重试按 F-DEV-5。 |
+| F-DEV-11 | **Wi‑Fi 发现**用 `DnsServiceBrowse` + `DnsServiceResolve`，在每块 IPv4 网卡上查询（排除 127./169.254./0.），IPv4 优先。自动连接沿用 Python 的匹配顺序，用 idevice `remote_pairing::PeerDevice::validate_auth_tag` 校验配对记录的 `peer_alt_irk` 和 `_remotepairing._tcp` 广播 TXT 的 `identifier`、`authTag`，仅对命中的地址拨号并执行 `pair-verify`。没有匹配时按 F-DEV-4 尝试同一台手机的 USB。显式 `wifi_probe --addr` 用于诊断，默认只读，仍须通过 `pair-verify`。每轮发现最多等待 5 s，连接重试按 F-DEV-5。 |
 
 ### 4.6 剪贴板同步（device + win）
 

@@ -13,9 +13,9 @@ const OTHER: &str = "other";
 const USB_ID: u32 = 7;
 const OFFLINE: Failure = Failure::Wifi(WifiProbeError::NoEndpoint);
 const USB_MODE: Failure = Failure::Usb(UsbProbeError::DeveloperModeRequired);
-const INSTALL: Failure = Failure::Setup(DdiStage::Install);
-const SIGN: Failure = Failure::Setup(DdiStage::Sign);
-const DOWNLOAD: Failure = Failure::Setup(DdiStage::Download);
+const INSTALL: Failure = Failure::setup(DdiStage::Install);
+const SIGN: Failure = Failure::setup(DdiStage::Sign);
+const DOWNLOAD: Failure = Failure::setup(DdiStage::Download);
 
 #[derive(Clone, Copy)]
 enum Session {

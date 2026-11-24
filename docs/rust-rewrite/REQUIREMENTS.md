@@ -207,7 +207,7 @@ copiago-rs/
 |---|---|
 | F-DDI-1 | 镜像来源与固定哈希沿用 `developer_setup.py`：仓库 `doronz88/DeveloperDiskImage`，固定提交 `DDI_REF`，三个镜像源（raw.githubusercontent.com、ghfast.top、fastly.jsdelivr.net），记住上次成功的源（`developer-image-source` 文件）。`PINNED_FILES` 里的大小和 SHA‑256 必须逐一校验。 |
 | F-DDI-2 | 下载用 WinHTTP：断点续传（`Range`）、30 s 无数据视为停滞并换源、总超时 15 min、可取消、进度事件（已下载/总量/速度）。先下到 staging 目录，校验通过后原子移动。 |
-| F-DDI-3 | 签名与挂载：iOS 17+ 用 Cryptex1（`cryptexd` + `tss`，ticket 键 `Cryptex1,Ticket`）；回退为 personalized（`mobile_image_mounter`，`ApImg4Ticket`）。TSS 签名超时 45 s，安装超时 240 s。已挂载视为成功。 |
+| F-DDI-3 | 签名与挂载：跟随 Python 版固定的 pymobiledevice3 11.61.1。iOS 27.0 起，RSD 提供 `cryptexd` 且其能力列表包含 `CryptexInstall` 或未提供能力信息时，使用 Cryptex1（优先 `Cryptex1,Ticket`，兼容 `ApImg4Ticket`）。其余受支持的 iOS 17+ 设备使用 personalized（`mobile_image_mounter`，`ApImg4Ticket`）。TSS 签名超时 45 s，安装超时 240 s。已挂载视为成功。 |
 | F-DDI-4 | 每个阶段（download/sign/install）的结果写入 `developer-setup.log`（与 `record_setup_event` 格式一致），失败时给出可操作的文案（网络、Apple 服务器、手机未解锁、开发者模式未开等）。 |
 | F-DDI-5 | 检查开发者模式状态（`query_developer_mode_status`），未开启时引导用户到"设置 > 隐私与安全性 > 开发者模式"。 |
 

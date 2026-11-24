@@ -39,11 +39,12 @@ mod windows {
     };
     use tokio::sync::mpsc;
 
-    const USAGE: &str = "usage: connection_probe [--seconds N] [--simulate-resume] [--write-device-data] [--check-expired-offer]";
+    const USAGE: &str = "usage: connection_probe [--seconds N] [--simulate-resume] [--write-device-data] [--install-developer-image] [--check-expired-offer]";
 
     pub(super) fn run() -> Result<(), &'static str> {
         let mut seconds = 30;
         let mut write = false;
+        let mut install_ddi = false;
         let mut resume = false;
         let mut check_expiry = false;
         let mut args = env::args_os().skip(1);
@@ -57,6 +58,7 @@ mod windows {
                         .ok_or(USAGE)?;
                 }
                 Some("--write-device-data") => write = true,
+                Some("--install-developer-image") => install_ddi = true,
                 Some("--simulate-resume") => resume = true,
                 Some("--check-expired-offer") => check_expiry = true,
                 _ => return Err(USAGE),
@@ -73,7 +75,8 @@ mod windows {
             .map_err(|_| "could not start runtime")?;
 
         let options = DeviceRunOptions {
-            persist_device_data: write,
+            persist_device_data: write || install_ddi,
+            allow_developer_setup: install_ddi,
             ..DeviceRunOptions::default()
         };
         let started = Instant::now();
@@ -112,6 +115,12 @@ mod windows {
                 }
                 DeviceEvent::DeveloperServicesMissing { wireless } => {
                     println!("elapsed_ms={elapsed} developer_services_missing wireless={wireless}");
+                }
+                DeviceEvent::SetupProgress(stage, progress) => {
+                    println!(
+                        "elapsed_ms={elapsed} setup_progress stage={stage:?} received={} total={:?} bytes_per_second={}",
+                        progress.received_bytes, progress.total_bytes, progress.bytes_per_second,
+                    );
                 }
                 DeviceEvent::DeviceInfo(info) => {
                     println!(

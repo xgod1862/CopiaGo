@@ -1,6 +1,6 @@
 # CopiaGo Rust 重写交付报告
 
-本轮交付 M0–M5 共 33 张任务卡。20 张已合并、13 张待真机验证。状态按 [进度台账](PROGRESS.md) 记录，待真机验证的任务已集成代码并通过本地质量门禁，仍需完成下列设备操作。连接沿用 Python 1.2.0 的行为，Wi-Fi 优先，无线失败后回退到同一台已配对手机的 USB。 [连接验收](https://github.com/xgod1862/CopiaGo/pull/10)
+本轮交付 M0–M5 共 33 张任务卡。21 张已合并、12 张待真机验证。状态按 [进度台账](PROGRESS.md) 记录，待真机验证的任务已集成代码并通过本地质量门禁，仍需完成下列设备操作。连接沿用 Python 1.2.0 的行为，Wi-Fi 优先，无线失败后回退到同一台已配对手机的 USB。 [连接验收](https://github.com/xgod1862/CopiaGo/pull/10)
 
 ## 任务结果
 
@@ -36,26 +36,26 @@
 | T-WIN-02 | 已合并 | [PR #13](https://github.com/xgod1862/CopiaGo/pull/13) | 接入托盘、单实例和开机启动，验证图标重建和注册表命令。 |
 | T-WIN-03 | 已合并 | [PR #13](https://github.com/xgod1862/CopiaGo/pull/13) | 接入在线更新和发布跳转，保留 Python 的稳定版本比较。 |
 | T-APP-02 | 待真机验证 | [PR #13](https://github.com/xgod1862/CopiaGo/pull/13) | 发布入口默认进入正式托盘，联通窗口、设置、历史和设备状态。 |
-| T-PKG-01 | 已合并 | [M5](https://github.com/xgod1862/CopiaGo/pull/14) | 交付默认 x64 安装包和便携 ZIP，隔离安装卸载通过。 |
-| T-PKG-02 | 待真机验证 | [M5](https://github.com/xgod1862/CopiaGo/pull/14) | 真实 Python 1.2.0 副本覆盖后，设置、双来源历史和配对记录兼容。 |
-| T-QA-01 | 待真机验证 | [M5](https://github.com/xgod1862/CopiaGo/pull/14) | 回归最终二进制、安装占用及离线内存，登记真机和 24 小时欠测项。 |
+| T-PKG-01 | 已合并 | [M5](https://github.com/xgod1862/CopiaGo/pull/14) | 交付静态 CRT 的 x64 安装包和便携 ZIP，隔离实装和卸载通过。 |
+| T-PKG-02 | 已合并 | [M5](https://github.com/xgod1862/CopiaGo/pull/14) | 真实 Python 1.2.0 副本覆盖后可读旧数据并用原配对接通 Wi-Fi。 |
+| T-QA-01 | 待真机验证 | [M5](https://github.com/xgod1862/CopiaGo/pull/14) | 最终包、实装、Wi-Fi 冷启、连机内存和 CPU 短测通过，24 小时及端到端待验。 |
 
 ## 最终构建与目标
 
-最终 x64 Release 为 `2.0.0-beta`。体积按十进制 MB，内存按进程专用工作集。安装后体积来自隔离 TestId 实装，含卸载器及许可证。托盘和历史／设置弹窗为断线夹具采样。目标和复现实验见 [需求第 1 节、F-PKG-4](../docs/rust-rewrite/REQUIREMENTS.md) 与 [M5 实测](METRICS.md)。
+最终 x64 Release 为 `2.0.0-beta`。体积按十进制 MB，内存按进程专用工作集。安装后体积来自隔离 TestId 实装，含卸载器及许可证。托盘使用真实 Wi-Fi，弹窗取连机及双来源各 50 条合成历史两组采样的最高值。 [需求第 1 节与 F-PKG-4](../docs/rust-rewrite/REQUIREMENTS.md) · [最终实测](METRICS.md)
 
 | 指标 | 目标 | 最终实测 | 判定 |
 | --- | ---: | ---: | --- |
-| EXE | ≤ 6 MB | 3,308,032 B | 通过 |
-| 安装包 | ≤ 6 MB | 3,642,571 B | 通过 |
-| 安装后（排除运行时 DDI） | ≤ 12 MB | 7,785,968 B | 通过 |
-| 托盘空闲专用工作集 | ≤ 10 MB | 2,334,720 B | 断线夹具通过，连机未测 |
-| 打开弹窗专用工作集 | ≤ 20 MB | 13,025,280 B | 断线夹具通过，连机未测 |
-| Wi-Fi 冷启动到连上 | ≤ 3 s | 未测 | 最终版无连接样本 |
+| EXE | ≤ 6 MB | 3,418,112 B | 通过 |
+| 安装包 | ≤ 6 MB | 3,688,692 B | 通过 |
+| 安装后（排除运行时 DDI） | ≤ 12 MB | 7,896,320 B | 通过 |
+| 托盘空闲专用工作集 | ≤ 10 MB | 2,949,120 B | 连机采样通过 |
+| 打开弹窗专用工作集 | ≤ 20 MB | 12,238,848 B | 两组最高，连机 6,991,872 B |
+| Wi-Fi 冷启动到连上 | ≤ 3 s | 1,818.91–2,250.59 ms | 5 次通过，中位 2,148.69 ms |
 
-便携 ZIP 为 1,839,959 B。构建、ZIP 内和实装 EXE 的 SHA-256 一致。隔离实装、卸载、覆盖升级及数据读取通过。真实 Python 1.2.0 副本升级后仍可读取 10 项设置、两侧共 14 条历史与实际 DPAPI 配对记录。 [M5 实测](METRICS.md) · [升级步骤](README.md#从-python-120-覆盖升级)
+便携 ZIP 为 1,900,112 B。构建、ZIP 内和实装 EXE 的 SHA-256 一致。隔离实装、卸载及重复安装的启动选项通过。真实 Python 1.2.0 副本升级后可读 10 项设置、两侧共 14 条历史及实际 DPAPI 配对记录。同一 Windows 账户用升级保留的数据在 3,177.88 ms 连上 Wi-Fi，无需重新配对。这次升级数据首连超过 3 秒参考线。 [最终实测](METRICS.md) · [升级步骤](README.md#从-python-120-覆盖升级)
 
-M1 的 headless 集成候选在同一局域网上实际连上 5 次，中位 1.923 s。M5 从启动到托盘就绪为 86.53 ms，Wi-Fi 和 USB 只读探针均未建立会话。M5 断线短测 61 点，跨度 120.743 s，专用工作集首末相差 −139,264 B，CPU 平均约占一个逻辑处理器的 0.0891%。最终版已连接空闲 CPU、连机内存和 24 小时稳定性均为未测。 [阶段实测](METRICS.md)
+连机托盘采样 91 点，首末相隔 181.11 s，诊断未见重连或剪贴板同步事件。CPU 含元数据轮询约占单个逻辑处理器 0.0933%，本次低于 0.1%。最终版 24 小时稳定性未测。M1 headless 原先的真机冷启中位为 1.923 s。 [阶段及最终实测](METRICS.md)
 
 本地 `cargo fmt --check`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked` 和依赖许可证检查通过。248 项默认通过，10 项按原标记忽略，另定向通过 512 MiB 合成接收、Python 双向历史和原生 Windows 探针。 [最终质量检查](https://github.com/xgod1862/CopiaGo/pull/14/checks) · [复验结果](METRICS.md)
 
@@ -89,6 +89,7 @@ $env:ICB_DIAGNOSTIC_FILE = Join-Path $testRoot 'diagnostic.log'
 
 - [ ] 在 `copiago-rs` 下运行 `./scripts/build.ps1 -IsccPath $isccExe`，将 `$isccExe` 设为本机 ISCC.exe 的完整路径。预期 `target/packages` 生成 x64 安装包和便携 ZIP。用 `Get-Item` 核对安装包不超过 6,000,000 字节，用 `Expand-Archive` 解压到临时目录，确认 EXE 旁有零字节 `portable-data`，运行便携 EXE 的 `--help` 应正常退出。
 - [ ] 运行 `$testApp = Join-Path $testRoot 'app'`，再用 `./scripts/build.ps1 -IsccPath $isccExe -TestId $fixtureId -TestInstallDir $testApp` 构建测试安装器。运行 `target/packages/CopiaGo-Test-*.exe` 并选择同一目录。预期错误 `/DIR` 被拒绝，安装后的 `Get-ChildItem -LiteralPath $testApp -Recurse -File | Measure-Object Length -Sum` 不超过 12,000,000 字节，包含卸载器。用同目录的卸载器复核静默卸载后保留测试数据。
+- [ ] 在无 MSVC 开发工具和 Redistributable 的 Windows x64 测试机运行便携 `copiago.exe --help`，预期退出码 0。按独立 TestId 测首次安装与取消登录启动，预期仅移除当前测试安装项。可在构建机用 `dumpbin /IMPORTS` 复核 PE 导入。
 - [ ] 在专用测试 Windows 同一账户中，用 Python 1.2.0 完成一次配对并保存两个来源的已知历史及设置。把旧安装副本放进隔离测试安装目录，按上一步用同一 `TestId` 和目录执行覆盖。预期只关闭该目录旧进程，清理旧 EXE 和 `_internal`，保留账户数据。用 `Get-FileHash -Algorithm SHA256` 对比升级前后的隔离文件。已安装的 Rust 使用临时账户数据副本启动，预期无需重新配对即显示「已连接（无线）」并可读两侧历史。正式覆盖与 Run 开关的实际复核在专用测试账户按 [README](README.md#从-python-120-覆盖升级) 执行。
 - [ ] 在专用 Windows 测试账户与临时安装目录复验自动迁移，将测试进程的 `LOCALAPPDATA` 指向受保护的临时目录，在其 `iPhoneClipboardPrototype` 放入配对与历史副本。保持安装副本的账户数据为空，仅在专用测试会话设 `$env:LOCALAPPDATA = $testRoot`，执行 `Remove-Item Env:ICB_DATA_DIR,Env:ICB_INSTANCE_NAMESPACE`，再用 `Start-Process -FilePath (Join-Path $testApp 'copiago.exe')` 启动隔离安装版。预期既有设置、历史及配对可直接使用，源目录以 `iPhoneClipboardPrototype.before-rust-upgrade` 保留备份。故意用测试权限使复制失败后，预期继续读取原目录而且无半成品发布。完成后退出测试应用并关闭这个 PowerShell 会话，普通复验另开会话使用隔离环境。
 
@@ -152,13 +153,14 @@ if ($found) { ([DateTime]::UtcNow - $startedUtc).TotalMilliseconds } else { '未
 ```powershell
 $testPid = $process.Id
 $paths = '\Process(copiago*)\ID Process', '\Process(copiago*)\Working Set - Private', '\Process(copiago*)\Private Bytes', '\Process(copiago*)\Thread Count'
-Get-Counter -Counter $paths -SampleInterval 3600 -MaxSamples 25 | ForEach-Object {
+Get-Counter -Counter $paths -SampleInterval 3600 -MaxSamples 25 -ErrorAction SilentlyContinue | ForEach-Object {
     $sample = $_
     $instance = $sample.CounterSamples | Where-Object {
-        $_.Path -like '*\id process' -and [int]$_.CookedValue -eq $testPid
+        $_.Path -like '*\id process' -and $_.Status -in 0,1 -and [int]$_.CookedValue -eq $testPid
     } | Select-Object -First 1
     if (!$instance) { throw '测试进程已退出或采样丢失' }
-    $values = $sample.CounterSamples | Where-Object InstanceName -eq $instance.InstanceName
+    $values = @($sample.CounterSamples | Where-Object InstanceName -eq $instance.InstanceName)
+    if ($values.Count -ne 4 -or @($values | Where-Object Status -notin 0,1).Count) { throw '当前 PID 的计数器样本无效' }
     [pscustomobject]@{
         UTC = $sample.Timestamp.ToUniversalTime().ToString('o')
         PID = $testPid
@@ -181,7 +183,7 @@ Get-Counter -Counter $paths -SampleInterval 3600 -MaxSamples 25 | ForEach-Object
 
 ## 已知差距与后续工作
 
-- 台账无「阻塞」任务。先让测试手机在同一局域网完成 Wi-Fi 冷启和覆盖升级后的无重配连接，再按清单验证双向内容、真实 USB 回退、镜像、睡眠恢复和 24 小时运行。 [M5 真机探针](METRICS.md)
+- 台账无「阻塞」任务。后续优先复验 USB 信任与回退、双向剪贴板、真机挂载、实际睡眠与网络切换，以及持续 24 小时连机采样。 [M5 真机实测](METRICS.md)
 - 48 MP 基线 JPEG 缩略图和透明度通过。渐进 JPEG 的独立 Debug 探针三次超过 30 MB，采样专用工作集最高 146,251,776 B。应复现正式 EXE 端到端峰值并控制缩略图开销。仅有 HEIC 的样本在本机返回 `0xc00d5212`，先核对真实来源能否提供同条目的 PNG/JPEG，剩余样本再评估解码支持。 [图片问题清单](METRICS.md) · [M2](https://github.com/xgod1862/CopiaGo/pull/11)
 - 断线期间复制的小文件在重连时仍按 Python 的开关与大小阈值自动接收，可能覆盖随后在 Windows 复制的内容。更新检查同样沿用 Python 稳定版本规则，`2.0.0-beta` 无更新提示。 [文件验收](https://github.com/xgod1862/CopiaGo/pull/11) · [更新验收](https://github.com/xgod1862/CopiaGo/pull/13)
-- 旧开发布局迁移后保留当前账户的来源备份，失败时回到旧目录。x64 候选包为未签名本地构建，分发前可接入预留签名参数并补齐 Rust 传递依赖的许可证声明。 [安装与签名](README.md) · [构建脚本](scripts/build.ps1)
+- 旧开发布局迁移后保留当前账户的来源备份，失败时回到旧目录。x64 候选包为未签名本地构建，发行前可接入预留签名并补齐 Rust 传递依赖声明。已用导入表和本机实装核对静态 CRT。干净 Windows x64 和 ARM64 安装待复验。 [安装与签名](README.md) · [最终实测](METRICS.md)

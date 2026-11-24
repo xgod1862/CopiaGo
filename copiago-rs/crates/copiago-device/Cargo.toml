@@ -8,6 +8,7 @@ publish.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 copiago-core = { path = "../copiago-core" }
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 idevice = { version = "=0.1.68", default-features = false, features = [
     "ring",
     "usbmuxd",
@@ -16,20 +17,22 @@ idevice = { version = "=0.1.68", default-features = false, features = [
     "tunnel_tcp_stack",
     "rsd",
 ] }
+plist = { version = "1", default-features = false }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "sync", "time"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+uuid = { version = "1", default-features = false, features = ["v3"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_Dns",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
+    "Win32_System_SystemInformation",
 ] }
 zeroize = "1.9"
 
 [target.'cfg(windows)'.dev-dependencies]
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
-plist = { version = "1", default-features = false }
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "test-util"] }
 
 [lints]

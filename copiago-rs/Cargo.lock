@@ -214,10 +214,12 @@ version = "2.0.0-beta"
 dependencies = [
  "base64 0.22.1",
  "copiago-core",
+ "ed25519-dalek",
  "idevice",
  "plist",
  "tokio",
  "tracing",
+ "uuid",
  "windows-sys 0.59.0",
  "zeroize",
 ]

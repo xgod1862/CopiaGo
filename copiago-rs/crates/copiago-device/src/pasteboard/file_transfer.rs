@@ -101,7 +101,7 @@ pub(crate) async fn describe_file(
         Duration::from_secs(30),
     )
     .await?;
-    if described.change.is_some() && described.change != listing.change {
+    if listing.has_different_change(&described) {
         return Err(FileTransferError::OfferExpired);
     }
     Ok(file_offer::describe(
@@ -115,9 +115,10 @@ pub(crate) async fn describe_file(
 /// Writes a file representation to an unpublished destination on the current tunnel.
 ///
 /// Call serially with other pasteboard requests. For a promise, this rechecks the
-/// offer's change ID before the transfer. Zero size means unknown. The caller owns
-/// the destination and must flush, publish on success and discard it on error or
-/// cancellation. Bytes may already have been written before a late error.
+/// offer's change ID before the transfer. A threshold reply with a missing ID
+/// requires one more listing before success. Zero size means unknown. The caller
+/// owns the destination and must flush, publish on success and discard it on error
+/// or cancellation. Bytes may already have been written before a late error.
 pub(crate) async fn receive_file(
     adapter: &mut AdapterHandle,
     port: u16,
@@ -140,19 +141,19 @@ pub(crate) async fn receive_file(
         return Ok(data.len() as u64);
     }
 
-    let listing = listing(adapter, port).await?;
-    if offer.change.is_some() && listing.change != offer.change {
+    let current = listing(adapter, port).await?;
+    if offer.change.is_some() && current.change != offer.change {
         return Err(FileTransferError::OfferExpired);
     }
     let item_index = if method == Method::Resolve {
-        listing
+        current
             .file_item_index(&offer.uti)
             .ok_or(FileTransferError::DataUnavailable)?
     } else {
         0
     };
     let expected = Some(offer.size).filter(|size| *size != 0);
-    timeout(transfer_timeout(expected), async {
+    let reply = timeout(transfer_timeout(expected), async {
         let mut stream = adapter
             .connect(port)
             .await
@@ -170,7 +171,12 @@ pub(crate) async fn receive_file(
     })
     .with_subscriber(Dispatch::none())
     .await
-    .map_err(|_| FileTransferError::TimedOut)?
+    .map_err(|_| FileTransferError::TimedOut)??;
+    reply
+        .confirm_change(method, offer.change.as_ref(), async || {
+            Ok(listing(adapter, port).await?.change)
+        })
+        .await
 }
 
 async fn listing(adapter: &mut AdapterHandle, port: u16) -> Result<Snapshot, FileTransferError> {
@@ -254,6 +260,32 @@ async fn send(stream: &mut impl ReadWrite, request: XPCObject) -> Result<(), Fil
         .map_err(|_| FileTransferError::Request)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ReceivedFile {
+    bytes: u64,
+    change_verified: bool,
+}
+
+impl ReceivedFile {
+    async fn confirm_change(
+        self,
+        method: Method,
+        expected: Option<&PasteboardChange>,
+        read_current: impl AsyncFnOnce() -> Result<Option<PasteboardChange>, FileTransferError>,
+    ) -> Result<u64, FileTransferError> {
+        // Older PULL_REPLY messages may omit the ID. The bytes remain staged
+        // until we confirm the pasteboard stayed on the offer's change.
+        if let Some(expected) = expected
+            && method == Method::Threshold
+            && !self.change_verified
+            && read_current().await?.as_ref() != Some(expected)
+        {
+            return Err(FileTransferError::OfferExpired);
+        }
+        Ok(self.bytes)
+    }
+}
+
 async fn receive(
     stream: &mut impl ReadWrite,
     method: Method,
@@ -262,7 +294,7 @@ async fn receive(
     expected: Option<u64>,
     change: Option<&PasteboardChange>,
     destination: &mut (impl AsyncWrite + Unpin),
-) -> Result<u64, FileTransferError> {
+) -> Result<ReceivedFile, FileTransferError> {
     if expected.is_some_and(|size| size > MAX_FILE_BYTES) {
         return Err(FileTransferError::TooLarge);
     }
@@ -274,7 +306,7 @@ async fn receive(
     loop {
         let size = frames.wrapper_size(MAX_FILE_BODY).await?;
         if size != 0
-            && let Some(written) = reply::scan(
+            && let Some(received) = reply::scan(
                 &mut frames,
                 size,
                 method,
@@ -285,7 +317,7 @@ async fn receive(
             )
             .await?
         {
-            return Ok(written);
+            return Ok(received);
         }
     }
 }

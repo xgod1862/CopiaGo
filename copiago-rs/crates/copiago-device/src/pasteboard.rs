@@ -257,13 +257,13 @@ async fn watch_updates(
                     stale = false;
                     continue;
                 }
-                let Update { change, mut event, timed_out } = read_clip(backend, listing, language).await?;
+                let Update { change, mut event, skipped } = read_clip(backend, listing, language).await?;
                 let duplicate = already_seen(change.as_ref(), state.last_change.as_ref());
                 if change.is_some() {
                     state.last_change = change;
                 }
-                // A slow payload is skipped without consuming the reconnect marker.
-                if timed_out {
+                // An abandoned pull leaves the reconnect marker available.
+                if skipped {
                     continue;
                 }
                 let was_stale = std::mem::take(&mut stale);

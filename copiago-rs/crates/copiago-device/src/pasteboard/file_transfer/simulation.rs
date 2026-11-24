@@ -36,7 +36,8 @@ pub(crate) async fn run(
         let mut peer = Peer::handshake(&mut server, request).await?;
         peer.send_file(method, size).await
     };
-    tokio::try_join!(client, server)
+    let (received, hash) = tokio::try_join!(client, server)?;
+    Ok((received.bytes, hash))
 }
 
 struct Peer<'a, S> {

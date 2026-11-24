@@ -385,7 +385,7 @@ async fn keeps_the_original_heic_when_the_optional_request_fails() {
         ),
     ] {
         let update = next_update(backend).await;
-        assert!(!update.timed_out);
+        assert!(!update.skipped);
         assert_clip(update.event, test_image(HEIC, b"heic"));
     }
 }
@@ -608,7 +608,7 @@ async fn files_use_threshold_and_keep_offer_identity() {
                 .answer(
                     PullPolicy::Threshold(256 * 1024),
                     snapshot(
-                        11,
+                        10,
                         types,
                         [(FILE_DESCRIPTOR, inline(&descriptor)), (PDF, payload)],
                     ),
@@ -623,6 +623,72 @@ async fn files_use_threshold_and_keep_offer_identity() {
         assert_eq!(offer.size, expected_size);
         assert!(offer.data == inline_data);
         assert!(offer.change == offer_change && update.change == offer_change);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn file_description_races_leave_newer_changes_visible_to_the_next_poll() {
+    const PDF: &str = "com.adobe.pdf";
+    let types = &[FILE_DESCRIPTOR, PDF];
+    let listing = |nonce: &str, count| {
+        board(
+            metadata(nonce.into(), count),
+            vec![item(types, dictionary([]))],
+        )
+    };
+    let described = |nonce: &str, count, data: &[u8]| {
+        board(
+            metadata(nonce.into(), count),
+            vec![item(types, dictionary([(PDF, inline(data))]))],
+        )
+    };
+    for changes in [1, 2] {
+        let mut backend = FakeBackend::new()
+            .answer(PullPolicy::AllPromised, snapshot(9, &[TEXT], []))
+            .answer(PullPolicy::AllPromised, listing("nonce", 10))
+            .answer(PullPolicy::AllPromised, listing("nonce", 10))
+            .answer(
+                PullPolicy::Threshold(256 * 1024),
+                described("nonce", 11, b"too early"),
+            );
+        let nonce = if changes == 2 {
+            backend = backend
+                .answer(PullPolicy::AllPromised, listing("nonce", 11))
+                .answer(PullPolicy::AllPromised, listing("nonce", 11))
+                .answer(
+                    PullPolicy::Threshold(256 * 1024),
+                    described("new nonce", 11, b"also too early"),
+                );
+            "new nonce"
+        } else {
+            "nonce"
+        };
+        let expected_change = listing(nonce, 11).change;
+        let mut backend = backend
+            .answer(PullPolicy::AllPromised, listing(nonce, 11))
+            .answer(PullPolicy::AllPromised, listing(nonce, 11))
+            .answer(
+                PullPolicy::Threshold(256 * 1024),
+                described(nonce, 11, b"matching"),
+            );
+        watch_read_only(
+            &mut backend,
+            pending,
+            false,
+            Language::ZhCn,
+            |event| match event {
+                DeviceEvent::Status(..) => ControlFlow::Continue(()),
+                DeviceEvent::FileOffer(offer) => {
+                    assert!(offer.change == expected_change);
+                    assert_eq!(offer.data.as_deref(), Some(b"matching".as_slice()));
+                    ControlFlow::Break(())
+                }
+                _ => panic!("unexpected clipboard event"),
+            },
+        )
+        .await
+        .unwrap();
+        backend.verify();
     }
 }
 

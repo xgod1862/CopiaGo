@@ -5,7 +5,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::pasteboard::content::metadata_change_id;
 
 use super::{
-    FileTransferError as Error, MAX_METADATA_BODY, Method, check_size, frames::ReplyFrames,
+    FileTransferError as Error, MAX_METADATA_BODY, Method, ReceivedFile, check_size,
+    frames::ReplyFrames,
 };
 
 pub(super) const MAX_KEY_BYTES: usize = 1024;
@@ -37,7 +38,7 @@ pub(super) async fn scan(
     expected: Option<u64>,
     change: Option<&PasteboardChange>,
     destination: &mut (impl AsyncWrite + Unpin),
-) -> Result<Option<u64>, Error> {
+) -> Result<Option<ReceivedFile>, Error> {
     let mut scan = Scan {
         frames,
         offset: 0,
@@ -49,6 +50,7 @@ pub(super) async fn scan(
         command_seen: false,
         entry_seen: false,
         payload_seen: false,
+        change_verified: false,
         written: None,
     };
     let mut header = [0; 8];
@@ -66,7 +68,11 @@ pub(super) async fn scan(
     if !scan.command_seen {
         return Err(Error::InvalidReply);
     }
-    scan.written.map(Some).ok_or(Error::DataUnavailable)
+    let bytes = scan.written.ok_or(Error::DataUnavailable)?;
+    Ok(Some(ReceivedFile {
+        bytes,
+        change_verified: scan.change_verified,
+    }))
 }
 
 struct Scan<'a, 'stream, R, W> {
@@ -80,6 +86,7 @@ struct Scan<'a, 'stream, R, W> {
     command_seen: bool,
     entry_seen: bool,
     payload_seen: bool,
+    change_verified: bool,
     written: Option<u64>,
 }
 
@@ -87,6 +94,7 @@ impl<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin> Scan<'_, '_, R, W
     async fn dictionary(&mut self, path: Path, limit: u64) -> Result<u32, Error> {
         let (end, entries) = self.container(limit).await?;
         let mut key = [0; MAX_KEY_BYTES];
+        let mut identity_field_seen = false;
         for _ in 0..entries {
             let length = self.key(end, &mut key).await?;
             let key = &key[..length];
@@ -98,10 +106,16 @@ impl<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin> Scan<'_, '_, R, W
                     self.payload(end, tag).await?;
                 }
                 (Path::Root, b"pasteboard", DICTIONARY) if self.method == Method::Threshold => {
+                    if std::mem::replace(&mut identity_field_seen, true) {
+                        return Err(Error::InvalidReply);
+                    }
                     Box::pin(self.dictionary(Path::Board, end)).await?;
                 }
                 (Path::Board, b"items", ARRAY) => self.items(end).await?,
-                (Path::Board, b"metadata", DICTIONARY) if self.change.is_some() => {
+                (Path::Board, b"metadata", _) if self.change.is_some() => {
+                    if tag != DICTIONARY || std::mem::replace(&mut identity_field_seen, true) {
+                        return Err(Error::InvalidReply);
+                    }
                     self.check_change(end).await?;
                 }
                 (Path::Item, b"data", DICTIONARY) if !self.entry_seen => {
@@ -192,10 +206,15 @@ impl<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin> Scan<'_, '_, R, W
         body.resize(header + length as usize, 0);
         self.read(end, &mut body[header..]).await?;
         let value = decode_small(&body)?.to_plist();
-        let change = value.as_dictionary().and_then(metadata_change_id);
-        if change.is_some() && change.as_ref() != self.change {
+        let metadata = value.as_dictionary().ok_or(Error::InvalidReply)?;
+        if !metadata.contains_key("changeCount") && !metadata.contains_key("nonce") {
+            return Ok(());
+        }
+        let change = metadata_change_id(metadata).ok_or(Error::InvalidReply)?;
+        if Some(&change) != self.change {
             return Err(Error::OfferExpired);
         }
+        self.change_verified = true;
         Ok(())
     }
 

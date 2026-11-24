@@ -15,6 +15,20 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{IdentifierMigration, WifiProbeError};
 
+pub(crate) struct PairedDevice {
+    pub(crate) serial: String,
+    pub(crate) path: PathBuf,
+}
+
+impl PairedDevice {
+    pub(crate) fn matches_rsd(&self, rsd: &idevice::rsd::RsdHandshake) -> bool {
+        rsd.properties
+            .get("UniqueDeviceID")
+            .and_then(Value::as_string)
+            .is_none_or(|serial| serial.eq_ignore_ascii_case(&self.serial))
+    }
+}
+
 pub(super) struct RemoteRecord {
     pub(super) pairing: RpPairingFile,
     path: PathBuf,
@@ -24,10 +38,9 @@ pub(super) struct RemoteRecord {
 }
 
 impl RemoteRecord {
-    pub(super) fn read(data_root: &Path) -> Result<Self, WifiProbeError> {
-        let path = record_path(data_root)?;
+    pub(super) fn read(path: &Path) -> Result<Self, WifiProbeError> {
         let original =
-            Zeroizing::new(fs::read(&path).map_err(|_| WifiProbeError::ReadPairingRecord)?);
+            Zeroizing::new(fs::read(path).map_err(|_| WifiProbeError::ReadPairingRecord)?);
         let decrypted;
         let plaintext = if original.starts_with(dpapi::MAGIC) {
             decrypted = Zeroizing::new(
@@ -59,7 +72,7 @@ impl RemoteRecord {
         };
         Ok(Self {
             pairing,
-            path,
+            path: path.to_owned(),
             original,
             fields,
             needs_identifier,
@@ -119,7 +132,7 @@ impl RemoteRecord {
     }
 }
 
-fn record_path(data_root: &Path) -> Result<PathBuf, WifiProbeError> {
+pub(crate) fn find_paired_device(data_root: &Path) -> Result<PairedDevice, WifiProbeError> {
     let entries = fs::read_dir(data_root.join(DEVICE_DATA_DIR)).map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
             WifiProbeError::NoPairingRecord
@@ -127,23 +140,31 @@ fn record_path(data_root: &Path) -> Result<PathBuf, WifiProbeError> {
             WifiProbeError::ReadPairingRecord
         }
     })?;
-    let mut path = None;
+    let mut paired = None;
     for entry in entries {
         let entry = entry.map_err(|_| WifiProbeError::ReadPairingRecord)?;
         let name = entry.file_name();
-        let is_record = name
+        let serial = name
             .to_str()
             .and_then(|name| name.strip_prefix("remote_"))
             .and_then(|name| name.strip_suffix(".plist"))
-            .is_some_and(|id| !id.is_empty());
-        if is_record && entry.file_type().is_ok_and(|kind| kind.is_file()) {
-            if path.is_some() {
+            .filter(|id| !id.is_empty());
+        if let Some(serial) = serial
+            && entry
+                .file_type()
+                .map_err(|_| WifiProbeError::ReadPairingRecord)?
+                .is_file()
+        {
+            if paired.is_some() {
                 return Err(WifiProbeError::MultiplePairingRecords);
             }
-            path = Some(entry.path());
+            paired = Some(PairedDevice {
+                serial: serial.to_owned(),
+                path: entry.path(),
+            });
         }
     }
-    path.ok_or(WifiProbeError::NoPairingRecord)
+    paired.ok_or(WifiProbeError::NoPairingRecord)
 }
 
 fn record_key<'a>(fields: &'a Dictionary, key: &str) -> Result<&'a [u8; 32], WifiProbeError> {

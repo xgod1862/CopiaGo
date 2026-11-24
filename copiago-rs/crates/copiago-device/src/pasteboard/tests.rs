@@ -768,6 +768,115 @@ async fn notification_stream_end_is_reported() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn reconnect_baseline_marks_only_the_disconnected_clip() {
+    for (previous, initial, marked) in [
+        (None, Some(2), false),
+        (Some(2), Some(2), false),
+        (Some(1), Some(2), true),
+        (Some(1), None, true),
+    ] {
+        let mut state = PasteboardState {
+            last_change: previous.map(|count| text_at(count, "previous").change.unwrap()),
+            ..PasteboardState::default()
+        };
+        let mut backend = FakeBackend::new().answer(
+            PullPolicy::AllPromised,
+            initial.map_or_else(Snapshot::default, |count| text_at(count, "initial")),
+        );
+        if marked {
+            backend = backend
+                .answer(PullPolicy::AllPromised, text_at(2, "offline"))
+                .answer(PullPolicy::PromiseSecondary, text_at(2, "offline"));
+        }
+        let mut events = Vec::new();
+        let mut notification = true;
+        let mut backend = backend
+            .answer(PullPolicy::AllPromised, text_at(3, "fresh"))
+            .answer(PullPolicy::PromiseSecondary, text_at(3, "fresh"));
+        watch(
+            &mut backend,
+            async || {
+                if std::mem::take(&mut notification) {
+                    sleep(Duration::from_secs(1)).await;
+                    return Ok(NOTIFICATIONS[0].to_owned());
+                }
+                pending().await
+            },
+            true,
+            Language::ZhCn,
+            &mut state,
+            None,
+            |event| {
+                if let DeviceEvent::Clip {
+                    clip: Clip::Text(text),
+                    while_disconnected,
+                } = event
+                {
+                    let live = text == "fresh";
+                    events.push((text, while_disconnected));
+                    if live {
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            },
+        )
+        .await
+        .unwrap();
+        backend.verify();
+        let mut expected = vec![("fresh".to_owned(), false)];
+        if marked {
+            expected.insert(0, ("offline".to_owned(), true));
+        }
+        assert_eq!(events, expected);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn reconnect_preserves_the_echo_window() {
+    let mut state = PasteboardState {
+        last_change: text_at(1, "before").change,
+        last_push: Some((Clip::Text("echo".into()).fingerprint(), Instant::now())),
+    };
+    let mut backend = FakeBackend::new()
+        .answer(PullPolicy::AllPromised, text_at(2, "echo"))
+        .answer(PullPolicy::AllPromised, text_at(2, "echo"))
+        .answer(PullPolicy::PromiseSecondary, text_at(2, "echo"))
+        .answer(PullPolicy::AllPromised, text_at(3, "fresh"))
+        .answer(PullPolicy::PromiseSecondary, text_at(3, "fresh"));
+    let mut notification = true;
+    watch(
+        &mut backend,
+        async || {
+            if std::mem::take(&mut notification) {
+                sleep(Duration::from_secs(1)).await;
+                return Ok(NOTIFICATIONS[0].to_owned());
+            }
+            pending().await
+        },
+        true,
+        Language::ZhCn,
+        &mut state,
+        None,
+        |event| {
+            if let DeviceEvent::Clip {
+                clip: Clip::Text(text),
+                while_disconnected,
+            } = event
+            {
+                assert_eq!(text, "fresh");
+                assert!(!while_disconnected);
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        },
+    )
+    .await
+    .unwrap();
+    backend.verify();
+}
+
+#[tokio::test(start_paused = true)]
 async fn push_and_pull_round_trip_while_suppressing_both_kinds_of_echo() {
     for (uti, bytes, clip, payload) in [
         (

@@ -16,12 +16,12 @@ use tokio::net::TcpStream;
 use tokio::time::{Instant, timeout_at};
 use tracing::{Dispatch, instrument::WithSubscriber};
 
-use crate::discovery;
+use crate::{discovery, pasteboard::PASTEBOARD_SERVICE};
 
 mod record;
 mod transport;
 
-const PASTEBOARD_SERVICE: &str = "com.apple.coredevice.pasteboardservice";
+pub(crate) use record::{PairedDevice, find_paired_device};
 const ENDPOINT_TIMEOUT: Duration = Duration::from_secs(4);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IPV6_TCP_HEADERS: usize = 60;
@@ -101,7 +101,8 @@ pub async fn probe_wifi(
     data_dir: &Path,
     options: WifiProbeOptions,
 ) -> Result<WifiProbe, WifiProbeError> {
-    let (tunnel, identifier_migration) = open_wifi_tunnel(data_dir, options).await?;
+    let device = find_paired_device(data_dir)?;
+    let (tunnel, identifier_migration) = open_wifi_tunnel(&device, options).await?;
     let summary = WifiProbe {
         service_count: tunnel.rsd.services.len(),
         pasteboard_advertised: tunnel.rsd.services.contains_key(PASTEBOARD_SERVICE),
@@ -112,20 +113,20 @@ pub async fn probe_wifi(
 }
 
 pub(crate) async fn open_wifi_tunnel(
-    data_dir: &Path,
+    device: &PairedDevice,
     options: WifiProbeOptions,
 ) -> Result<(WifiTunnel, IdentifierMigration), WifiProbeError> {
     // Upstream debug tracing can include RemotePairing and RSD payloads.
-    open(data_dir, options)
+    open(device, options)
         .with_subscriber(Dispatch::none())
         .await
 }
 
 async fn open(
-    data_dir: &Path,
+    device: &PairedDevice,
     options: WifiProbeOptions,
 ) -> Result<(WifiTunnel, IdentifierMigration), WifiProbeError> {
-    let mut record = record::RemoteRecord::read(data_dir)?;
+    let mut record = record::RemoteRecord::read(&device.path)?;
     let endpoints = match options.address {
         Some(address) => vec![address],
         None => discovery::discover(record.peer_alt_irk())
@@ -149,10 +150,11 @@ async fn open(
         )
         .await
         {
-            Ok(Ok(tunnel)) => {
+            Ok(Ok(tunnel)) if device.matches_rsd(&tunnel.rsd) => {
                 let migration = record.persist_identifier(options.write_identifier);
                 return Ok((tunnel, migration));
             }
+            Ok(Ok(_)) => last_error = WifiProbeError::Rsd,
             Ok(Err(error)) => last_error = error,
             Err(_) => last_error = WifiProbeError::Timeout,
         }

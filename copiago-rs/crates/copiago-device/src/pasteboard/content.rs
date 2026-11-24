@@ -155,6 +155,7 @@ impl Snapshot {
         Update {
             change: self.change,
             event,
+            timed_out: false,
         }
     }
 
@@ -162,6 +163,7 @@ impl Snapshot {
         Update {
             change: self.change,
             event: None,
+            timed_out: true,
         }
     }
 }
@@ -224,6 +226,7 @@ fn is_file_like(uti: &str) -> bool {
 pub(super) struct Update {
     pub change: Option<PasteboardChange>,
     pub event: Option<DeviceEvent>,
+    pub timed_out: bool,
 }
 
 pub(super) async fn read_clip(

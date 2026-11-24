@@ -216,6 +216,7 @@ dependencies = [
  "base64 0.22.1",
  "copiago-core",
  "ed25519-dalek",
+ "futures-util",
  "idevice",
  "plist",
  "tokio",

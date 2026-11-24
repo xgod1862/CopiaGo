@@ -33,7 +33,7 @@ fn legacy_record_is_sealed_with_all_fields_and_migrates_once() {
     legacy_plist.to_writer_xml(&mut initial).unwrap();
     fs::write(&fixture.path, &initial).unwrap();
 
-    let mut record = RemoteRecord::read(&fixture.root).unwrap();
+    let mut record = RemoteRecord::read(&fixture.path).unwrap();
     assert_eq!(record.peer_alt_irk(), Some(&[3; 16]));
     assert_eq!(
         record.persist_identifier(false),
@@ -52,7 +52,7 @@ fn legacy_record_is_sealed_with_all_fields_and_migrates_once() {
     fields.insert("identifier".into(), "OriginalHostId".into());
     assert!(stored == Value::Dictionary(fields));
 
-    let mut reopened = RemoteRecord::read(&fixture.root).unwrap();
+    let mut reopened = RemoteRecord::read(&fixture.path).unwrap();
     assert_eq!(reopened.pairing.identifier(), "OriginalHostId");
     assert_eq!(
         reopened.persist_identifier(true),
@@ -65,7 +65,7 @@ fn legacy_record_is_sealed_with_all_fields_and_migrates_once() {
 fn refreshed_or_removed_record_is_preserved() {
     let fixture = TestRecord::new();
     fixture.write_sealed(sample_record());
-    let mut record = RemoteRecord::read(&fixture.root).unwrap();
+    let mut record = RemoteRecord::read(&fixture.path).unwrap();
 
     let mut updated = sample_record();
     updated.insert("identifier".into(), "NewId".into());

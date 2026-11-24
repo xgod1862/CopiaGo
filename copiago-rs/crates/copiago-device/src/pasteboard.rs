@@ -47,6 +47,8 @@ pub enum PasteboardError {
     RequestTimeout,
     MetadataUnresponsive,
     UnsupportedPush,
+    Disconnected,
+    PushBusy,
 }
 
 impl fmt::Display for PasteboardError {
@@ -59,6 +61,8 @@ impl fmt::Display for PasteboardError {
             Self::RequestTimeout => "pasteboard request timed out",
             Self::MetadataUnresponsive => "device tunnel stopped responding to pasteboard polls",
             Self::UnsupportedPush => "pasteboard push requires text or a prepared PNG",
+            Self::Disconnected => "iPhone is not connected",
+            Self::PushBusy => "a pasteboard push is already queued",
         };
         formatter.write_str(message)
     }
@@ -93,6 +97,14 @@ pub(crate) struct PasteboardState {
 }
 
 impl PasteboardState {
+    pub(super) fn reconnect(&mut self, initial: Option<PasteboardChange>) -> bool {
+        if self.last_change.is_none() {
+            self.last_change = initial;
+            return false;
+        }
+        initial != self.last_change
+    }
+
     async fn push(
         &mut self,
         backend: &mut impl PasteboardBackend,
@@ -176,9 +188,11 @@ async fn watch_updates(
     mut commands: Option<&mut mpsc::Receiver<DeviceCommand>>,
     mut emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
 ) -> Result<Option<DeviceCommand>, PasteboardError> {
-    // Establish a baseline after subscribing. A first-time connection does not
-    // deliver whatever happened to be on the phone before it connected.
-    state.last_change = pull(backend, PullPolicy::AllPromised).await?.change;
+    let initial = pull(backend, PullPolicy::AllPromised).await?.change;
+    let mut stale = state.reconnect(initial);
+    if stale {
+        changed.notify_one();
+    }
     let connected = Message::new(if wireless {
         "已连接（无线）"
     } else {
@@ -245,17 +259,27 @@ async fn watch_updates(
                 };
 
                 if already_seen(listing.change.as_ref(), state.last_change.as_ref()) {
+                    stale = false;
                     continue;
                 }
-                let Update { change, event } = read_clip(backend, listing, language).await?;
-                if already_seen(change.as_ref(), state.last_change.as_ref()) {
-                    continue;
-                }
+                let Update { change, mut event, timed_out } = read_clip(backend, listing, language).await?;
+                let duplicate = already_seen(change.as_ref(), state.last_change.as_ref());
                 if change.is_some() {
                     state.last_change = change;
                 }
-                if matches!(&event, Some(DeviceEvent::Clip { clip, .. }) if state.is_echo(clip)) {
+                // A slow payload is skipped without consuming the reconnect marker.
+                if timed_out {
                     continue;
+                }
+                let was_stale = std::mem::take(&mut stale);
+                if duplicate {
+                    continue;
+                }
+                if let Some(DeviceEvent::Clip { clip, while_disconnected }) = &mut event {
+                    if state.is_echo(clip) {
+                        continue;
+                    }
+                    *while_disconnected = was_stale;
                 }
                 if let Some(event) = event
                     && emit(event).is_break()

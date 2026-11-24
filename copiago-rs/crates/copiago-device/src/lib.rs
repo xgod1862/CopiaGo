@@ -1,6 +1,8 @@
 //! iPhone connections and clipboard synchronization.
 
 #[cfg(windows)]
+mod connection;
+#[cfg(windows)]
 mod contract;
 #[cfg(windows)]
 pub mod discovery;
@@ -11,6 +13,8 @@ mod usb;
 #[cfg(windows)]
 mod wifi;
 
+#[cfg(windows)]
+pub use connection::{DeviceRunOptions, HostSignal, HostSignals, run_device};
 #[cfg(windows)]
 pub use contract::{ConnState, DeviceCommand, DeviceEvent};
 #[cfg(windows)]

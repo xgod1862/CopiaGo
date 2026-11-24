@@ -40,7 +40,7 @@ fn run(test: impl Future<Output = ()>) {
 }
 
 async fn mock_mux(
-    respond: impl FnOnce(UsbmuxdServerRequest) -> UsbmuxdServerResponse + Send + 'static,
+    respond: impl FnOnce(UsbmuxdServerRequest) -> Vec<UsbmuxdServerResponse> + Send + 'static,
 ) -> (UsbmuxdAddr, JoinHandle<()>) {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let addr = UsbmuxdAddr::TcpSocket(listener.local_addr().unwrap());
@@ -52,19 +52,24 @@ async fn mock_mux(
         packet[..4].copy_from_slice(&size.to_le_bytes());
         socket.read_exact(&mut packet[4..]).await.unwrap();
         let request = RawPacket::try_from(packet.as_slice()).unwrap();
-        let response = respond(UsbmuxdServerRequest::decode(&request).unwrap());
-        socket
-            .write_all(&Vec::from(response.into_packet(request.tag)))
-            .await
-            .unwrap();
+        for response in respond(UsbmuxdServerRequest::decode(&request).unwrap()) {
+            socket
+                .write_all(&Vec::from(response.into_packet(request.tag)))
+                .await
+                .unwrap();
+        }
     });
     (addr, task)
 }
 
 fn mux_device(device_id: u32, transport: &str) -> Value {
+    mux_device_for(device_id, transport, UDID)
+}
+
+fn mux_device_for(device_id: u32, transport: &str, serial: &str) -> Value {
     let properties = Dictionary::from_iter([
         ("ConnectionType", transport.into()),
-        ("SerialNumber", UDID.into()),
+        ("SerialNumber", serial.into()),
         ("NetworkAddress", Value::Data(vec![2; 16])),
     ]);
     Value::Dictionary(Dictionary::from_iter([
@@ -76,7 +81,7 @@ fn mux_device(device_id: u32, transport: &str) -> Value {
 async fn mock_device_list(devices: Vec<Value>) -> (UsbmuxdAddr, JoinHandle<()>) {
     mock_mux(|request| {
         assert!(matches!(request, UsbmuxdServerRequest::ListDevices));
-        UsbmuxdServerResponse::DeviceList(devices)
+        vec![UsbmuxdServerResponse::DeviceList(devices)]
     })
     .await
 }
@@ -94,6 +99,58 @@ fn usb_list_filters_other_transports() {
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].device_id, 5);
         task.await.unwrap();
+    });
+}
+
+#[test]
+fn paired_usb_selection_requires_both_serial_and_usb() {
+    run(async {
+        const OTHER: &str = "00008030-001234567890ABCE";
+        let device = PairedDevice {
+            serial: UDID.to_owned(),
+            path: PathBuf::new(),
+        };
+        for (devices, expected) in [
+            (
+                vec![mux_device(1, "Network"), mux_device_for(2, "USB", OTHER)],
+                None,
+            ),
+            (
+                vec![
+                    mux_device(1, "Network"),
+                    mux_device_for(2, "USB", OTHER),
+                    mux_device(3, "USB"),
+                ],
+                Some(3),
+            ),
+            (vec![], None),
+        ] {
+            let (addr, task) = mock_device_list(devices).await;
+            assert_eq!(paired_usb_id(&addr, &device).await, Ok(expected));
+            task.await.unwrap();
+        }
+    });
+}
+
+#[test]
+fn usbmux_listen_relays_removal_and_leaves_attaches_to_the_fallback_lookup() {
+    run(async {
+        let (addr, server) = mock_mux(|request| {
+            assert!(matches!(request, UsbmuxdServerRequest::Listen));
+            let mut attach = mux_device(5, "USB").into_dictionary().unwrap();
+            attach.insert("MessageType".to_owned(), "Attached".into());
+            vec![
+                UsbmuxdServerResponse::Result(0),
+                UsbmuxdServerResponse::Attached(attach),
+                UsbmuxdServerResponse::Detached(5),
+            ]
+        })
+        .await;
+        let (detached, mut changes) = mpsc::channel(4);
+        assert!(listen_once(&addr, &detached).await.is_err()); // test server closed after the events
+        assert_eq!(changes.try_recv(), Ok(5));
+        assert_eq!(changes.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        server.await.unwrap();
     });
 }
 
@@ -121,7 +178,7 @@ async fn mock_pair_record(response: UsbmuxdServerResponse) -> (UsbmuxdProvider, 
             request,
             UsbmuxdServerRequest::ReadPairRecord { pair_record_id } if pair_record_id == UDID
         ));
-        response
+        vec![response]
     })
     .await;
     let device = UsbmuxdDevice {

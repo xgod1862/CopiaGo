@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use copiago_core::{dpapi, i18n::Language, paths::DEVICE_DATA_DIR};
+use futures_util::StreamExt;
 use idevice::{
     IdeviceError, IdeviceService,
     core_device_proxy::CoreDeviceProxy,
@@ -15,19 +16,24 @@ use idevice::{
     provider::{IdeviceProvider, UsbmuxdProvider},
     rsd::RsdHandshake,
     tcp::handle::AdapterHandle,
-    usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
+    usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice, UsbmuxdListenEvent},
 };
-use tokio::{sync::mpsc, time::timeout};
+use tokio::{
+    sync::mpsc,
+    time::{sleep, timeout},
+};
 use tracing::{Dispatch, instrument::WithSubscriber};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     DeviceCommand, DeviceEvent, PasteboardError,
     pasteboard::{PASTEBOARD_SERVICE, PasteboardState, watch_rsd},
+    wifi::PairedDevice,
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const USBMUX_PAIR_RECORD_TIMEOUT: Duration = Duration::from_secs(3);
+const LISTEN_RETRY: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PairingRecordSource {
@@ -196,6 +202,76 @@ async fn open_single_usb_tunnel(
     open_usb_tunnel(&provider, data_dir).await
 }
 
+pub(crate) async fn paired_usb_id(
+    addr: &UsbmuxdAddr,
+    device: &PairedDevice,
+) -> Result<Option<u32>, UsbProbeError> {
+    // A fresh snapshot includes any USB attaches since the Wi-Fi attempt began.
+    let attached = timeout(PROBE_TIMEOUT, list_usb_devices(addr))
+        .with_subscriber(Dispatch::none())
+        .await
+        .map_err(|_| UsbProbeError::Timeout)??;
+    Ok(attached
+        .into_iter()
+        .find(|usb| usb.udid == device.serial)
+        .map(|usb| usb.device_id))
+}
+
+pub(crate) async fn open_paired_usb_tunnel(
+    addr: &UsbmuxdAddr,
+    data_dir: &Path,
+    paired: &PairedDevice,
+    id: u32,
+) -> Result<RsdTunnel, UsbProbeError> {
+    let device = UsbmuxdDevice {
+        connection_type: Connection::Usb,
+        udid: paired.serial.clone(),
+        device_id: id,
+    };
+    let provider = device.to_provider(addr.clone(), "CopiaGo");
+    let (tunnel, _) = timeout(PROBE_TIMEOUT, open_usb_tunnel(&provider, data_dir))
+        .with_subscriber(Dispatch::none())
+        .await
+        .map_err(|_| UsbProbeError::Timeout)??;
+    if !paired.matches_rsd(&tunnel.rsd) {
+        return Err(UsbProbeError::Rsd);
+    }
+    Ok(tunnel)
+}
+
+/// UsbMux attach eligibility is read at fallback time. A detach can also end
+/// the corresponding active USB session before its next pasteboard poll.
+pub(crate) async fn listen_usb_detach(addr: &UsbmuxdAddr, detached: mpsc::Sender<u32>) {
+    loop {
+        let _ = listen_once(addr, &detached)
+            .with_subscriber(Dispatch::none())
+            .await;
+        sleep(LISTEN_RETRY).await;
+    }
+}
+
+async fn listen_once(
+    addr: &UsbmuxdAddr,
+    detached: &mpsc::Sender<u32>,
+) -> Result<(), UsbProbeError> {
+    let mut mux = timeout(PROBE_TIMEOUT, addr.connect(0))
+        .await
+        .map_err(|_| UsbProbeError::Timeout)?
+        .map_err(|_| UsbProbeError::Usbmuxd)?;
+    let mut stream = timeout(PROBE_TIMEOUT, mux.listen())
+        .await
+        .map_err(|_| UsbProbeError::Timeout)?
+        .map_err(|_| UsbProbeError::Usbmuxd)?;
+    while let Some(event) = stream.next().await {
+        if let UsbmuxdListenEvent::Disconnected(id) = event.map_err(|_| UsbProbeError::Usbmuxd)?
+            && detached.send(id).await.is_err()
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
 async fn list_usb_devices(addr: &UsbmuxdAddr) -> Result<Vec<UsbmuxdDevice>, UsbProbeError> {
     let mut mux = addr.connect(0).await.map_err(|_| UsbProbeError::Usbmuxd)?;
     Ok(mux
@@ -299,9 +375,9 @@ async fn open_usb_tunnel(
     Ok((RsdTunnel { adapter, rsd }, source))
 }
 
-struct RsdTunnel {
-    adapter: AdapterHandle,
-    rsd: RsdHandshake,
+pub(crate) struct RsdTunnel {
+    pub(crate) adapter: AdapterHandle,
+    pub(crate) rsd: RsdHandshake,
 }
 
 fn device_error(error: IdeviceError, step: UsbProbeError) -> UsbProbeError {

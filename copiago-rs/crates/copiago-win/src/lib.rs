@@ -1,4 +1,6 @@
-//! Windows clipboard, tray, startup, and HTTP integration.
+//! Windows clipboard, imaging, tray, startup, and HTTP integration.
 
 #[cfg(windows)]
 pub mod clipboard;
+#[cfg(windows)]
+pub mod image;

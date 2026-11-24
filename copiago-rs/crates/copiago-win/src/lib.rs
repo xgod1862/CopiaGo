@@ -6,3 +6,5 @@ pub mod clipboard;
 pub mod http;
 #[cfg(windows)]
 pub mod image;
+#[cfg(windows)]
+pub mod update;

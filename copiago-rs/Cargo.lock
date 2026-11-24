@@ -192,6 +192,11 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 name = "copiago-app"
 version = "2.0.0-beta"
 dependencies = [
+ "copiago-core",
+ "copiago-device",
+ "copiago-win",
+ "tokio",
+ "windows-sys 0.59.0",
  "winresource",
 ]
 

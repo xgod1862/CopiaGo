@@ -22,7 +22,7 @@ mod rsd;
 
 #[cfg(test)]
 pub(crate) use rsd::verify_push_round_trip;
-pub(crate) use rsd::{PASTEBOARD_SERVICE, watch_rsd};
+pub(crate) use rsd::{PASTEBOARD_SERVICE, read_rsd_types, watch_rsd};
 
 use content::{PNG_UTI, Snapshot, Update, read_clip};
 

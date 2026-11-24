@@ -16,7 +16,10 @@ use tokio::net::TcpStream;
 use tokio::time::{Instant, timeout_at};
 use tracing::{Dispatch, instrument::WithSubscriber};
 
-use crate::{discovery, pasteboard::PASTEBOARD_SERVICE};
+use crate::{
+    discovery,
+    pasteboard::{PASTEBOARD_SERVICE, PasteboardError, read_rsd_types},
+};
 
 mod record;
 mod transport;
@@ -67,6 +70,7 @@ pub enum WifiProbeError {
     CreateListener,
     Tunnel,
     Rsd,
+    Pasteboard(PasteboardError),
     Timeout,
     CloseTimeout,
 }
@@ -86,6 +90,7 @@ impl fmt::Display for WifiProbeError {
             Self::CreateListener => "could not create the CoreDevice tunnel listener",
             Self::Tunnel => "could not open the TLS-PSK tunnel",
             Self::Rsd => "could not discover tunnel services through RSD",
+            Self::Pasteboard(error) => return error.fmt(formatter),
             Self::Timeout => "Wi-Fi connection timed out",
             Self::CloseTimeout => "Wi-Fi tunnel did not close in time",
         };
@@ -110,6 +115,24 @@ pub async fn probe_wifi(
     };
     tunnel.close().await?;
     Ok(summary)
+}
+
+/// Reads the ordered pasteboard UTIs per item over an authenticated Wi-Fi tunnel.
+pub async fn probe_wifi_pasteboard_types(
+    data_dir: &Path,
+    address: Option<SocketAddr>,
+) -> Result<Vec<Vec<String>>, WifiProbeError> {
+    let device = find_paired_device(data_dir)?;
+    let options = WifiProbeOptions {
+        address,
+        write_identifier: false,
+    };
+    let (mut tunnel, _) = open_wifi_tunnel(&device, options).await?;
+    let items = read_rsd_types(&mut tunnel.adapter, &tunnel.rsd).await;
+    let closed = tunnel.close().await;
+    let items = items.map_err(WifiProbeError::Pasteboard)?;
+    closed?;
+    Ok(items)
 }
 
 pub(crate) async fn open_wifi_tunnel(

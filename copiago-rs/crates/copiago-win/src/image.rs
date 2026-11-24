@@ -1,7 +1,7 @@
 //! Bounded Windows Imaging Component (WIC) decoding and PNG/DIB conversion.
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::fmt;
 use std::ptr::{null, null_mut};
@@ -9,10 +9,11 @@ use std::ptr::{null, null_mut};
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatBmp, GUID_ContainerFormatGif,
-    GUID_ContainerFormatJpeg, GUID_ContainerFormatPng, GUID_ContainerFormatTiff,
-    GUID_ContainerFormatWebp, GUID_WICPixelFormat32bppBGRA, IWICBitmapSource, IWICFormatConverter,
-    IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapEncoderNoCache,
-    WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand,
+    GUID_ContainerFormatHeif, GUID_ContainerFormatJpeg, GUID_ContainerFormatPng,
+    GUID_ContainerFormatTiff, GUID_ContainerFormatWebp, GUID_WICPixelFormat32bppBGRA,
+    IWICBitmapSource, IWICFormatConverter, IWICImagingFactory, WICBitmapDitherTypeNone,
+    WICBitmapEncoderNoCache, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
+    WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::Graphics::Imaging::{
     IWICBitmapFrameDecode, IWICBitmapFrameEncode, WICBitmapTransformFlipHorizontal,
@@ -160,7 +161,7 @@ impl BgraImage {
     }
 }
 
-/// Decodes the first frame in its stored orientation. WebP requires a WIC codec.
+/// Decodes the first frame in its stored orientation. HEIC and WebP use optional WIC codecs.
 pub fn decode(encoded: &[u8]) -> Result<BgraImage> {
     let input = EncodedImage::new(encoded)?;
     input.with_frame(|factory, source, size| read_bgra(factory, source, size))
@@ -368,9 +369,44 @@ fn detect_container(encoded: &[u8]) -> Result<GUID> {
         Ok(GUID_ContainerFormatBmp)
     } else if encoded.starts_with(b"RIFF") && encoded.get(8..12) == Some(b"WEBP") {
         Ok(GUID_ContainerFormatWebp)
+    } else if is_heic(encoded) {
+        Ok(GUID_ContainerFormatHeif)
     } else {
         Err(ImageError::InvalidImage)
     }
+}
+
+fn is_heic(encoded: &[u8]) -> bool {
+    let Some(header) = encoded.get(..8).filter(|header| &header[4..] == b"ftyp") else {
+        return false;
+    };
+    let (offset, size) = match u32::from_be_bytes(header[..4].try_into().unwrap()) {
+        1 => {
+            let Some(larger_size) = encoded.get(8..16) else {
+                return false;
+            };
+            (16, u64::from_be_bytes(larger_size.try_into().unwrap()))
+        }
+        size => (8, u64::from(size)),
+    };
+    let Some(brand_bytes) = usize::try_from(size)
+        .ok()
+        .and_then(|end| encoded.get(offset..end))
+    else {
+        return false;
+    };
+    let (brands, remainder) = brand_bytes.as_chunks::<4>();
+    let [major, _, compatible @ ..] = brands else {
+        return false;
+    };
+    // A generic ISO BMFF or HEIF brand alone does not identify HEVC images.
+    let hevc_brand = |brand: &[u8; 4]| {
+        matches!(
+            brand,
+            b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"hevm" | b"hevs"
+        )
+    };
+    remainder.is_empty() && (hevc_brand(major) || compatible.iter().any(hevc_brand))
 }
 
 struct EncodedImage<'a> {

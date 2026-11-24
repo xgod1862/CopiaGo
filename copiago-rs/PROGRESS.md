@@ -2,8 +2,8 @@
 
 | 编号 | 状态 | PR 链接 | 备注 |
 | --- | --- | --- | --- |
-| T-CORE-01 | 进行中 | — | 建立 workspace 与 crate 骨架 |
-| T-CI-01 | 待办 | — | |
+| T-CORE-01 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/8 | 建立 workspace 与 crate 骨架 |
+| T-CI-01 | 已合并 | — | Rust CI、6 MB 门禁及 GPL 拒绝验证，阶段 CI 待验 |
 | T-CORE-02 | 待办 | — | |
 | T-CORE-03 | 待办 | — | |
 | T-CORE-04 | 待办 | — | |

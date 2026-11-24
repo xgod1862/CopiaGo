@@ -6,3 +6,5 @@ pub mod animation;
 pub mod components;
 #[cfg(windows)]
 pub mod composition;
+#[cfg(windows)]
+pub mod history;

@@ -7,15 +7,20 @@ use windows::{
     Graphics::DirectX::{DirectXAlphaMode, DirectXPixelFormat},
     UI::{
         Color,
-        Composition::{CompositionGraphicsDevice, Compositor, SpriteVisual},
+        Composition::{CompositionGraphicsDevice, CompositionStretch, Compositor, SpriteVisual},
     },
     Win32::{
         Foundation::{E_INVALIDARG, E_UNEXPECTED, POINT},
         Graphics::{
             Direct2D::{
-                Common::D2D1_COLOR_F, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
-                D2D1CreateFactory, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
+                Common::{
+                    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
+                    D2D1_PIXEL_FORMAT,
+                },
+                D2D1_BITMAP_PROPERTIES1, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_LINEAR,
+                D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1Device,
+                ID2D1DeviceContext, ID2D1Factory1,
             },
             Direct3D::D3D_DRIVER_TYPE_WARP,
             Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice},
@@ -24,8 +29,9 @@ use windows::{
                 DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
                 DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
-                DWriteCreateFactory, IDWriteFactory,
+                DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
             },
+            Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
             Dxgi::IDXGIDevice,
         },
         System::WinRT::Composition::{ICompositionDrawingSurfaceInterop, ICompositorInterop},
@@ -67,6 +73,61 @@ pub struct TextSurface {
     pub visual: SpriteVisual,
     /// The sprite size in DIPs, including a small antialiasing margin.
     pub size: Vector2,
+}
+
+/// Measures a single line in DIPs using the same DirectWrite font as the popup.
+/// This can run before creating a graphics device or making a popup visible.
+pub struct TextMeasurer(IDWriteFactory);
+
+impl TextMeasurer {
+    pub fn new() -> Result<Self> {
+        // SAFETY: The shared DirectWrite factory needs no additional parameters.
+        unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }.map(Self)
+    }
+
+    pub fn width(&self, text: &str, font: Font, size: f32) -> Result<f32> {
+        let text = text_units(text);
+        let format = single_line_format(&self.0, w!("Microsoft YaHei UI"), font, size)?;
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        // SAFETY: DirectWrite borrows the UTF-16 slice and initialized output storage.
+        unsafe {
+            self.0
+                .CreateTextLayout(&text, &format, 0.0, size * 3.0)?
+                .GetMetrics(&mut metrics)?;
+        }
+        Ok(metrics.widthIncludingTrailingWhitespace)
+    }
+}
+
+fn text_units(text: &str) -> Vec<u16> {
+    text.encode_utf16()
+        .map(|unit| match unit {
+            0x000A | 0x000D | 0x2028 | 0x2029 => u16::from(b' '),
+            _ => unit,
+        })
+        .collect()
+}
+
+fn single_line_format(
+    write: &IDWriteFactory,
+    family: PCWSTR,
+    font: Font,
+    size: f32,
+) -> Result<IDWriteTextFormat> {
+    // SAFETY: All callers supply a static, null-terminated font family and locale.
+    unsafe {
+        let format = write.CreateTextFormat(
+            family,
+            None,
+            font.weight(),
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            size,
+            w!("zh-CN"),
+        )?;
+        format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        Ok(format)
+    }
 }
 
 pub(super) struct Drawing {
@@ -122,14 +183,99 @@ impl Drawing {
         text: &str,
         style: TextStyle,
     ) -> Result<TextSurface> {
-        let text: Vec<u16> = text
-            .encode_utf16()
-            .map(|unit| match unit {
-                0x000A | 0x000D | 0x2028 | 0x2029 => u16::from(b' '),
-                _ => unit,
-            })
-            .collect();
+        let text = text_units(text);
         self.rasterize(compositor, scale, &text, style, w!("Microsoft YaHei UI"))
+    }
+
+    pub(super) fn thumbnail(
+        &self,
+        compositor: &Compositor,
+        width: u32,
+        height: u32,
+        straight_bgra: &[u8],
+        tile: Vector2,
+    ) -> Result<SpriteVisual> {
+        let stride = width.checked_mul(4).unwrap_or_default();
+        if width == 0
+            || height == 0
+            || width > 88
+            || height > 56
+            || stride as usize * height as usize != straight_bgra.len()
+        {
+            return Err(Error::new(
+                E_INVALIDARG,
+                "Invalid history preview dimensions",
+            ));
+        }
+        let mut pixels = straight_bgra.to_vec();
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            let alpha = u16::from(pixel[3]);
+            for component in &mut pixel[..3] {
+                *component = ((u16::from(*component) * alpha + 127) / 255) as u8;
+            }
+        }
+        let surface = self.graphics.CreateDrawingSurface(
+            Size {
+                Width: width as f32,
+                Height: height as f32,
+            },
+            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+            DirectXAlphaMode::Premultiplied,
+        )?;
+        let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+        let mut offset = POINT::default();
+        // SAFETY: This updates the whole target and writes its offset.
+        let context: ID2D1DeviceContext = unsafe { interop.BeginDraw(None, &mut offset)? };
+        let paint = || -> Result<()> {
+            // SAFETY: The checked pixel buffer remains valid through bitmap creation.
+            unsafe {
+                let properties = D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    ..Default::default()
+                };
+                let bitmap = context.CreateBitmap(
+                    D2D_SIZE_U { width, height },
+                    Some(pixels.as_ptr().cast()),
+                    stride,
+                    &properties,
+                )?;
+                context.SetDpi(96.0, 96.0);
+                context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
+                context.Clear(Some(&D2D1_COLOR_F::default()));
+                context.DrawBitmap(
+                    &bitmap,
+                    Some(&D2D_RECT_F {
+                        left: 0.0,
+                        top: 0.0,
+                        right: width as f32,
+                        bottom: height as f32,
+                    }),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_LINEAR,
+                    None,
+                    None,
+                );
+            }
+            Ok(())
+        };
+        let painted = paint();
+        // SAFETY: Pair BeginDraw with EndDraw even if creating the bitmap failed.
+        let ended = unsafe { interop.EndDraw() };
+        painted?;
+        ended?;
+        let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
+        brush.SetStretch(CompositionStretch::UniformToFill)?;
+        brush.SetHorizontalAlignmentRatio(0.5)?;
+        brush.SetVerticalAlignmentRatio(0.5)?;
+        let visual = compositor.CreateSpriteVisual()?;
+        visual.SetSize(tile)?;
+        visual.SetBrush(&brush)?;
+        Ok(visual)
     }
 
     pub(super) fn icon(
@@ -193,19 +339,9 @@ impl Drawing {
         }
 
         let mut metrics = DWRITE_TEXT_METRICS::default();
-        // SAFETY: Both string pointers refer to static, null-terminated font and locale names.
-        // DirectWrite receives a UTF-16 slice and valid output storage for the layout metrics.
+        let format = single_line_format(&self.write, family, style.font, font_px)?;
+        // SAFETY: DirectWrite receives a UTF-16 slice and valid output storage.
         let layout = unsafe {
-            let format = self.write.CreateTextFormat(
-                family,
-                None,
-                style.font.weight(),
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                font_px,
-                w!("zh-CN"),
-            )?;
-            format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             let sign = self.write.CreateEllipsisTrimmingSign(&format)?;
             format.SetTrimming(
                 &DWRITE_TRIMMING {

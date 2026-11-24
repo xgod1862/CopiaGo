@@ -4,26 +4,29 @@ mod drawing;
 mod thread;
 mod window;
 
-pub use drawing::{Font, TextStyle, TextSurface};
+pub use drawing::{Font, TextMeasurer, TextStyle, TextSurface};
 pub use thread::CompositionThread;
 pub use window::POPUP_SETTINGS_CHANGED;
 
 use std::{cell::OnceCell, rc::Rc};
 
 use drawing::Drawing;
-use window::{CLOSE_POPUP, DPI_CHANGED, Placement, PopupWindows};
+use window::{CLOSE_POPUP, DISMISS_POPUP, DPI_CHANGED, Placement, PopupWindows};
 use windows::{
     UI::{
         Color,
         Composition::{
             CompositionColorBrush, CompositionRoundedRectangleGeometry, Compositor,
-            ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual, Visual,
+            ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual, SpriteVisual, Visual,
         },
     },
     Win32::{
         Foundation::{E_INVALIDARG, HWND, POINT},
         System::WinRT::Composition::ICompositorDesktopInterop,
-        UI::WindowsAndMessaging::MSG,
+        UI::{
+            Input::KeyboardAndMouse::VK_ESCAPE,
+            WindowsAndMessaging::{MSG, WM_KEYDOWN},
+        },
     },
     core::{Error, Interface, Result},
 };
@@ -95,6 +98,12 @@ impl<'ui> PopupHost<'ui> {
         self.visible.as_ref().map(|visible| &visible.scene)
     }
 
+    /// Disable focus-loss dismissal while showing pairing instructions.
+    /// The default is to dismiss 150 ms after this window loses focus.
+    pub fn set_dismiss_on_focus_loss(&self, enabled: bool) {
+        self.windows.set_dismiss_on_focus_loss(enabled);
+    }
+
     /// Present a fresh scene with its card at the given screen pixel.
     /// Set activate to false when opening without taking keyboard focus.
     pub fn show(
@@ -131,6 +140,27 @@ impl<'ui> PopupHost<'ui> {
         Ok(())
     }
 
+    /// Rebuild a visible card at a new position or height without hiding it,
+    /// changing its focus, or recreating its graphics device.
+    pub fn rebuild(
+        &mut self,
+        position: POINT,
+        bounds: PopupBounds,
+        build: impl FnOnce(&PopupScene) -> Result<()>,
+    ) -> Result<()> {
+        if let Some(visible) = self.visible.as_mut() {
+            let placement = Placement::new(position, bounds, visible.placement.dpi)?;
+            if let Err(error) = visible
+                .rebuild(placement, build)
+                .and_then(|()| self.windows.place(placement))
+            {
+                self.hide();
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Call before dispatching a message returned by GetMessageW. Returns true
     /// for messages handled here. The builder restores the card contents when
     /// Windows changes monitor DPI, including re-rasterizing text and icons.
@@ -144,6 +174,12 @@ impl<'ui> PopupHost<'ui> {
         }
         match message.message {
             CLOSE_POPUP => self.hide(),
+            DISMISS_POPUP => {
+                if self.windows.should_dismiss() {
+                    self.hide();
+                }
+            }
+            WM_KEYDOWN if message.wParam.0 == usize::from(VK_ESCAPE.0) => self.hide(),
             DPI_CHANGED => {
                 if let Some((dpi, position)) = self.windows.take_dpi_change()
                     && let Some(visible) = self.visible.as_mut()
@@ -278,7 +314,17 @@ impl PopupScene {
         self.draw(|drawing| drawing.icon(&self.compositor, self.scale(), glyph, size, color))
     }
 
-    fn draw(&self, draw: impl FnOnce(&Drawing) -> Result<TextSurface>) -> Result<TextSurface> {
+    pub(crate) fn thumbnail(
+        &self,
+        width: u32,
+        height: u32,
+        bgra: &[u8],
+        tile: Vector2,
+    ) -> Result<SpriteVisual> {
+        self.draw(|drawing| drawing.thumbnail(&self.compositor, width, height, bgra, tile))
+    }
+
+    fn draw<T>(&self, draw: impl FnOnce(&Drawing) -> Result<T>) -> Result<T> {
         if let Some(drawing) = self.drawing.get() {
             return draw(drawing);
         }

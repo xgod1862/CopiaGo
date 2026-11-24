@@ -32,7 +32,7 @@ pub enum ItemKind {
 impl ItemKind {
     fn tile(self, theme: &Theme) -> (char, Color, Color) {
         match self {
-            Self::Text => ('\u{E8C8}', theme.tint, theme.accent),
+            Self::Text => ('\u{E8A1}', theme.tint, theme.accent),
             Self::Link => ('\u{E71B}', theme.link_tint, theme.link_ink),
             Self::Image => ('\u{EB9F}', theme.tint, theme.accent),
             Self::File => ('\u{E7C3}', theme.file_tint, theme.disconnected.text),
@@ -91,6 +91,7 @@ pub struct ItemLayout {
 impl ItemLayout {
     pub const ROW_HEIGHT: f32 = 60.0;
     pub const GAP: f32 = 8.0;
+    pub const TITLE_SIZE: f32 = 14.0;
 
     pub const fn new(width: f32, height: f32, kind: ItemKind, actions: ItemActions) -> Self {
         Self {
@@ -149,7 +150,7 @@ impl ItemLayout {
         })
     }
 
-    fn text_width(self) -> f32 {
+    pub(crate) fn text_width(self) -> f32 {
         let controls = if self.actions == ItemActions::None {
             0.0
         } else {
@@ -181,7 +182,7 @@ pub struct ListItem {
     entrance: ContainerVisual,
     press: ContainerVisual,
     background: RoundedRectangle,
-    image_tile: Option<ContainerVisual>,
+    image_tile: Option<ImageTile>,
     thumbnail: Option<Visual>,
     actions: Vec<(ItemAction, Button)>,
     layout: ItemLayout,
@@ -190,6 +191,11 @@ pub struct ListItem {
     position_policy: Option<MotionPolicy>,
     interaction_policy: Option<MotionPolicy>,
     colors: (Color, Color),
+}
+
+struct ImageTile {
+    visual: ContainerVisual,
+    placeholder: ContainerVisual,
 }
 
 impl ListItem {
@@ -245,19 +251,27 @@ impl ListItem {
             &icon,
             Rect::new(0.0, 0.0, layout.tile().width, layout.tile().height),
         )?;
-        tile.Children()?.InsertAtBottom(&tile_fill.visual)?;
-        tile.Children()?.InsertAtTop(&icon.visual)?;
         children.InsertAtTop(&tile)?;
         let image_tile = if layout.kind == ItemKind::Image {
             let clip = compositor.CreateGeometricClipWithGeometry(&tile_fill.geometry)?;
             tile.SetClip(&clip)?;
-            Some(tile)
+            let placeholder = compositor.CreateContainerVisual()?;
+            placeholder.Children()?.InsertAtBottom(&tile_fill.visual)?;
+            placeholder.Children()?.InsertAtTop(&icon.visual)?;
+            tile.Children()?.InsertAtBottom(&placeholder)?;
+            Some(ImageTile {
+                visual: tile,
+                placeholder,
+            })
         } else {
+            tile.Children()?.InsertAtBottom(&tile_fill.visual)?;
+            tile.Children()?.InsertAtTop(&icon.visual)?;
             None
         };
 
-        let expanded =
-            selected && layout.kind == ItemKind::Text && layout.height > ItemLayout::ROW_HEIGHT;
+        let expanded = selected
+            && matches!(layout.kind, ItemKind::Text | ItemKind::Link)
+            && layout.height > ItemLayout::ROW_HEIGHT;
         for (index, line) in content
             .title
             .iter()
@@ -265,11 +279,18 @@ impl ListItem {
             .enumerate()
         {
             let width = if expanded {
-                layout.wrap_width()
+                layout.wrap_width() + 8.0
             } else {
                 layout.text_width()
             };
-            let label = text(scene, line, Font::Semibold, 13.5, width, theme.ink)?;
+            let label = text(
+                scene,
+                line,
+                Font::Semibold,
+                ItemLayout::TITLE_SIZE,
+                width,
+                theme.ink,
+            )?;
             let y = if expanded {
                 12.0 + index as f32 * 20.0
             } else {
@@ -288,7 +309,7 @@ impl ListItem {
             content.detail,
             Font::Regular,
             12.0,
-            layout.text_width(),
+            layout.width - 14.0 - layout.text_left(),
             ink,
         )?;
         detail.visual.SetOffset(xy(
@@ -473,7 +494,7 @@ impl ListItem {
         if self.thumbnail.as_ref() == thumbnail {
             return Ok(());
         }
-        let children = tile.Children()?;
+        let children = tile.visual.Children()?;
         if let Some(thumbnail) = thumbnail {
             thumbnail.SetOpacity(if animator.policy().allows_motion() {
                 0.0
@@ -486,6 +507,7 @@ impl ListItem {
         if let Some(old) = &self.thumbnail {
             children.Remove(old)?;
         }
+        tile.placeholder.SetIsVisible(thumbnail.is_none())?;
         self.thumbnail = thumbnail.cloned();
         Ok(())
     }

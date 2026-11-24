@@ -95,7 +95,7 @@ impl Rect {
     }
 }
 
-fn xy(x: f32, y: f32) -> Vector3 {
+pub(crate) fn xy(x: f32, y: f32) -> Vector3 {
     Vector3::new(x, y, 0.0)
 }
 
@@ -103,7 +103,7 @@ fn at(point: Vector2) -> Vector3 {
     xy(point.X, point.Y)
 }
 
-fn holder(scene: &PopupScene, bounds: Rect) -> Result<ContainerVisual> {
+pub(crate) fn holder(scene: &PopupScene, bounds: Rect) -> Result<ContainerVisual> {
     bounds.validate()?;
     let visual = scene.compositor().CreateContainerVisual()?;
     visual.SetSize(bounds.size())?;
@@ -111,7 +111,7 @@ fn holder(scene: &PopupScene, bounds: Rect) -> Result<ContainerVisual> {
     Ok(visual)
 }
 
-fn text(
+pub(crate) fn text(
     scene: &PopupScene,
     value: &str,
     font: Font,
@@ -130,7 +130,7 @@ fn text(
     )
 }
 
-fn center(surface: &TextSurface, bounds: Rect) -> Result<()> {
+pub(crate) fn center(surface: &TextSurface, bounds: Rect) -> Result<()> {
     surface.visual.SetOffset(xy(
         bounds.x + (bounds.width - surface.size.X) / 2.0,
         bounds.y + (bounds.height - surface.size.Y) / 2.0,

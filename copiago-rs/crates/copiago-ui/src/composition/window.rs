@@ -1,6 +1,9 @@
 //! Separate Win32 input and rendering windows so the shadow never intercepts clicks.
 
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
 
 use windows::{
     Win32::{
@@ -12,15 +15,17 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             HiDpi::GetDpiForWindow,
+            Input::KeyboardAndMouse::GetFocus,
             WindowsAndMessaging::{
-                CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
-                GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, LoadCursorW, PostMessageW,
-                RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-                SWP_SHOWWINDOW, SetForegroundWindow, SetLayeredWindowAttributes, SetWindowLongPtrW,
-                SetWindowPos, ShowWindow, WM_APP, WM_CLOSE, WM_DPICHANGED, WM_NCCREATE,
-                WM_NCDESTROY, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-                WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-                WS_POPUP,
+                CREATESTRUCTW, CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow,
+                GWLP_USERDATA, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, IsWindowVisible,
+                KillTimer, LWA_ALPHA, LoadCursorW, PostMessageW, RegisterClassW, SW_HIDE,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+                SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW,
+                SetWindowPos, ShowWindow, WM_APP, WM_CLOSE, WM_DPICHANGED, WM_KILLFOCUS,
+                WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW,
+                WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+                WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
             },
         },
     },
@@ -34,8 +39,43 @@ pub(super) const DPI_CHANGED: u32 = WM_APP + 1;
 pub(super) const CLOSE_POPUP: u32 = WM_APP + 2;
 /// A system settings broadcast was received. Re-read system preferences on the UI thread.
 pub const POPUP_SETTINGS_CHANGED: u32 = WM_APP + 3;
+pub(super) const DISMISS_POPUP: u32 = WM_APP + 4;
+const DISMISS_TIMER: usize = 0xC043;
+const DISMISS_MS: u32 = 150;
 
 type DpiChange = (u32, POINT);
+
+struct WindowData {
+    dpi_change: Cell<Option<DpiChange>>,
+    dismiss_on_focus_loss: Cell<bool>,
+    dismiss_at: Cell<Option<Instant>>,
+}
+
+impl WindowData {
+    fn new() -> Self {
+        Self {
+            dpi_change: Cell::new(None),
+            dismiss_on_focus_loss: Cell::new(true),
+            dismiss_at: Cell::new(None),
+        }
+    }
+
+    fn cancel_dismiss(&self, hwnd: HWND) {
+        self.dismiss_at.set(None);
+        // SAFETY: The window owns the timer ID and runs on this thread.
+        let _ = unsafe { KillTimer(Some(hwnd), DISMISS_TIMER) };
+    }
+
+    fn start_dismiss(&self, hwnd: HWND) {
+        if self.dismiss_on_focus_loss.get() {
+            let deadline = Instant::now() + Duration::from_millis(u64::from(DISMISS_MS));
+            // SAFETY: The window owns the timer ID and runs on this thread.
+            if unsafe { SetTimer(Some(hwnd), DISMISS_TIMER, DISMISS_MS, None) } != 0 {
+                self.dismiss_at.set(Some(deadline));
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Placement {
@@ -87,17 +127,18 @@ pub(super) struct PopupWindows {
     // Destroy the owned visual window before its input owner and window data.
     visual: Window,
     input: Window,
-    change: Box<Cell<Option<DpiChange>>>,
+    data: Box<WindowData>,
 }
 
 impl PopupWindows {
     pub(super) fn new() -> Result<Self> {
-        let change = Box::new(Cell::new(None));
+        let data = Box::new(WindowData::new());
         // SAFETY: The module, class strings and window procedure live for the
         // process. The Box keeps the input window data alive until destruction.
         unsafe {
             let instance = GetModuleHandleW(None)?.into();
             let class = WNDCLASSW {
+                style: CS_DBLCLKS,
                 lpfnWndProc: Some(window_proc),
                 hInstance: instance,
                 hCursor: LoadCursorW(None, IDC_ARROW)?,
@@ -123,7 +164,7 @@ impl PopupWindows {
                 None,
                 None,
                 Some(instance),
-                Some(std::ptr::from_ref(change.as_ref()).cast()),
+                Some(std::ptr::from_ref(data.as_ref()).cast()),
             )?);
 
             // HWND hit testing cannot see the compositor's alpha. A layered,
@@ -152,7 +193,7 @@ impl PopupWindows {
             Ok(Self {
                 visual,
                 input,
-                change,
+                data,
             })
         }
     }
@@ -177,7 +218,7 @@ impl PopupWindows {
                 1,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             )?;
-            self.change.set(None);
+            self.data.dpi_change.set(None);
             let dpi = GetDpiForWindow(self.input.0);
             if dpi == 0 {
                 Err(Error::from_hresult(E_FAIL))
@@ -188,7 +229,28 @@ impl PopupWindows {
     }
 
     pub(super) fn take_dpi_change(&self) -> Option<DpiChange> {
-        self.change.take()
+        self.data.dpi_change.take()
+    }
+
+    pub(super) fn set_dismiss_on_focus_loss(&self, enabled: bool) {
+        self.data.dismiss_on_focus_loss.set(enabled);
+        if !enabled {
+            self.data.cancel_dismiss(self.input.0);
+        }
+    }
+
+    pub(super) fn should_dismiss(&self) -> bool {
+        if !self.data.dismiss_on_focus_loss.get()
+            || !self
+                .data
+                .dismiss_at
+                .take()
+                .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return false;
+        }
+        // SAFETY: Both functions inspect the visible window on its creation thread.
+        unsafe { IsWindowVisible(self.input.0).as_bool() && GetFocus() != self.input.0 }
     }
 
     pub(super) fn place(&self, placement: Placement) -> Result<()> {
@@ -260,7 +322,8 @@ impl PopupWindows {
             let _ = ShowWindow(self.visual.0, SW_HIDE);
             let _ = ShowWindow(self.input.0, SW_HIDE);
         }
-        self.change.set(None);
+        self.data.cancel_dismiss(self.input.0);
+        self.data.dpi_change.set(None);
     }
 }
 
@@ -283,6 +346,7 @@ extern "system" fn window_proc(
     // window's data remains live until WM_NCDESTROY. WM_DPICHANGED supplies a
     // readable RECT for the duration of this callback.
     unsafe {
+        let data = (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowData).as_ref();
         match message {
             WM_NCCREATE => {
                 let create = &*(lparam.0 as *const CREATESTRUCTW);
@@ -292,24 +356,20 @@ extern "system" fn window_proc(
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             WM_CLOSE => {
-                if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != 0 {
+                if data.is_some() {
                     let _ = PostMessageW(Some(hwnd), CLOSE_POPUP, WPARAM(0), LPARAM(0));
                 }
                 return LRESULT(0);
             }
             WM_SETTINGCHANGE => {
-                if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != 0 {
+                if data.is_some() {
                     let _ = PostMessageW(Some(hwnd), POPUP_SETTINGS_CHANGED, WPARAM(0), LPARAM(0));
                 }
             }
             WM_DPICHANGED => {
-                let change =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Cell<Option<DpiChange>>;
-                if let (Some(change), Some(rect)) =
-                    (change.as_ref(), (lparam.0 as *const RECT).as_ref())
-                {
+                if let (Some(data), Some(rect)) = (data, (lparam.0 as *const RECT).as_ref()) {
                     let dpi = (wparam.0 & 0xffff) as u32;
-                    change.set(Some((
+                    data.dpi_change.set(Some((
                         dpi,
                         POINT {
                             x: rect.left,
@@ -317,6 +377,28 @@ extern "system" fn window_proc(
                         },
                     )));
                     let _ = PostMessageW(Some(hwnd), DPI_CHANGED, WPARAM(0), LPARAM(0));
+                }
+                return LRESULT(0);
+            }
+            WM_KILLFOCUS => {
+                if let Some(data) = data {
+                    data.start_dismiss(hwnd);
+                }
+            }
+            WM_SETFOCUS => {
+                if let Some(data) = data {
+                    data.cancel_dismiss(hwnd);
+                }
+            }
+            WM_TIMER if wparam.0 == DISMISS_TIMER => {
+                if let Some(data) = data
+                    && data
+                        .dismiss_at
+                        .get()
+                        .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    let _ = KillTimer(Some(hwnd), DISMISS_TIMER);
+                    let _ = PostMessageW(Some(hwnd), DISMISS_POPUP, WPARAM(0), LPARAM(0));
                 }
                 return LRESULT(0);
             }

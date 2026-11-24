@@ -5,7 +5,7 @@
 | T-CORE-01 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/8 | 建立 workspace 与 crate 骨架 |
 | T-CI-01 | 已合并 | — | Rust CI、6 MB 门禁及 GPL 拒绝验证，阶段 CI 待验 |
 | T-CORE-02 | 已合并 | — | 四种数据目录、DPAPI、原子写保护通过。本机 Python device-info 只读解析通过 |
-| T-CORE-03 | 待办 | — | |
+| T-CORE-03 | 已合并 | — | 10 项设置，非法值回落、未知键和原子更新测试通过。真实 Python 设置只读验证通过 |
 | T-CORE-04 | 已合并 | — | 170 组翻译逐项核对，命名占位符、延迟渲染和系统语言测试通过 |
 | T-DEV-01 | 待办 | — | |
 | T-DEV-02 | 待办 | — | |

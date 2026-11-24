@@ -1,4 +1,4 @@
-//! Read-only USB discovery and the CoreDevice tunnel.
+//! USB discovery and the CoreDevice tunnel.
 
 use std::fmt;
 use std::fs;
@@ -17,13 +17,13 @@ use idevice::{
     tcp::handle::AdapterHandle,
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
 };
-use tokio::time::timeout;
+use tokio::{sync::mpsc, time::timeout};
 use tracing::{Dispatch, instrument::WithSubscriber};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    DeviceEvent, PasteboardError,
-    pasteboard::{PASTEBOARD_SERVICE, watch_rsd},
+    DeviceCommand, DeviceEvent, PasteboardError,
+    pasteboard::{PASTEBOARD_SERVICE, PasteboardState, watch_rsd},
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -136,6 +136,29 @@ pub async fn watch_usb(
     language: Language,
     emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
 ) -> Result<(), UsbWatchError> {
+    run_usb(data_dir, language, None, emit).await.map(|_| ())
+}
+
+/// Synchronize with a single already-paired USB iPhone.
+///
+/// Handles `DeviceCommand::Push` while connected and emits its result.
+/// Returns any other command to the caller and closes the session.
+/// A closed command channel or a callback break ends the session with `None`.
+pub async fn sync_usb(
+    data_dir: &Path,
+    language: Language,
+    commands: &mut mpsc::Receiver<DeviceCommand>,
+    emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
+) -> Result<Option<DeviceCommand>, UsbWatchError> {
+    run_usb(data_dir, language, Some(commands), emit).await
+}
+
+async fn run_usb(
+    data_dir: &Path,
+    language: Language,
+    commands: Option<&mut mpsc::Receiver<DeviceCommand>>,
+    emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
+) -> Result<Option<DeviceCommand>, UsbWatchError> {
     let (mut tunnel, _) = timeout(
         PROBE_TIMEOUT,
         open_single_usb_tunnel(&UsbmuxdAddr::default(), data_dir),
@@ -144,7 +167,16 @@ pub async fn watch_usb(
     .await
     .unwrap_or(Err(UsbProbeError::Timeout))
     .map_err(UsbWatchError::Usb)?;
-    let result = watch_rsd(&mut tunnel.adapter, &mut tunnel.rsd, false, language, emit).await;
+    let result = watch_rsd(
+        &mut tunnel.adapter,
+        &mut tunnel.rsd,
+        false,
+        language,
+        &mut PasteboardState::default(),
+        commands,
+        emit,
+    )
+    .await;
     let _ = tunnel.adapter.close().await;
     result.map_err(UsbWatchError::Pasteboard)
 }

@@ -3,6 +3,8 @@ use copiago_core::clip::{Clip, FileOffer};
 use copiago_core::ddi::{DdiStage, Progress};
 use copiago_core::i18n::Message;
 
+use crate::PasteboardError;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnState {
     Idle,
@@ -29,6 +31,7 @@ pub enum DeviceEvent {
     Unsupported {
         kind: Message,
     },
+    PushResult(Result<(), PasteboardError>),
     SetupProgress(DdiStage, Progress),
     PairingPrompt(Message),
     Error(Message),

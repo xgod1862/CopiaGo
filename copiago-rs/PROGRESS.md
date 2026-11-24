@@ -9,7 +9,7 @@
 | T-CORE-04 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/9 | 170 组翻译逐项核对，命名占位符、延迟渲染和系统语言测试通过 |
 | T-DEV-01 | 待真机验证 | — | USB 隧道和设备公共接口已集成。本机 usbmuxd 可用，待接单台已信任 iPhone 验证 RSD |
 | T-DEV-02 | 待真机验证 | — | 通知、2 秒轮询及剪贴板拉取的 20 项单测通过，待 USB 真机验证事件延迟与 Notes |
-| T-DEV-03 | 待办 | — | |
+| T-DEV-03 | 待真机验证 | — | 模拟中文、emoji、PNG、120 秒回声和 SET 变更标识通过，真机往返待安全复验 |
 | T-DEV-04 | 已合并 | — | 真机自动发现和显式 IPv4 均完成 pair-verify/RSD。临时 DPAPI 写回和 Python 互通通过 |
 | T-DEV-05 | 待办 | — | |
 | T-DEV-06 | 已合并 | — | 原生 mDNS 在物理 Wi-Fi 与虚拟网卡并存时实机匹配 8/8，正常间隔均 < 1 s |

@@ -117,6 +117,7 @@ pub async fn run_device(
         data_dir,
         addr: &addr,
         options,
+        cable_attached: Cell::new(false),
     };
     let (detached, events) = mpsc::channel(16);
     let mut inputs = Inputs {
@@ -144,6 +145,8 @@ trait Backend {
     ) -> Result<DeviceInfo, PairingError>;
     fn forget(&self) -> std::io::Result<()>;
     async fn usb_id(&self, device: &PairedDevice) -> Result<Option<u32>, UsbProbeError>;
+    /// Told before each Wi-Fi attempt whether the paired phone is also on USB.
+    fn set_cable_attached(&self, _attached: bool) {}
     /// Resolves when the paired phone reappears on the network. The default never does.
     async fn advertisement(&self, _device: &PairedDevice) {
         pending::<()>().await;
@@ -454,14 +457,26 @@ async fn connect_cycle(
     state: &mut DeviceState,
     device: &PairedDevice,
 ) -> Result<Failure, Interrupted> {
+    // Look for the cable first: with the phone on USB, a silent Wi-Fi side should not hold
+    // up the fallback for the full discovery window.
+    let cable = inputs
+        .drive(backend.usb_id(device), Phase::Lookup, emit)
+        .await?;
+    backend.set_cable_attached(matches!(cable, Ok(Some(_))));
     let wifi = attempt(backend, inputs, emit, state, device, Transport::Wifi).await?;
     if !wifi.allows_usb() {
         return Ok(wifi);
     }
-    match inputs
-        .drive(backend.usb_id(device), Phase::Lookup, emit)
-        .await?
-    {
+    let cable = match cable {
+        Ok(Some(id)) => Ok(Some(id)),
+        // The cable may have been plugged in during the Wi-Fi attempt.
+        _ => {
+            inputs
+                .drive(backend.usb_id(device), Phase::Lookup, emit)
+                .await?
+        }
+    };
+    match cable {
         Ok(Some(id)) => {
             let usb = attempt(backend, inputs, emit, state, device, Transport::Usb(id)).await?;
             Ok(wifi.after_usb(usb))

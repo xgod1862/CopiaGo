@@ -19,6 +19,9 @@ use crate::{
 use super::*;
 use crate::history::HistoryOffer;
 
+/// Status lines under the title before the text is ellipsized.
+const MAX_DETAIL_LINES: usize = 4;
+
 #[derive(Clone, PartialEq)]
 pub(super) struct ChromeState {
     pub(super) tab: Source,
@@ -59,7 +62,8 @@ impl ChromeState {
             Vec::new()
         } else {
             let width = INNER - retry_width.map_or(0.0, |w| w + 8.0);
-            wrap(&value, width - 2.0, 2, |line| {
+            // Instructions such as enabling Developer Mode need three lines; never cut them off.
+            wrap(&value, width - 2.0, MAX_DETAIL_LINES, |line| {
                 measure.width(line, Font::Regular, NOTE_SIZE)
             })?
         };
@@ -674,4 +678,28 @@ fn shape(
     let shape = rounded_rectangle(scene.compositor(), bounds.size(), radius, color)?;
     shape.visual.SetOffset(xy(bounds.x, bounds.y))?;
     parent.Children()?.InsertAtTop(&shape.visual)
+}
+
+#[cfg(test)]
+mod tests {
+    use copiago_core::i18n::{Language, message};
+
+    use super::*;
+    use crate::history::{HistoryPage, HistoryStatus};
+
+    #[test]
+    fn long_connection_instructions_are_not_cut_off() {
+        let mut page = HistoryPage::new(Language::ZhCn);
+        page.set_status(HistoryStatus {
+            detail: Some(message!(
+                "需要开启开发者模式：在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启并重启手机，解锁后点「继续连接」"
+            )),
+            tone: StatusTone::Warning,
+            can_retry: true,
+            ..HistoryStatus::default()
+        });
+        let state = ChromeState::new(&page, &TextMeasurer::new().unwrap()).unwrap();
+        assert!(state.detail.len() > 2, "{:?}", state.detail);
+        assert!(state.detail.concat().ends_with("「继续连接」"));
+    }
 }

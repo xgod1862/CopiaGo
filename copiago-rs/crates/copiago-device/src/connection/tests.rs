@@ -321,16 +321,13 @@ async fn connection_policy_by_failure_stage() {
             expected_attempts.push(Usb(USB_ID));
         }
         assert_eq!(phone.attempts(), expected_attempts, "{name}");
-        let expected_lookup = matches!(wifi, F(error) if error.allows_usb());
-        assert_eq!(
-            phone
-                .calls
-                .borrow()
-                .iter()
-                .any(|(_, call)| *call == Call::UsbList),
-            expected_lookup,
-            "{name}",
-        );
+        // The cable is checked before Wi-Fi so a silent Wi-Fi side can be skipped quickly.
+        let calls = phone.calls.borrow();
+        let lookup = calls.iter().position(|(_, call)| *call == Call::UsbList);
+        let first_attempt = calls
+            .iter()
+            .position(|(_, call)| matches!(call, Call::Attempt(_)));
+        assert!(lookup.is_some() && lookup < first_attempt, "{name}");
     }
 }
 
@@ -688,14 +685,8 @@ async fn host_reconnect_and_forget_interrupt_without_usb_fallback() {
         send.send(DeviceCommand::Shutdown).await.unwrap();
     };
     tokio::join!(run(&phone, &mut inputs, &emit), verify);
+    // The cable is looked up, but a working Wi-Fi session never falls back to it.
     assert_eq!(phone.attempts(), [Transport::Wifi; 3]);
-    assert!(
-        !phone
-            .calls
-            .borrow()
-            .iter()
-            .any(|(_, call)| *call == Call::UsbList)
-    );
 }
 
 #[test]

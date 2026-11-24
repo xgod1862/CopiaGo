@@ -179,6 +179,7 @@ async fn failed_pair_verify_leaves_the_record_unchanged() {
         WifiProbeOptions {
             address: Some(address),
             write_identifier: true,
+            ..WifiProbeOptions::default()
         },
     )
     .await;

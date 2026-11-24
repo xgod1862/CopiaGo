@@ -1,4 +1,4 @@
-use std::{ops::ControlFlow, path::Path};
+use std::{cell::Cell, ops::ControlFlow, path::Path};
 
 use copiago_core::{
     DeviceInfo,
@@ -27,6 +27,8 @@ pub(super) struct NativeDevice<'a> {
     pub data_dir: &'a Path,
     pub addr: &'a UsbmuxdAddr,
     pub options: DeviceRunOptions,
+    /// Shortens Wi-Fi discovery while the paired phone is on USB.
+    pub cable_attached: Cell<bool>,
 }
 
 impl Backend for NativeDevice<'_> {
@@ -56,6 +58,10 @@ impl Backend for NativeDevice<'_> {
 
     async fn usb_id(&self, device: &PairedDevice) -> Result<Option<u32>, UsbProbeError> {
         paired_usb_id(self.addr, device).await
+    }
+
+    fn set_cable_attached(&self, attached: bool) {
+        self.cable_attached.set(attached);
     }
 
     async fn advertisement(&self, device: &PairedDevice) {
@@ -127,6 +133,10 @@ impl NativeDevice<'_> {
             Transport::Wifi => {
                 let options = WifiProbeOptions {
                     write_identifier: self.options.persist_device_data,
+                    discovery_timeout: self
+                        .cable_attached
+                        .get()
+                        .then_some(crate::discovery::QUICK_DISCOVERY_TIMEOUT),
                     ..WifiProbeOptions::default()
                 };
                 let (tunnel, _) = open_wifi_tunnel(device, options)
@@ -162,6 +172,9 @@ async fn open_pasteboard<T: PasteboardTunnel>(
     if tunnel.has_pasteboard() {
         return Ok(Some(tunnel));
     }
+    copiago_core::diagnostic::event(format_args!(
+        "event=pasteboard_missing wireless={wireless} setup={allow_setup}"
+    ));
     let missing = emit(DeviceEvent::DeveloperServicesMissing { wireless });
     let result = if missing.is_break() {
         Err(SetupError::Canceled)
@@ -174,6 +187,7 @@ async fn open_pasteboard<T: PasteboardTunnel>(
         })
     };
     tunnel.close().await;
+    copiago_core::diagnostic::event(format_args!("event=setup_result ok={}", result.is_ok()));
     match result {
         Ok(()) => {}
         Err(SetupError::Canceled) => return Ok(None),
@@ -203,6 +217,9 @@ fn setup_progress(
     update: SetupUpdate,
     emit: &impl Fn(DeviceEvent) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
+    if !matches!(update, SetupUpdate::Download(_)) {
+        copiago_core::diagnostic::event(format_args!("event=setup_stage stage={update:?}"));
+    }
     let (message, progress) = match update {
         SetupUpdate::Checking => (message!("正在检查 iPhone 开发者服务…"), None),
         SetupUpdate::Downloading => (

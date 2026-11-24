@@ -47,6 +47,8 @@ pub struct WifiProbeOptions {
     pub address: Option<SocketAddr>,
     /// Persist a missing identifier after a successful verification and RSD handshake.
     pub write_identifier: bool,
+    /// mDNS discovery budget. None uses the five-second default.
+    pub discovery_timeout: Option<Duration>,
 }
 
 /// Result of adding the verified identifier to the pairing record.
@@ -137,6 +139,7 @@ pub async fn probe_wifi_pasteboard_types(
     let options = WifiProbeOptions {
         address,
         write_identifier: false,
+        ..WifiProbeOptions::default()
     };
     let (mut tunnel, _) = open_wifi_tunnel(&device, options).await?;
     let items = read_rsd_types(&mut tunnel.adapter, &tunnel.rsd, data_dir).await;
@@ -181,7 +184,10 @@ async fn open(
         Some(address) => vec![address],
         None => {
             let irk = record.peer_alt_irk().ok_or(WifiProbeError::NoEndpoint)?;
-            let candidates = discovery::discover(Some(irk))
+            let budget = options
+                .discovery_timeout
+                .unwrap_or(discovery::DISCOVERY_TIMEOUT);
+            let candidates = discovery::discover_within(Some(irk), budget)
                 .await
                 .map_err(|_| WifiProbeError::Discovery)?;
             discovery::matched_addresses(&candidates)

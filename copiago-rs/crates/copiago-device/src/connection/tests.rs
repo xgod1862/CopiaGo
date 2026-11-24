@@ -170,12 +170,12 @@ impl Backend for FakePhone {
                 let mut slow_set = matches!(session, Session::SlowSet);
                 loop {
                     let reply = match commands.recv().await {
-                        DeviceCommand::Push(clip) => {
+                        DeviceCommand::Push(clip, id) => {
                             self.pushed.borrow_mut().push(clip);
                             if std::mem::take(&mut slow_set) {
                                 self.pause_request().await;
                             }
-                            DeviceEvent::PushResult(Ok(()))
+                            DeviceEvent::PushResult(id, Ok(()))
                         }
                         DeviceCommand::FetchOffer(offer) => {
                             self.fetched.borrow_mut().push(offer);
@@ -708,7 +708,7 @@ async fn offline_push_is_reported_without_a_device_session() {
     let phone = FakePhone::new(None, []);
     phone.record.set(Err(WifiProbeError::NoPairingRecord));
     let (send, mut commands) = mpsc::channel(8);
-    send.try_send(DeviceCommand::Push(Clip::Text("sample".into())))
+    send.try_send(DeviceCommand::Push(Clip::Text("sample".into()), None))
         .unwrap();
     let mut inputs = Inputs {
         commands: &mut commands,
@@ -716,7 +716,7 @@ async fn offline_push_is_reported_without_a_device_session() {
         detached: None,
     };
     run(&phone, &mut inputs, &|event| {
-        if let DeviceEvent::PushResult(result) = event {
+        if let DeviceEvent::PushResult(_, result) = event {
             assert_eq!(result, Err(PasteboardError::Disconnected));
             return ControlFlow::Break(());
         }
@@ -739,8 +739,8 @@ async fn pushes_queued_during_a_slow_pull_are_delivered_fifo() {
     };
     let emit_status = collect_status(events);
     let emit = |event| match event {
-        DeviceEvent::PushResult(reply) => {
-            result.send(reply).unwrap();
+        DeviceEvent::PushResult(id, reply) => {
+            result.send((id, reply)).unwrap();
             ControlFlow::Continue(())
         }
         event => emit_status(event),
@@ -748,19 +748,19 @@ async fn pushes_queued_during_a_slow_pull_are_delivered_fifo() {
     let verify = async {
         status(&mut statuses, ConnState::Connecting).await;
         status(&mut statuses, ConnState::Connected { wireless: true }).await;
-        for text in ["First copy", "Second copy"] {
-            send.try_send(DeviceCommand::Push(Clip::Text(text.into())))
+        for (id, text) in [(17, "First copy"), (18, "Second copy")] {
+            send.try_send(DeviceCommand::Push(Clip::Text(text.into()), Some(id)))
                 .unwrap();
         }
         sleep(Duration::from_secs(1)).await;
         assert!(phone.pushed.borrow().is_empty());
         phone.release_request.notify_one();
-        for _ in 0..2 {
+        for id in [17, 18] {
             assert_eq!(
                 timeout(Duration::from_secs(1), results.recv())
                     .await
                     .unwrap(),
-                Some(Ok(())),
+                Some((Some(id), Ok(()))),
             );
         }
         send.send(DeviceCommand::Shutdown).await.unwrap();
@@ -786,8 +786,8 @@ async fn resume_or_forget_interrupts_a_slow_set_and_fails_outstanding_pushes() {
         let mut inputs = rig(&mut commands, signals, None);
         let emit_status = collect_status(events);
         let emit = |event| match event {
-            DeviceEvent::PushResult(reply) => {
-                result.send(reply).unwrap();
+            DeviceEvent::PushResult(id, reply) => {
+                result.send((id, reply)).unwrap();
                 ControlFlow::Continue(())
             }
             event => emit_status(event),
@@ -795,14 +795,14 @@ async fn resume_or_forget_interrupts_a_slow_set_and_fails_outstanding_pushes() {
         let verify = async {
             status(&mut statuses, ConnState::Connecting).await;
             status(&mut statuses, ConnState::Connected { wireless: true }).await;
-            send.send(DeviceCommand::Push(Clip::Text("In flight".into())))
+            send.send(DeviceCommand::Push(Clip::Text("In flight".into()), Some(1)))
                 .await
                 .unwrap();
             timeout(Duration::from_secs(1), phone.request_started.notified())
                 .await
                 .unwrap();
-            for text in ["First waiting copy", "Second waiting copy"] {
-                send.try_send(DeviceCommand::Push(Clip::Text(text.into())))
+            for (id, text) in [(2, "First waiting copy"), (3, "Second waiting copy")] {
+                send.try_send(DeviceCommand::Push(Clip::Text(text.into()), Some(id)))
                     .unwrap();
             }
             // Give the worker a chance to queue the copies before interrupting.
@@ -818,8 +818,11 @@ async fn resume_or_forget_interrupts_a_slow_set_and_fails_outstanding_pushes() {
                 status(&mut statuses, ConnState::Connected { wireless: true }).await;
             }
             assert_eq!(Instant::now(), interrupted);
-            for _ in 0..3 {
-                assert_eq!(results.try_recv(), Ok(Err(PasteboardError::Disconnected)),);
+            for id in 1..=3 {
+                assert_eq!(
+                    results.try_recv(),
+                    Ok((Some(id), Err(PasteboardError::Disconnected)))
+                );
             }
             assert!(results.try_recv().is_err());
             send.send(DeviceCommand::Shutdown).await.unwrap();

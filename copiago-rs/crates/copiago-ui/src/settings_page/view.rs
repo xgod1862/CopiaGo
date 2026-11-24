@@ -235,6 +235,14 @@ impl SettingsView {
         Ok(())
     }
 
+    pub fn scroll_offset(&self) -> f32 {
+        self.body.scroll.target_offset()
+    }
+
+    pub fn restore_scroll(&mut self, offset: f32, now: Instant) -> Result<()> {
+        self.body.scroll.jump_to(offset, now)
+    }
+
     pub fn scroll_wheel(&mut self, animator: &Animator, delta: i16, now: Instant) -> Result<()> {
         self.body.scroll.scroll_wheel(animator, delta, now)
     }

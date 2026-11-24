@@ -26,7 +26,7 @@ pub(super) fn describe(
     mut snapshot: Snapshot,
     uti: String,
     change: Option<PasteboardChange>,
-    language: Language,
+    language: impl FnOnce() -> Language,
 ) -> FileOffer {
     let mut entry = snapshot.take_entry(&uti).unwrap_or_default();
     let data = entry.remove("data").and_then(Value::into_data);
@@ -49,7 +49,7 @@ pub(super) fn describe(
         .as_deref()
         .and_then(|archive| descriptor_name(archive, extension))
         .and_then(|name| safe_name(&name, extension.unwrap_or("bin")))
-        .unwrap_or_else(|| fallback_name(language, extension.unwrap_or("bin")));
+        .unwrap_or_else(|| fallback_name(language(), extension.unwrap_or("bin")));
 
     FileOffer {
         name,

@@ -33,7 +33,8 @@ pub enum DeviceEvent {
     Unsupported {
         kind: Message,
     },
-    PushResult(Result<(), PasteboardError>),
+    PushResult(Option<u64>, Result<(), PasteboardError>),
+    ForgetResult(bool),
     /// The tunnel opened but RSD did not advertise the pasteboard service.
     DeveloperServicesMissing {
         wireless: bool,
@@ -45,7 +46,8 @@ pub enum DeviceEvent {
 
 /// Commands the host sends to the device worker.
 pub enum DeviceCommand {
-    Push(Clip),
+    /// The optional host-supplied id is echoed on success, rejection and disconnect.
+    Push(Clip, Option<u64>),
     FetchOffer(FileOffer),
     /// Pair one USB iPhone when no record exists, or retry a paused connection.
     RequestPair,

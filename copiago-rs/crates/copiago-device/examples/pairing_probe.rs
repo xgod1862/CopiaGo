@@ -29,7 +29,6 @@ mod windows {
     };
 
     use copiago_core::{
-        DeviceInfo,
         i18n::Language,
         paths::{RunMode, data_dir},
     };
@@ -96,9 +95,13 @@ mod windows {
                         println!("elapsed_ms={elapsed} pairing_saved=true");
                         Some(Ok(()))
                     }
-                    DeviceEvent::DeviceInfo(info) if !pair && info == DeviceInfo::default() => {
+                    DeviceEvent::ForgetResult(true) if !pair => {
                         cleared.set(true);
                         None
+                    }
+                    DeviceEvent::ForgetResult(false) => {
+                        println!("forget_failed");
+                        return ControlFlow::Break(());
                     }
                     DeviceEvent::Error(message) => {
                         eprintln!("elapsed_ms={elapsed} {}", message.render(options.language));

@@ -170,6 +170,13 @@ pub struct ThumbnailPixels {
     pub bgra: Vec<u8>,
 }
 
+/// One control in the active history tab, including offscreen rows.
+pub struct HistoryControl {
+    pub target: HistoryTarget,
+    pub label: String,
+    pub bounds: Option<Rect>,
+}
+
 /// Mounted history visuals. Drop when the host hides or replaces its scene.
 /// The caller dispatches the domain actions returned by HistoryPage.
 pub struct HistoryView {
@@ -187,6 +194,19 @@ pub struct HistoryView {
 impl HistoryView {
     /// Mount into the scene's content using the same layout used to size the host.
     pub fn mount(
+        scene: &PopupScene,
+        page: &HistoryPage,
+        layout: &HistoryLayout,
+        policy: MotionPolicy,
+        now: Instant,
+    ) -> Result<Self> {
+        let view = Self::new(scene, page, layout, policy, now)?;
+        scene.content().Children()?.InsertAtTop(view.visual())?;
+        Ok(view)
+    }
+
+    /// Build without attaching the visuals, for a page transition.
+    pub fn new(
         scene: &PopupScene,
         page: &HistoryPage,
         layout: &HistoryLayout,
@@ -246,7 +266,6 @@ impl HistoryView {
             rows: Vec::new(),
         };
         view.refresh(scene, page, layout, now)?;
-        scene.content().Children()?.InsertAtTop(&view.root)?;
         Ok(view)
     }
 
@@ -445,6 +464,61 @@ impl HistoryView {
 
     pub fn restore_scroll(&mut self, offset: f32, now: Instant) -> Result<()> {
         self.scroll.jump_to(offset, now)
+    }
+
+    pub fn controls(&self, page: &HistoryPage, now: Instant) -> Vec<HistoryControl> {
+        let mut controls = self.chrome.controls(&self.scroll, now);
+        let layout = self.scroll.layout();
+        let offset = self.scroll.offset_at(now);
+        for row in &self.rows {
+            let Some(record) = page.record(row.id) else {
+                continue;
+            };
+            let (source, label) = match kind(record) {
+                ItemKind::Image => ("图片", String::new()),
+                ItemKind::File => ("文件", preview_text(record)),
+                ItemKind::Text | ItemKind::Link => ("文字", preview_text(record)),
+            };
+            let label = if label.trim().is_empty() {
+                tr!(page.language, source).into_owned()
+            } else {
+                label
+            };
+            controls.push(HistoryControl {
+                target: HistoryTarget::Row(row.id),
+                label,
+                bounds: layout.visible_bounds(row.visual.bounds_at(now), offset),
+            });
+            for (action, label) in [
+                (ItemAction::Copy, "复制"),
+                (ItemAction::Send, "发送到 iPhone"),
+                (ItemAction::Delete, "删除"),
+            ] {
+                if let Some(bounds) = row.visual.action_bounds_at(action, now) {
+                    controls.push(HistoryControl {
+                        target: HistoryTarget::Action(row_action(row.id, action)),
+                        label: tr!(page.language, label).into_owned(),
+                        bounds: layout.visible_bounds(bounds, offset),
+                    });
+                }
+            }
+        }
+        controls
+    }
+
+    pub fn reveal_control(&mut self, target: HistoryTarget, now: Instant) -> Result<()> {
+        match target {
+            HistoryTarget::Row(id)
+            | HistoryTarget::Action(
+                HistoryAction::Copy(id) | HistoryAction::Send(id) | HistoryAction::Delete(id),
+            ) => self.reveal(id, now),
+            _ => {
+                if let Some(bounds) = self.chrome.scrolled_bounds(target) {
+                    self.scroll.reveal(&self.animator, bounds, now)?;
+                }
+                Ok(())
+            }
+        }
     }
 
     pub fn reveal(&mut self, id: HistoryRowId, now: Instant) -> Result<()> {

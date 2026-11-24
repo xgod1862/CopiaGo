@@ -28,6 +28,14 @@ pub(crate) use record::{
     PairedDevice, find_paired_device, forget_remote_records, host_identifier, save_remote_record,
     windows_hostname,
 };
+/// Whether there are saved records to show in the desktop connection settings.
+pub fn has_pairing_records(data_dir: &Path) -> bool {
+    matches!(
+        find_paired_device(data_dir),
+        Ok(_) | Err(WifiProbeError::MultiplePairingRecords)
+    )
+}
+
 const ENDPOINT_TIMEOUT: Duration = Duration::from_secs(4);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IPV6_TCP_HEADERS: usize = 60;

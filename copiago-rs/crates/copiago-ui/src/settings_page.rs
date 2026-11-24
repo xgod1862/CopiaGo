@@ -233,6 +233,10 @@ impl SettingsState {
         self.settings.language.resolve()
     }
 
+    pub fn forgetting(&self) -> bool {
+        self.forgetting
+    }
+
     pub fn connection(&self) -> &ConnectionState {
         &self.connection
     }

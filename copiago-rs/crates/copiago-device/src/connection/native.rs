@@ -99,6 +99,7 @@ impl Backend for NativeDevice<'_> {
                     data_dir: self.data_dir,
                     wireless,
                     language: self.options.language,
+                    follow_saved_language: self.options.follow_saved_language,
                 },
                 clipboard,
                 async || Some(commands.recv().await),
@@ -118,7 +119,7 @@ impl Backend for NativeDevice<'_> {
 
 impl NativeDevice<'_> {
     async fn open(&self, device: &PairedDevice, transport: Transport) -> Result<Tunnel, Failure> {
-        match transport {
+        let open = match transport {
             Transport::Wifi => {
                 let options = WifiProbeOptions {
                     write_identifier: self.options.persist_device_data,
@@ -133,7 +134,16 @@ impl NativeDevice<'_> {
                 .await
                 .map(Tunnel::Usb)
                 .map_err(Failure::Usb),
+        };
+        if open.is_ok() {
+            let transport = if transport == Transport::Wifi {
+                "wifi"
+            } else {
+                "usb"
+            };
+            copiago_core::diagnostic::event(format_args!("tunnel_open transport={transport}"));
         }
+        open
     }
 }
 

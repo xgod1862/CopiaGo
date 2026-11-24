@@ -142,6 +142,28 @@ impl TrayPlacement {
         )
     }
 
+    pub(super) fn animate_out(self, scene: &PopupScene, policy: MotionPolicy) -> Result<()> {
+        let animator = Animator::new(scene.compositor(), policy)?;
+        let visual = scene.motion_root();
+        let size = visual.Size()?;
+        let (_, offset, pivot) = self.edge.entrance(size.X, size.Y);
+        visual.SetCenterPoint(pivot)?;
+        let timing = Tween::new(super::HIDE_MS);
+        animator.offset(
+            visual,
+            Vector3::new(offset.X * 2.0 / 3.0, offset.Y * 2.0 / 3.0, 0.0),
+            timing,
+        )?;
+        animator.animate_v3(
+            &visual.cast()?,
+            windows::core::h!("Scale"),
+            Vector3::new(0.97, 0.97, 1.0),
+            timing,
+            |scale| visual.SetScale(scale),
+        )?;
+        animator.opacity(visual, 0.0, timing)
+    }
+
     pub(super) fn animate_in(self, scene: &PopupScene, policy: MotionPolicy) -> Result<()> {
         if !policy.allows_motion() {
             return Ok(());

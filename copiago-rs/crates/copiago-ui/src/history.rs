@@ -4,7 +4,7 @@
 mod text;
 mod view;
 
-pub use view::{HistoryLayout, HistoryView, ThumbnailPixels};
+pub use view::{HistoryControl, HistoryLayout, HistoryView, ThumbnailPixels};
 
 use std::time::{Duration, Instant};
 
@@ -156,7 +156,9 @@ impl HistoryPage {
     }
 
     pub fn set_offer(&mut self, offer: Option<HistoryOffer>) {
-        if self.offer != offer && offer.is_some() {
+        if let Some(offer) = &offer
+            && self.offer.as_ref().is_none_or(|prior| prior.id != offer.id)
+        {
             self.switch_tab(Source::Phone);
         }
         self.offer = offer;
@@ -221,6 +223,10 @@ impl HistoryPage {
     }
 
     /// Call on the deadline and render again when this returns true.
+    pub fn cancel_confirmation(&mut self) {
+        self.clear_until = None;
+    }
+
     pub fn expire_confirmation(&mut self, now: Instant) -> bool {
         if self.clear_until.is_some_and(|deadline| now >= deadline) {
             self.clear_until = None;

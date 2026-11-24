@@ -65,6 +65,45 @@ pub fn decide_offer(settings: &Settings, size: u64) -> OfferDecision {
     }
 }
 
+pub fn human_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const GIB: u64 = 1024 * MIB;
+    match bytes {
+        GIB.. => format!("{:.1} GB", bytes as f64 / GIB as f64),
+        MIB.. => format!("{:.1} MB", bytes as f64 / MIB as f64),
+        KIB.. => format!("{:.0} KB", bytes as f64 / KIB as f64),
+        _ => format!("{bytes} B"),
+    }
+}
+
+pub fn short_name(name: &str) -> String {
+    const LIMIT: usize = 16;
+    if name.chars().count() <= LIMIT {
+        return name.to_owned();
+    }
+    if let Some((stem, suffix)) = name.rsplit_once('.')
+        && suffix.chars().count() <= 6
+    {
+        let keep = (LIMIT - suffix.chars().count() - 2).max(4);
+        let mut short: String = stem.chars().take(keep).collect();
+        short.push_str("….");
+        short.push_str(suffix);
+        short
+    } else {
+        name.chars().take(LIMIT - 1).chain(['…']).collect()
+    }
+}
+
+/// Materializes a file from history for CF_HDROP, using the transfer storage policy.
+pub fn restore_received(data_dir: &Path, name: &str, bytes: &[u8]) -> io::Result<ReceivedFile> {
+    use io::Write;
+
+    let name = safe_name(name, "bin").ok_or(io::ErrorKind::InvalidInput)?;
+    let mut staged = StagedFile::new(data_dir, name)?;
+    staged.writer().write_all(bytes)?;
+    staged.sync(bytes.len() as u64)?.publish()
+}
+
 /// Preserves the original suffix, substituting the file type's extension when missing.
 pub fn safe_name(name: &str, fallback_extension: &str) -> Option<String> {
     let cleaned = name.replace(

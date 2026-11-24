@@ -40,6 +40,43 @@ impl Drop for TestRoot {
     }
 }
 
+#[test]
+fn nameless_file_uses_the_current_saved_language_without_a_new_session() {
+    use copiago_core::{
+        i18n::{Language, LanguagePreference},
+        settings::{Settings, SettingsChange},
+    };
+
+    use crate::pasteboard::{WatchOptions, content::Snapshot, file_offer};
+
+    let root = TestRoot::new();
+    let options = WatchOptions {
+        data_dir: &root.0,
+        wireless: true,
+        language: Language::En,
+        follow_saved_language: true,
+    };
+    let describe = |options: &WatchOptions| {
+        file_offer::describe(Snapshot::default(), "com.adobe.pdf".into(), None, || {
+            options.filename_language()
+        })
+    };
+    Settings::update(&root.0, SettingsChange::Language(LanguagePreference::En)).unwrap();
+    let english = describe(&options);
+    assert!(english.name.starts_with("iPhone file ") && english.name.ends_with(".pdf"));
+
+    Settings::update(&root.0, SettingsChange::Language(LanguagePreference::ZhCn)).unwrap();
+    let chinese = describe(&options);
+    assert!(chinese.name.starts_with("iPhone 文件 ") && chinese.name.ends_with(".pdf"));
+    assert!(english.name.starts_with("iPhone file "));
+
+    let fixed = WatchOptions {
+        follow_saved_language: false,
+        ..options
+    };
+    assert!(describe(&fixed).name.starts_with("iPhone file "));
+}
+
 fn offer(size: u64) -> FileOffer {
     FileOffer {
         name: "test.zip".to_owned(),

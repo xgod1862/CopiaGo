@@ -6,13 +6,13 @@
 
 ## 通用约束（每个任务都必须遵守）
 
-1. **先读资料**：`docs/rust-rewrite/REQUIREMENTS.md`（全文）、`poc-rust/REPORT.md`、卡片"参考"一栏列出的文件。行为以 Python 源码 `source/iphone_clip/` 为准。
+1. **先读资料**：`docs/rust-rewrite/REQUIREMENTS.md`（全文）、`poc-rust/REPORT.md`、卡片"参考"一栏列出的文件。现有功能的行为以 Python 源码 `source/iphone_clip/` 为准，相关差异直接按源码调整实现和验收。
 2. **位置**：代码写在 `copiago-rs/` workspace 内。不要修改 `source/`（Python 版）和 `poc-rust/`（原型）。
 3. **工具链**：`RUSTUP_HOME=E:\rust\rustup`、`CARGO_HOME=E:\rust\cargo`，`PATH` 加 `E:\rust\cargo\bin`；MSVC Build Tools 已安装。Rust 1.100、edition 2024。
 4. **依赖**：`idevice = "=0.1.68"`（`default-features = false`，按需开 feature，TLS 用 `ring`）；Windows API 用 `windows` 0.61 / `windows-sys` 0.59。新依赖必须是 MIT/Apache/BSD/ISC/Zlib 许可证。**禁止**复制或逐行翻译 pymobiledevice3（GPL‑3.0）代码，只能参考它的协议说明。
-5. **完成标准**：`cargo fmt --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace` 全部通过；卡片里的验收项逐条满足；在 PR 描述里写明实测数据（体积/内存/耗时）以及哪些验收项需要真机、是否已验证。
+5. **完成标准**：`cargo fmt --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace` 全部通过；卡片里的验收项逐条满足；在任务合并提交里写明验收结果、实测数据（体积/内存/耗时）、人工复验步骤和真机状态，汇总到阶段 PR。
 6. **真机**：标"需要真机"的任务，代理在没有 iPhone 时只完成代码和单测，并在 PR 里列出需要人工验证的步骤。不要伪造真机结果。
-7. **Git**：从 `main` 新建分支 `rust/<任务编号>-<简述>`，小步提交，提交信息和 PR 用简体中文（文件名、标识符保留原文）。一个任务一个 PR。
+7. **Git**：从 `rust/dev` 新建分支 `rust/<任务编号>-<简述>`，本地验收后用 `git merge --no-ff` 集成并推送 `rust/dev`。每阶段开一个从 `rust/dev` 到 `main` 的非草稿 PR，合并后同步 `rust/dev`。卡片提到的 PR 为阶段 PR。提交信息和 PR 使用简体中文（文件名、标识符保留原文）。
 8. **安全与隐私**：日志不得包含剪贴板内容、密钥；`unsafe` 块必须有 `// SAFETY:` 注释。
 9. **范围**：只做本卡的事。发现别的问题，在 PR 描述的"后续事项"里列出来，不要顺手改。
 
@@ -105,8 +105,8 @@ M5:  T-PKG-01 → T-PKG-02 → T-QA-01
 
 ### T-DEV-05 连接管理器
 - **目标**：F-DEV-4（策略）、F-DEV-5、F-DEV-6、F-DEV-8（仅检测缺服务并发事件，挂载在 M3 实现）、F-DEV-9、F-CLIP-4。
-- **产出**：一个状态机，驱动 USB/Wi‑Fi 选择、重连退避、usbmux `listen` 插拔事件、睡眠唤醒/网络变化触发重连（Win32 通知由 `copiago-win` 提供 trait 实现，这里依赖 trait）。
-- **验收**：状态机有表驱动单测（假时钟、假设备）；真机验证：拔线切 Wi‑Fi、手机锁屏解锁、电脑睡眠唤醒都能自动恢复，PR 里记录每种情况的恢复耗时。**需要真机**。
+- **产出**：一个状态机，驱动 Wi‑Fi 优先与同设备 USB 回退、普通错误固定间隔重试、等待用户继续的失败状态及设备与网络变化通知（Win32 通知由 `copiago-win` 提供 trait 实现，这里依赖 trait）。
+- **验收**：状态机有表驱动单测（假时钟、假设备），覆盖 Wi‑Fi 优先、同设备 USB 回退、失败后等待和用户重试。真机验证接线时保持可用 Wi‑Fi、无线失败后的 USB 回退、回退会话断开后恢复无线，以及手机锁屏解锁、电脑睡眠唤醒。PR 里记录恢复耗时。**需要真机**。
 - **依赖**：T-DEV-02、T-DEV-03、T-DEV-04。
 
 ### T-DEV-06 Windows 原生 mDNS 发现
@@ -119,7 +119,7 @@ M5:  T-PKG-01 → T-PKG-02 → T-QA-01
 ### T-WIN-01 Windows 剪贴板
 - **目标**：F-CLIP-7、F-CLIP-5（监听部分）、F-CLIP-8、写入时打标记避免自我回推。
 - **参考**：`source/iphone_clip/clipboard.py`。
-- **产出**：`copiago-win::clipboard`：读取文本/图片（DIB/DIBV5/PNG 格式）、写入文本/图片/文件列表（`CF_HDROP`）、`AddClipboardFormatListener` 监听，所有调用带重试。
+- **产出**：`copiago-win::clipboard`：读取文本/图片（DIB/DIBV5/PNG 格式）、写入文本/图片/文件列表（`CF_HDROP`）、`AddClipboardFormatListener` 监听，打开剪贴板按 Python `_open` 重试。
 - **验收**：单测（在 CI 的 Windows runner 上实际操作剪贴板）：文本往返、带透明的 PNG 往返、写入文件列表后能读回路径；大图限制。
 - **依赖**：T-CORE-01。
 

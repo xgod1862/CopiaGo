@@ -121,14 +121,8 @@ impl RemoteRecord {
             .map_err(|_| WifiProbeError::InvalidPairingRecord)?;
         let sealed = dpapi::protect(&plaintext).map_err(|_| WifiProbeError::ReadPairingRecord)?;
 
-        // Verification can take several seconds. Do not replace a record that was
-        // refreshed or removed while the device was being contacted.
-        let current =
-            Zeroizing::new(fs::read(&self.path).map_err(|_| WifiProbeError::ReadPairingRecord)?);
-        if *current != *self.original {
-            return Err(WifiProbeError::ReadPairingRecord);
-        }
-        atomic::write(&self.path, &sealed).map_err(|_| WifiProbeError::ReadPairingRecord)
+        atomic::replace_existing_if_unchanged(&self.path, &self.original, &sealed)
+            .map_err(|_| WifiProbeError::ReadPairingRecord)
     }
 }
 

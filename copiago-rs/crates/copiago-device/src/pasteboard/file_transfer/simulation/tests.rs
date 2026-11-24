@@ -320,3 +320,40 @@ async fn receive_wire_with_change(
     let (result, ()) = tokio::join!(client, server);
     (result, output)
 }
+
+#[tokio::test]
+async fn targeted_image_checks_payload_and_wrapper_limits_before_reading_data() {
+    use super::super::{MAX_METADATA_BODY, resolve_image_on_stream};
+    use crate::pasteboard::{MAX_ALTERNATE_IMAGE_BYTES, PNG_UTI};
+
+    let sample = b"targeted bytes";
+    let (mut valid, suffix) = envelope(Method::Resolve, sample.len() as u64);
+    valid.extend_from_slice(sample);
+    valid.extend_from_slice(&suffix);
+
+    // Neither oversized reply carries image bytes. The bounds must be checked
+    // at the indicated length field rather than when reading to EOF.
+    let max_payload = MAX_ALTERNATE_IMAGE_BYTES as u64;
+    let (oversized_payload, _) = envelope(Method::Resolve, max_payload + 1);
+    let mut oversized_wrapper = oversized_payload[..24].to_vec();
+    let max_wrapper = max_payload + MAX_METADATA_BODY;
+    oversized_wrapper[8..16].copy_from_slice(&(max_wrapper + 1).to_le_bytes());
+
+    for (wire, expected) in [
+        (valid, Ok(sample.to_vec())),
+        (oversized_payload, Err(Error::TooLarge)),
+        (oversized_wrapper, Err(Error::TooLarge)),
+    ] {
+        let (mut client, mut server) = duplex(4096);
+        let client = resolve_image_on_stream(&mut client, 3, PNG_UTI);
+        let server = async {
+            let request = idevice::xpc!({
+                "command": "RESOLVE", "pasteboardName": "general", "itemIndex": 3i64, "type": "public.png",
+            });
+            Peer::handshake(&mut server, request).await.unwrap();
+            write_frame(&mut server, 0, 1, REPLY, &wire).await.unwrap();
+        };
+        let (result, ()) = tokio::join!(client, server);
+        assert_eq!(result, expected);
+    }
+}

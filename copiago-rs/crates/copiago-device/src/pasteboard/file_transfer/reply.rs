@@ -2,11 +2,11 @@ use copiago_core::clip::PasteboardChange;
 use idevice::xpc::XPCObject;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::pasteboard::content::metadata_change_id;
+use crate::pasteboard::{MAX_ALTERNATE_IMAGE_BYTES, content::metadata_change_id};
 
 use super::{
-    FileTransferError as Error, MAX_METADATA_BODY, Method, ReceivedFile, check_size,
-    frames::ReplyFrames,
+    FileTransferError as Error, MAX_FILE_BYTES, MAX_METADATA_BODY, Method, ReceivedFile,
+    check_size, frames::ReplyFrames,
 };
 
 pub(super) const MAX_KEY_BYTES: usize = 1024;
@@ -28,6 +28,23 @@ enum Path {
     Entry,
 }
 
+pub(super) enum Destination<'a, W> {
+    File {
+        output: &'a mut W,
+        expected: Option<u64>,
+    },
+    Image(&'a mut Vec<u8>),
+}
+
+impl<W> Destination<'_, W> {
+    pub(super) fn max_payload(&self) -> u64 {
+        match self {
+            Self::File { .. } => MAX_FILE_BYTES,
+            Self::Image(_) => MAX_ALTERNATE_IMAGE_BYTES as u64,
+        }
+    }
+}
+
 /// Follow just the two known reply paths and stream the selected XPC Data.
 /// Container sizes allow unrelated entries to be skipped without decoding them.
 pub(super) async fn scan(
@@ -35,16 +52,14 @@ pub(super) async fn scan(
     size: u64,
     method: Method,
     uti: &str,
-    expected: Option<u64>,
     change: Option<&PasteboardChange>,
-    destination: &mut (impl AsyncWrite + Unpin),
+    destination: &mut Destination<'_, impl AsyncWrite + Unpin>,
 ) -> Result<Option<ReceivedFile>, Error> {
     let mut scan = Scan {
         frames,
         offset: 0,
         method,
         uti,
-        expected,
         change,
         destination,
         command_seen: false,
@@ -75,14 +90,13 @@ pub(super) async fn scan(
     }))
 }
 
-struct Scan<'a, 'stream, R, W> {
+struct Scan<'a, 'stream, 'destination, R, W> {
     frames: &'a mut ReplyFrames<'stream, R>,
     offset: u64,
     method: Method,
     uti: &'a str,
-    expected: Option<u64>,
     change: Option<&'a PasteboardChange>,
-    destination: &'a mut W,
+    destination: &'a mut Destination<'destination, W>,
     command_seen: bool,
     entry_seen: bool,
     payload_seen: bool,
@@ -90,7 +104,7 @@ struct Scan<'a, 'stream, R, W> {
     written: Option<u64>,
 }
 
-impl<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin> Scan<'_, '_, R, W> {
+impl<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin> Scan<'_, '_, '_, R, W> {
     async fn dictionary(&mut self, path: Path, limit: u64) -> Result<u32, Error> {
         let (end, entries) = self.container(limit).await?;
         let mut key = [0; MAX_KEY_BYTES];
@@ -183,9 +197,23 @@ impl<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin> Scan<'_, '_, R, W
             FILE_TRANSFER => Err(Error::UnsupportedPayload),
             DATA => {
                 let length = u64::from(self.word(end).await?);
-                check_size(length, self.expected)?;
+                let expected = match self.destination {
+                    Destination::File { expected, .. } => *expected,
+                    Destination::Image(_) => None,
+                };
+                check_size(length, self.destination.max_payload(), expected)?;
                 self.advance(end, padded(length))?;
-                self.frames.copy(length, self.destination).await?;
+                match self.destination {
+                    Destination::File { output, .. } => self.frames.copy(length, *output).await?,
+                    Destination::Image(bytes) => {
+                        let length = length as usize;
+                        bytes
+                            .try_reserve_exact(length)
+                            .map_err(|_| Error::Destination)?;
+                        bytes.resize(length, 0);
+                        self.frames.read(bytes).await?;
+                    }
+                }
                 self.frames.skip(padded(length) - length).await?;
                 self.written = Some(length);
                 Ok(())

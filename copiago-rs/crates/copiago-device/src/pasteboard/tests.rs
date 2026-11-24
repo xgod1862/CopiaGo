@@ -32,6 +32,16 @@ enum Request {
         delay: Duration,
         result: Result<Snapshot, PasteboardError>,
     },
+    AlternateListing {
+        delay: Duration,
+        reply: Snapshot,
+    },
+    Resolve {
+        index: usize,
+        uti: &'static str,
+        delay: Duration,
+        data: Option<Vec<u8>>,
+    },
     Set {
         item: SetItem,
         delay: Duration,
@@ -77,6 +87,35 @@ impl FakeBackend {
         self
     }
 
+    fn alternate_listing(self, reply: Snapshot) -> Self {
+        self.delay_alternate_listing(Duration::ZERO, reply)
+    }
+
+    fn delay_alternate_listing(mut self, delay: Duration, reply: Snapshot) -> Self {
+        self.0.push_back(Request::AlternateListing { delay, reply });
+        self
+    }
+
+    fn resolve(self, index: usize, uti: &'static str, data: Option<&[u8]>) -> Self {
+        self.delay_resolve(index, uti, Duration::ZERO, data)
+    }
+
+    fn delay_resolve(
+        mut self,
+        index: usize,
+        uti: &'static str,
+        delay: Duration,
+        data: Option<&[u8]>,
+    ) -> Self {
+        self.0.push_back(Request::Resolve {
+            index,
+            uti,
+            delay,
+            data: data.map(<[u8]>::to_vec),
+        });
+        self
+    }
+
     fn expect_set(
         mut self,
         item: SetItem,
@@ -111,6 +150,37 @@ impl PasteboardBackend for FakeBackend {
             sleep(delay).await;
         }
         result
+    }
+
+    async fn alternate_listing(&mut self) -> Result<Snapshot, PasteboardError> {
+        let Some(Request::AlternateListing { delay, reply }) = self.0.pop_front() else {
+            panic!("unexpected alternate metadata request");
+        };
+        if !delay.is_zero() {
+            sleep(delay).await;
+        }
+        Ok(reply)
+    }
+
+    async fn resolve_alternate(
+        &mut self,
+        item_index: usize,
+        uti: &str,
+    ) -> Result<Vec<u8>, PasteboardError> {
+        let Some(Request::Resolve {
+            index,
+            uti: expected,
+            delay,
+            data,
+        }) = self.0.pop_front()
+        else {
+            panic!("unexpected RESOLVE");
+        };
+        assert_eq!((item_index, uti), (index, expected));
+        if !delay.is_zero() {
+            sleep(delay).await;
+        }
+        data.ok_or(PasteboardError::RequestFailed)
     }
 
     async fn set(&mut self, item: SetItem) -> Result<Option<PasteboardChange>, PasteboardError> {
@@ -371,60 +441,134 @@ async fn heic_only_skips_the_alternative_request() {
     assert_clip(update.event, test_image(HEIC, b"heic"));
 }
 
+const JPEG_DATA: &[u8] = b"\xff\xd8\xff\xe0synthetic bytes";
+
 #[tokio::test]
-async fn prefers_png_or_jpeg_resolved_for_the_same_heic_item() {
-    for (png, expected) in [
-        (b"png".as_slice(), test_image(PNG, b"png")),
-        (b"", test_image(JPEG, b"jpeg")),
-    ] {
-        let update = next_update(heic_with_promised_alternatives().answer(
-            PullPolicy::AllResolved,
-            snapshot(
-                1,
-                &[HEIC, JPEG, PNG],
-                [(JPEG, inline(b"jpeg")), (PNG, inline(png))],
-            ),
-        ))
-        .await;
-        assert_clip(update.event, expected);
-    }
+async fn resolves_png_first_at_the_original_wire_index() {
+    let image_types = &[HEIC, JPEG, PNG];
+    let secondary = board(
+        metadata("nonce".into(), 1),
+        vec![
+            "malformed earlier item".into(),
+            item(image_types, dictionary([(HEIC, inline(b"heic"))])),
+        ],
+    );
+    let listed = || {
+        board(
+            metadata("nonce".into(), 1),
+            vec![
+                "malformed earlier item".into(),
+                item(image_types, dictionary([])),
+            ],
+        )
+    };
+    let png = push_png();
+    let update = next_update(
+        FakeBackend::new()
+            .answer(PullPolicy::AllPromised, listed())
+            .answer(PullPolicy::PromiseSecondary, secondary)
+            .alternate_listing(listed())
+            .resolve(1, PNG, Some(&png))
+            .alternate_listing(listed()),
+    )
+    .await;
+    assert_clip(update.event, test_image(PNG, &png));
 }
 
 #[tokio::test(start_paused = true)]
-async fn keeps_the_original_heic_when_the_optional_request_fails() {
-    for backend in [
-        heic_with_promised_alternatives().error(PullPolicy::AllResolved),
-        heic_with_promised_alternatives().delay(PullPolicy::AllResolved, 31, Snapshot::default()),
-        heic_with_promised_alternatives().answer(
-            PullPolicy::AllResolved,
-            snapshot(1, &[HEIC, JPEG, PNG], [(JPEG, promised(4))]),
-        ),
+async fn unavailable_wrong_format_or_slow_png_falls_back_to_jpeg() {
+    for (data, delay) in [
+        (None, Duration::ZERO),
+        (Some(JPEG_DATA), Duration::ZERO),
+        (None, Duration::from_secs(3)),
     ] {
+        let update = next_update(
+            heic_with_promised_alternatives()
+                .alternate_listing(heic_listing(128))
+                .delay_resolve(0, PNG, delay, data)
+                .alternate_listing(heic_listing(128))
+                .resolve(0, JPEG, Some(JPEG_DATA))
+                .alternate_listing(heic_listing(128)),
+        )
+        .await;
+        assert_clip(update.event, test_image(JPEG, JPEG_DATA));
+    }
+}
+
+#[tokio::test]
+async fn skips_png_advertised_as_oversized() {
+    let listing = || heic_listing(MAX_ALTERNATE_IMAGE_BYTES as i64 + 1);
+    let update = next_update(
+        heic_with_promised_alternatives()
+            .alternate_listing(listing())
+            .resolve(0, JPEG, Some(JPEG_DATA))
+            .alternate_listing(listing()),
+    )
+    .await;
+    assert_clip(update.event, test_image(JPEG, JPEG_DATA));
+}
+
+#[tokio::test(start_paused = true)]
+async fn preserves_original_heic_after_both_attempts_or_at_the_total_deadline() {
+    let unavailable = heic_with_promised_alternatives()
+        .alternate_listing(heic_listing(128))
+        .resolve(0, PNG, None)
+        .alternate_listing(heic_listing(128))
+        .resolve(0, JPEG, None);
+    let slow = heic_with_promised_alternatives()
+        .delay_alternate_listing(Duration::from_millis(1_500), heic_listing(128))
+        .delay_resolve(0, PNG, Duration::from_secs(3), None)
+        .delay_alternate_listing(Duration::from_millis(1_500), heic_listing(128))
+        .delay_resolve(0, JPEG, Duration::from_secs(3), None);
+    for (backend, elapsed) in [
+        (unavailable, Duration::ZERO),
+        (slow, Duration::from_secs(6)),
+    ] {
+        let started = Instant::now();
         let update = next_update(backend).await;
+        assert_eq!(started.elapsed(), elapsed);
         assert!(!update.skipped);
         assert_clip(update.event, test_image(HEIC, b"heic"));
     }
 }
 
 #[tokio::test]
-async fn only_accepts_alternatives_from_the_same_change_and_item() {
-    let types = &[HEIC, JPEG, PNG];
-    let jpeg_item = || item(types, dictionary([(JPEG, inline(b"other image"))]));
-    for resolved in [
-        board(metadata("nonce".into(), 2), vec![jpeg_item()]),
-        board(metadata("other nonce".into(), 1), vec![jpeg_item()]),
-        board(dictionary([]), vec![jpeg_item()]),
+async fn confirms_change_and_item_before_trying_alternatives() {
+    for before in [
+        snapshot(2, &[HEIC, JPEG, PNG], []),
         board(
-            metadata("nonce".into(), 1),
-            vec![item(types, dictionary([])), jpeg_item()],
+            metadata("other nonce".into(), 1),
+            vec![item(&[HEIC, JPEG, PNG], dictionary([]))],
+        ),
+        board(
+            dictionary([]),
+            vec![item(&[HEIC, JPEG, PNG], dictionary([]))],
         ),
         board(
             metadata("nonce".into(), 1),
-            vec!["malformed first item".into(), jpeg_item()],
+            vec![
+                item(&[HEIC], dictionary([])),
+                item(&[JPEG, PNG], dictionary([])),
+            ],
         ),
     ] {
-        let backend = heic_with_promised_alternatives().answer(PullPolicy::AllResolved, resolved);
-        let update = next_update(backend).await;
+        let update = next_update(heic_with_promised_alternatives().alternate_listing(before)).await;
+        assert_eq!(update.change.unwrap().count, 1);
+        assert_clip(update.event, test_image(HEIC, b"heic"));
+    }
+}
+
+#[tokio::test]
+async fn drops_resolved_bytes_when_the_change_cannot_be_confirmed() {
+    let png = push_png();
+    for after in [snapshot(2, &[HEIC, JPEG, PNG], []), Snapshot::default()] {
+        let update = next_update(
+            heic_with_promised_alternatives()
+                .alternate_listing(heic_listing(128))
+                .resolve(0, PNG, Some(&png))
+                .alternate_listing(after),
+        )
+        .await;
         assert_eq!(update.change.unwrap().count, 1);
         assert_clip(update.event, test_image(HEIC, b"heic"));
     }
@@ -466,6 +610,10 @@ fn heic_with_promised_alternatives() -> FakeBackend {
                 ],
             ),
         )
+}
+
+fn heic_listing(png_size: i64) -> Snapshot {
+    snapshot(1, &[HEIC, JPEG, PNG], [(PNG, promised(png_size))])
 }
 
 fn test_image(uti: &str, bytes: &[u8]) -> Clip {

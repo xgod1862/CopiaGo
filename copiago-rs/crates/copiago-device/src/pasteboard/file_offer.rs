@@ -1,10 +1,9 @@
 use copiago_core::{
     clip::{FileOffer, PasteboardChange},
+    files::{fallback_name, safe_name},
     i18n::Language,
-    tr,
 };
 use plist::Value;
-use windows_sys::Win32::{Foundation::SYSTEMTIME, System::SystemInformation::GetLocalTime};
 
 use super::content::Snapshot;
 
@@ -92,55 +91,6 @@ fn descriptor_name(archive: &[u8], expected_extension: Option<&str>) -> Option<S
     names
         .find(|name| has_expected_extension(name))
         .or(Some(first))
-}
-
-fn safe_name(name: &str, fallback_extension: &str) -> Option<String> {
-    let cleaned = name.replace(
-        |character: char| character <= '\u{1f}' || "<>:\"/\\|?*".contains(character),
-        "_",
-    );
-    let cleaned = cleaned.trim_matches([' ', '.']);
-    let (stem, extension) = cleaned
-        .rsplit_once('.')
-        .unwrap_or((cleaned, fallback_extension));
-    if stem.is_empty() {
-        return None;
-    }
-    let stem = if matches!(
-        stem.to_ascii_uppercase().as_bytes(),
-        b"CON"
-            | b"PRN"
-            | b"AUX"
-            | b"NUL"
-            | [b'C', b'O', b'M', b'1'..=b'9']
-            | [b'L', b'P', b'T', b'1'..=b'9']
-    ) {
-        format!("_{stem}")
-    } else {
-        stem.to_owned()
-    };
-    let stem: String = stem.chars().take(120).collect();
-    Some(format!("{stem}.{extension}"))
-}
-
-fn fallback_name(language: Language, extension: &str) -> String {
-    let mut local = std::mem::MaybeUninit::<SYSTEMTIME>::uninit();
-    // SAFETY: GetLocalTime initializes the SYSTEMTIME at this writable pointer.
-    let local = unsafe {
-        GetLocalTime(local.as_mut_ptr());
-        local.assume_init()
-    };
-    let timestamp = format!(
-        "{:04}{:02}{:02}-{:02}{:02}{:02}",
-        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond,
-    );
-    tr!(
-        language,
-        "iPhone 文件 {timestamp}.{extension}",
-        timestamp = timestamp,
-        extension = extension
-    )
-    .into_owned()
 }
 
 fn extension_for(uti: &str) -> Option<&'static str> {

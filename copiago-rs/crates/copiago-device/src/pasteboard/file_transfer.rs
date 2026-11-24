@@ -2,6 +2,7 @@
 
 use std::{fmt, io, time::Duration};
 
+pub(crate) use copiago_core::files::MAX_FILE_BYTES;
 use copiago_core::{
     clip::{FileOffer, PasteboardChange},
     i18n::Language,
@@ -27,7 +28,6 @@ pub(crate) mod simulation;
 use frames::ReplyFrames;
 
 const MIB: u64 = 1024 * 1024;
-pub(crate) const MAX_FILE_BYTES: u64 = 512 * MIB;
 const MAX_METADATA_BODY: u64 = 2 * MIB;
 const MAX_FILE_BODY: u64 = MAX_FILE_BYTES + MAX_METADATA_BODY;
 
@@ -43,6 +43,8 @@ pub enum Method {
 /// File transfer failures with device and clipboard details omitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileTransferError {
+    Disconnected,
+    Busy,
     Request,
     TimedOut,
     OfferExpired,
@@ -58,6 +60,8 @@ pub enum FileTransferError {
 impl fmt::Display for FileTransferError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Disconnected => "iPhone is not connected",
+            Self::Busy => "another file transfer is pending",
             Self::Request => "pasteboard file request failed",
             Self::TimedOut => "pasteboard file request timed out",
             Self::OfferExpired => "pasteboard changed since the file was offered",
@@ -94,13 +98,7 @@ pub(crate) async fn describe_file(
     let uti = file_offer::content_type(&listing)
         .ok_or(FileTransferError::DataUnavailable)?
         .to_owned();
-    let described = small_pull(
-        adapter,
-        port,
-        PullPolicy::Threshold(DESCRIPTION_BYTES),
-        Duration::from_secs(30),
-    )
-    .await?;
+    let described = describe_snapshot(adapter, port).await?;
     if described.change.is_some() && described.change != listing.change {
         return Err(FileTransferError::OfferExpired);
     }
@@ -110,6 +108,19 @@ pub(crate) async fn describe_file(
         listing.change,
         Language::ZhCn,
     ))
+}
+
+pub(super) async fn describe_snapshot(
+    adapter: &mut AdapterHandle,
+    port: u16,
+) -> Result<Snapshot, FileTransferError> {
+    small_pull(
+        adapter,
+        port,
+        PullPolicy::Threshold(DESCRIPTION_BYTES),
+        Duration::from_secs(30),
+    )
+    .await
 }
 
 /// Writes a file representation to an unpublished destination on the current tunnel.

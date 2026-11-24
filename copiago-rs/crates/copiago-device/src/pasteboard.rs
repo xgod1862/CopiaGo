@@ -5,7 +5,8 @@ use std::ops::ControlFlow;
 use std::time::Duration;
 
 use copiago_core::{
-    clip::{Clip, PasteboardChange},
+    clip::{Clip, FileOffer, PasteboardChange},
+    files::ReceivedFile,
     i18n::{Language, Message},
 };
 use tokio::{
@@ -17,14 +18,16 @@ use crate::{ConnState, DeviceCommand, DeviceEvent};
 
 mod content;
 mod file_offer;
+mod file_receive;
 pub(crate) mod file_transfer;
 mod rsd;
 
 #[cfg(test)]
 pub(crate) use rsd::verify_push_round_trip;
-pub(crate) use rsd::{PASTEBOARD_SERVICE, read_rsd_types, watch_rsd};
+pub(crate) use rsd::{PASTEBOARD_SERVICE, WatchOptions, read_rsd_types, watch_rsd};
 
 use content::{PNG_UTI, Snapshot, Update, read_clip};
+pub use file_transfer::FileTransferError;
 
 const NOTIFICATIONS: [&str; 3] = [
     "com.apple.pasteboard.notify.changed",
@@ -81,6 +84,7 @@ enum PullPolicy {
 trait PasteboardBackend {
     async fn pull(&mut self, policy: PullPolicy) -> Result<Snapshot, PasteboardError>;
     async fn set(&mut self, item: SetItem) -> Result<Option<PasteboardChange>, PasteboardError>;
+    async fn fetch_file(&mut self, offer: FileOffer) -> Result<ReceivedFile, FileTransferError>;
 }
 
 #[derive(PartialEq, Eq)]
@@ -219,6 +223,12 @@ async fn watch_updates(
                     Some(DeviceCommand::Push(clip)) => {
                         let result = state.push(backend, clip).await;
                         if emit(DeviceEvent::PushResult(result)).is_break() {
+                            return Ok(None);
+                        }
+                    }
+                    Some(DeviceCommand::FetchOffer(offer)) => {
+                        let result = backend.fetch_file(offer).await;
+                        if emit(DeviceEvent::FileResult(result)).is_break() {
                             return Ok(None);
                         }
                     }

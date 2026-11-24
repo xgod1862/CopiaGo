@@ -4,8 +4,8 @@ use copiago_core::{DeviceInfo, ddi::DdiStage, i18n::Message};
 use idevice::{rsd::RsdHandshake, tcp::handle::AdapterHandle, usbmuxd::UsbmuxdAddr};
 
 use crate::{
-    DeviceCommand, DeviceEvent, PasteboardError, UsbProbeError, WifiProbeError, device_info,
-    pasteboard::{PASTEBOARD_SERVICE, PasteboardState, watch_rsd},
+    DeviceEvent, PasteboardError, UsbProbeError, WifiProbeError, device_info,
+    pasteboard::{PASTEBOARD_SERVICE, PasteboardState, WatchOptions, watch_rsd},
     usb::{PairingError, RsdTunnel, open_paired_usb_tunnel, pair_over_usb, paired_usb_id},
     wifi::{
         PairedDevice, WifiProbeOptions, WifiTunnel, find_paired_device, forget_remote_records,
@@ -13,7 +13,7 @@ use crate::{
     },
 };
 
-use super::{Backend, DeviceRunOptions, Failure, PushQueue, Transport};
+use super::{Backend, ClipboardQueue, DeviceRunOptions, Failure, Transport};
 
 pub(super) struct NativeDevice<'a> {
     pub data_dir: &'a Path,
@@ -55,7 +55,7 @@ impl Backend for NativeDevice<'_> {
         device: &PairedDevice,
         transport: Transport,
         clipboard: &mut PasteboardState,
-        pushes: &PushQueue,
+        commands: &ClipboardQueue,
         emit: impl Fn(DeviceEvent) -> ControlFlow<()>,
     ) -> Result<(), Failure> {
         let mut tunnel = self.open(device, transport).await?;
@@ -77,10 +77,13 @@ impl Backend for NativeDevice<'_> {
                 watch_rsd(
                     adapter,
                     rsd,
-                    wireless,
-                    self.options.language,
+                    WatchOptions {
+                        data_dir: self.data_dir,
+                        wireless,
+                        language: self.options.language,
+                    },
                     clipboard,
-                    async || Some(DeviceCommand::Push(pushes.recv().await)),
+                    async || Some(commands.recv().await),
                     emit,
                 )
                 .await

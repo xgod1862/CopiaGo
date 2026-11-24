@@ -283,7 +283,12 @@ async fn usb_push_round_trip() {
     .await
     .expect("USB tunnel timed out")
     .expect("USB tunnel unavailable");
-    let checked = crate::pasteboard::verify_push_round_trip(&mut tunnel.adapter, &tunnel.rsd).await;
+    let checked = crate::pasteboard::verify_push_round_trip(
+        &mut tunnel.adapter,
+        &tunnel.rsd,
+        Path::new(&root),
+    )
+    .await;
     let _ = tunnel.adapter.close().await;
     checked.expect("USB clipboard round trip");
 }

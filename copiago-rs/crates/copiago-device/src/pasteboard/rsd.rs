@@ -1,6 +1,10 @@
-use std::ops::ControlFlow;
+use std::{ops::ControlFlow, path::Path};
 
-use copiago_core::{clip::PasteboardChange, i18n::Language};
+use copiago_core::{
+    clip::{FileOffer, PasteboardChange},
+    files::ReceivedFile,
+    i18n::Language,
+};
 use idevice::{
     RemoteXpcClient, RsdService,
     notification_proxy::NotificationProxyClient,
@@ -15,9 +19,11 @@ use tracing::{Dispatch, instrument::WithSubscriber};
 use crate::{DeviceCommand, DeviceEvent};
 
 use super::{
-    METADATA_TIMEOUT, NOTIFICATIONS, PasteboardBackend, PasteboardError, PasteboardState,
-    PullPolicy, SetItem,
+    FileTransferError, METADATA_TIMEOUT, NOTIFICATIONS, PasteboardBackend, PasteboardError,
+    PasteboardState, PullPolicy, SetItem,
     content::{INLINE_TEXT, PNG_UTI, Snapshot, change_id},
+    file_receive,
+    file_transfer::{self, Method},
     pull, watch,
 };
 
@@ -30,18 +36,28 @@ pub(super) const GENERAL_PASTEBOARD: &str = "general";
 pub(crate) async fn read_rsd_types(
     adapter: &mut AdapterHandle,
     rsd: &RsdHandshake,
+    data_dir: &Path,
 ) -> Result<Vec<Vec<String>>, PasteboardError> {
     let port = pasteboard_port(rsd)?;
-    let mut backend = RsdPasteboard { adapter, port };
+    let mut backend = RsdPasteboard {
+        adapter,
+        port,
+        data_dir,
+    };
     let snapshot = pull(&mut backend, PullPolicy::AllPromised).await?;
     Ok(snapshot.into_item_types())
+}
+
+pub(crate) struct WatchOptions<'a> {
+    pub data_dir: &'a Path,
+    pub wireless: bool,
+    pub language: Language,
 }
 
 pub(crate) async fn watch_rsd(
     adapter: &mut AdapterHandle,
     rsd: &mut RsdHandshake,
-    wireless: bool,
-    language: Language,
+    options: WatchOptions<'_>,
     state: &mut PasteboardState,
     next_command: impl AsyncFnMut() -> Option<DeviceCommand>,
     emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
@@ -52,7 +68,11 @@ pub(crate) async fn watch_rsd(
         .await
         .map_err(|_| PasteboardError::NotificationsUnavailable)??;
 
-    let mut backend = RsdPasteboard { adapter, port };
+    let mut backend = RsdPasteboard {
+        adapter,
+        port,
+        data_dir: options.data_dir,
+    };
     watch(
         &mut backend,
         async || {
@@ -62,8 +82,8 @@ pub(crate) async fn watch_rsd(
                 .await
                 .map_err(|_| PasteboardError::NotificationsClosed)
         },
-        wireless,
-        language,
+        options.wireless,
+        options.language,
         state,
         next_command,
         emit,
@@ -98,6 +118,7 @@ async fn subscribe(
 struct RsdPasteboard<'a> {
     adapter: &'a mut AdapterHandle,
     port: u16,
+    data_dir: &'a Path,
 }
 
 impl RsdPasteboard<'_> {
@@ -120,6 +141,14 @@ impl RsdPasteboard<'_> {
 
 impl PasteboardBackend for RsdPasteboard<'_> {
     async fn pull(&mut self, policy: PullPolicy) -> Result<Snapshot, PasteboardError> {
+        if matches!(policy, PullPolicy::Threshold(_)) {
+            return file_transfer::describe_snapshot(self.adapter, self.port)
+                .await
+                .map_err(|error| match error {
+                    FileTransferError::TimedOut => PasteboardError::RequestTimeout,
+                    _ => PasteboardError::RequestFailed,
+                });
+        }
         // The typed client does not expose the nonce. Read the raw reply so
         // a daemon restart can be distinguished from a repeated change count.
         let reply = self.request(pull_request(policy)).await?;
@@ -129,6 +158,14 @@ impl PasteboardBackend for RsdPasteboard<'_> {
     async fn set(&mut self, item: SetItem) -> Result<Option<PasteboardChange>, PasteboardError> {
         let reply = self.request(set_request(item)).await?;
         set_reply(&reply)
+    }
+
+    async fn fetch_file(&mut self, offer: FileOffer) -> Result<ReceivedFile, FileTransferError> {
+        file_receive::receive(self.data_dir, offer, async |offer, writer| {
+            file_transfer::receive_file(self.adapter, self.port, offer, Method::Threshold, writer)
+                .await
+        })
+        .await
     }
 }
 
@@ -313,13 +350,18 @@ mod tests {
     pub(crate) async fn verify_push_round_trip(
         adapter: &mut AdapterHandle,
         rsd: &RsdHandshake,
+        data_dir: &Path,
     ) -> Result<(), &'static str> {
         let port = rsd
             .services
             .get(PASTEBOARD_SERVICE)
             .ok_or("pasteboard service missing")?
             .port;
-        let mut backend = RsdPasteboard { adapter, port };
+        let mut backend = RsdPasteboard {
+            adapter,
+            port,
+            data_dir,
+        };
         if !is_empty(&mut backend).await {
             return Err("preflight failed: need a verified empty pasteboard");
         }

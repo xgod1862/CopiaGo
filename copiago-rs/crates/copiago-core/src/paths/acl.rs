@@ -38,12 +38,21 @@ pub fn ensure_data_dir(path: &Path) -> io::Result<()> {
         Err(error) => return Err(error),
     }
 
+    fs::create_dir_all(parent_dir(path))?;
+    match create_private_dir(path) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {
+            require_persistent_acls(path)
+        }
+        result => result,
+    }
+}
+
+/// Creates a new private directory without accepting an existing entry at its path.
+pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing directory name"))?;
-    let parent = parent_dir(path);
-    fs::create_dir_all(parent)?;
-    let parent = fs::canonicalize(parent)?;
+    let parent = fs::canonicalize(parent_dir(path))?;
     require_persistent_acls(&parent)?;
 
     let path = parent.join(name);
@@ -57,14 +66,10 @@ pub fn ensure_data_dir(path: &Path) -> io::Result<()> {
 
     // SAFETY: The NUL-terminated path and security descriptor remain live through the call.
     let created = unsafe { CreateDirectoryW(wide.as_ptr(), &attributes) };
-    if created != 0 {
-        return Ok(());
+    if created == 0 {
+        return Err(io::Error::last_os_error());
     }
-    let error = io::Error::last_os_error();
-    if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() {
-        return require_persistent_acls(&path);
-    }
-    Err(error)
+    Ok(())
 }
 
 fn require_persistent_acls(path: &Path) -> io::Result<()> {

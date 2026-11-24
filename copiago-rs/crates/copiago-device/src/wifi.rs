@@ -131,7 +131,7 @@ pub async fn probe_wifi_pasteboard_types(
         write_identifier: false,
     };
     let (mut tunnel, _) = open_wifi_tunnel(&device, options).await?;
-    let items = read_rsd_types(&mut tunnel.adapter, &tunnel.rsd).await;
+    let items = read_rsd_types(&mut tunnel.adapter, &tunnel.rsd, data_dir).await;
     let closed = tunnel.close().await;
     let items = items.map_err(WifiProbeError::Pasteboard)?;
     closed?;

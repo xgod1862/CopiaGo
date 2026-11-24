@@ -20,6 +20,7 @@ use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
 use crate::atomic;
+use crate::files::StagedFile;
 use crate::paths::ensure_data_dir;
 use crate::test_support::TestDir;
 use crate::win32::{LocalAllocation, wide_path};
@@ -105,6 +106,34 @@ fn icacls_confirms_only_user_and_system_and_inheritance() {
         )
         .unwrap_or_else(|reason| panic!("Win32 {path}: {reason}"));
     }
+}
+
+#[test]
+fn received_file_inherits_private_acl_before_and_after_publication() {
+    let dir = TestDir::new();
+    let stage = StagedFile::new(dir.path(), "sample.bin".to_owned()).unwrap();
+    let staging = fs::read_dir(dir.path().join("received"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let check = |directory: &Path, file: &Path| {
+        let current_user = current_user_sid();
+        for (item, flags, protected) in [(directory, INHERITABLE, true), (file, 0, false)] {
+            check_dacl(
+                &read_descriptor(item).unwrap(),
+                &current_user,
+                flags,
+                protected,
+                DescriptorSource::Native,
+            )
+            .unwrap();
+        }
+    };
+    check(&staging, &staging.join("sample.bin"));
+    let received = stage.sync(0).unwrap().publish().unwrap();
+    check(received.path().parent().unwrap(), received.path());
 }
 
 #[test]

@@ -24,6 +24,7 @@ enum Session {
     Opening,
     SlowPull,
     SlowSet,
+    SlowFetch,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -51,6 +52,7 @@ struct FakePhone {
     request_started: Notify,
     release_request: Notify,
     pushed: RefCell<Vec<Clip>>,
+    fetched: RefCell<Vec<FileOffer>>,
 }
 
 impl FakePhone {
@@ -64,6 +66,7 @@ impl FakePhone {
             request_started: Notify::new(),
             release_request: Notify::new(),
             pushed: RefCell::new(Vec::new()),
+            fetched: RefCell::new(Vec::new()),
         }
     }
 
@@ -140,7 +143,7 @@ impl Backend for FakePhone {
         _device: &PairedDevice,
         transport: Transport,
         _clipboard: &mut PasteboardState,
-        pushes: &PushQueue,
+        commands: &ClipboardQueue,
         emit: impl Fn(DeviceEvent) -> ControlFlow<()>,
     ) -> Result<(), Failure> {
         self.record_call(Call::Attempt(transport));
@@ -151,7 +154,7 @@ impl Backend for FakePhone {
             .expect("extra connection");
         match session {
             Session::Failure(error) => Err(error),
-            Session::Connected | Session::SlowPull | Session::SlowSet => {
+            Session::Connected | Session::SlowPull | Session::SlowSet | Session::SlowFetch => {
                 let connected = ConnState::Connected {
                     wireless: transport == Transport::Wifi,
                 };
@@ -166,12 +169,22 @@ impl Backend for FakePhone {
                 }
                 let mut slow_set = matches!(session, Session::SlowSet);
                 loop {
-                    let clip = pushes.recv().await;
-                    self.pushed.borrow_mut().push(clip);
-                    if std::mem::take(&mut slow_set) {
-                        self.pause_request().await;
-                    }
-                    if emit(DeviceEvent::PushResult(Ok(()))).is_break() {
+                    let reply = match commands.recv().await {
+                        DeviceCommand::Push(clip) => {
+                            self.pushed.borrow_mut().push(clip);
+                            if std::mem::take(&mut slow_set) {
+                                self.pause_request().await;
+                            }
+                            DeviceEvent::PushResult(Ok(()))
+                        }
+                        DeviceCommand::FetchOffer(offer) => {
+                            self.fetched.borrow_mut().push(offer);
+                            self.pause_request().await;
+                            DeviceEvent::FileResult(Err(FileTransferError::OfferExpired))
+                        }
+                        _ => unreachable!("a clipboard queue only contains clipboard commands"),
+                    };
+                    if emit(reply).is_break() {
                         return Ok(());
                     }
                 }
@@ -814,4 +827,76 @@ async fn resume_or_forget_interrupts_a_slow_set_and_fails_outstanding_pushes() {
         tokio::join!(run(&phone, &mut inputs, &emit), verify);
         assert!(phone.pushed.into_inner() == [Clip::Text("In flight".into())]);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn file_commands_reach_the_connected_session_and_do_not_survive_its_end() {
+    let phone = FakePhone::new(None, [Session::SlowFetch, Session::Connected]);
+    let (send, mut commands) = mpsc::channel(4);
+    let (wake, signals) = mpsc::channel(1);
+    let (events, mut statuses) = mpsc::unbounded_channel();
+    let (result, mut results) = mpsc::unbounded_channel();
+    let mut inputs = rig(&mut commands, signals, None);
+    let emit_status = collect_status(events);
+    let emit = |event| match event {
+        DeviceEvent::FileResult(reply) => {
+            result.send(reply.err().unwrap()).unwrap();
+            ControlFlow::Continue(())
+        }
+        event => emit_status(event),
+    };
+    let offer = FileOffer {
+        name: "sample.pdf".to_owned(),
+        uti: "com.adobe.pdf".to_owned(),
+        size: 123,
+        change: None,
+        data: None,
+    };
+    let verify = async {
+        status(&mut statuses, ConnState::Connecting).await;
+        status(&mut statuses, ConnState::Connected { wireless: true }).await;
+        send.send(DeviceCommand::FetchOffer(offer.clone()))
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(1), phone.request_started.notified())
+            .await
+            .unwrap();
+        assert!(phone.fetched.borrow().as_slice() == [offer.clone()]);
+        send.send(DeviceCommand::FetchOffer(offer.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(1), results.recv())
+                .await
+                .unwrap(),
+            Some(FileTransferError::Busy),
+        );
+        phone.release_request.notify_one();
+        assert_eq!(
+            timeout(Duration::from_secs(1), results.recv())
+                .await
+                .unwrap(),
+            Some(FileTransferError::OfferExpired),
+        );
+        // A valid result releases the request slot. Cancelling the next request
+        // reports a disconnection and does not requeue it on the next session.
+        send.send(DeviceCommand::FetchOffer(offer.clone()))
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(1), phone.request_started.notified())
+            .await
+            .unwrap();
+        wake.send(HostSignal::Resumed).await.unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(1), results.recv())
+                .await
+                .unwrap(),
+            Some(FileTransferError::Disconnected),
+        );
+        status(&mut statuses, ConnState::Connecting).await;
+        status(&mut statuses, ConnState::Connected { wireless: true }).await;
+        send.send(DeviceCommand::Shutdown).await.unwrap();
+    };
+    tokio::join!(run(&phone, &mut inputs, &emit), verify);
+    assert!(phone.fetched.into_inner() == [offer.clone(), offer]);
 }

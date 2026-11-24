@@ -101,33 +101,6 @@ fn install(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_support::TestDir;
-
-    #[test]
-    fn replacing_a_deleted_destination_never_recreates_the_name() {
-        let directory = TestDir::new();
-        let destination = directory.path().join("current.bin");
-        fs::write(&destination, b"stored record").unwrap();
-        let verified = OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
-            .open(&destination)
-            .unwrap();
-
-        let result = install(&destination, b"migrated record", |source, target| {
-            fs::remove_file(target).unwrap();
-            replace_existing(source, target)
-        });
-
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
-        drop(verified);
-        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
-    }
-}
-
 struct TemporaryFile {
     path: PathBuf,
     delete_on_drop: bool,
@@ -164,5 +137,32 @@ impl Drop for TemporaryFile {
         if self.delete_on_drop {
             let _ = fs::remove_file(&self.path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestDir;
+
+    #[test]
+    fn replacing_a_deleted_destination_never_recreates_the_name() {
+        let directory = TestDir::new();
+        let destination = directory.path().join("current.bin");
+        fs::write(&destination, b"stored record").unwrap();
+        let verified = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .open(&destination)
+            .unwrap();
+
+        let result = install(&destination, b"migrated record", |source, target| {
+            fs::remove_file(target).unwrap();
+            replace_existing(source, target)
+        });
+
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+        drop(verified);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 }

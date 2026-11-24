@@ -31,9 +31,9 @@ Run the new installer over the old version. Pairing records, history and setting
 
 | First-time pairing | System tray popup | Clipboard history |
 | --- | --- | --- |
-| [![CopiaGo first-time pairing guide](docs/images/first-pairing.png)](docs/images/first-pairing.png) | [![CopiaGo system tray popup with clipboard history turned off](docs/images/tray-popup.png)](docs/images/tray-popup.png) | [![CopiaGo clipboard history with text, image, and file entries](docs/images/clipboard-history.png)](docs/images/clipboard-history.png) |
+| [![CopiaGo first-time pairing guide](docs/images/first-pairing-en.png)](docs/images/first-pairing-en.png) | [![CopiaGo system tray popup with clipboard history turned off](docs/images/tray-popup-en.png)](docs/images/tray-popup-en.png) | [![CopiaGo clipboard history with text, image, and file entries](docs/images/clipboard-history-en.png)](docs/images/clipboard-history-en.png) |
 
-Screenshots are from CopiaGo 1.1.0 with sample connection status and history. Some interface details changed in 1.3.0.
+Screenshots are from CopiaGo 1.3.0 with sample connection status and history.
 
 ## What syncs
 

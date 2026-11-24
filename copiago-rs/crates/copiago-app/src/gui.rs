@@ -421,6 +421,7 @@ impl Host<'_> {
         }
         if was_closing && self.popup.closing_until().is_none() {
             diagnostic::event(format_args!("event=popup_hidden"));
+            release_memory();
         }
     }
 
@@ -497,4 +498,20 @@ pub(super) fn report_error(action: &'static str, error: &io::Error) {
         error.raw_os_error(),
         error.kind()
     ));
+}
+
+/// Hand memory used by the panel back to Windows once it is hidden. Rendering and image
+/// decoding leave freed heap blocks committed, and the tray then sits on pages it no longer
+/// needs. Both calls are advisory; failures change nothing.
+fn release_memory() {
+    use windows_sys::Win32::System::{
+        Memory::{GetProcessHeap, HeapCompact},
+        Threading::{GetCurrentProcess, SetProcessWorkingSetSize},
+    };
+    // SAFETY: The process heap and current-process pseudo handle are always valid. Passing
+    // usize::MAX for both sizes asks Windows to trim the working set.
+    unsafe {
+        HeapCompact(GetProcessHeap(), 0);
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
 }

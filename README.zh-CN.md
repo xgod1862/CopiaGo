@@ -33,7 +33,7 @@
 | --- | --- | --- |
 | [![CopiaGo 首次配对引导](docs/images/first-pairing.png)](docs/images/first-pairing.png) | [![CopiaGo 的托盘弹窗，历史记录处于关闭状态](docs/images/tray-popup.png)](docs/images/tray-popup.png) | [![CopiaGo 剪贴板中的文字、图片和文件记录](docs/images/clipboard-history.png)](docs/images/clipboard-history.png) |
 
-截图来自 CopiaGo 1.1.0，连接状态和历史记录使用示例数据。1.3.0 的界面细节有所调整。
+截图来自 CopiaGo 1.3.0，连接状态和历史记录使用示例数据。
 
 ## 同步范围
 

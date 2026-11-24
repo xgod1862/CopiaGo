@@ -60,6 +60,21 @@ mod example {
     const TIMER: usize = 1;
     const WM_MOUSELEAVE: u32 = 0x02A3;
     const PREVIEW: &[u8] = include_bytes!("assets/history-preview.png");
+    // A full-size picture for the image card, decoded like an original from history.
+    const ORIGINAL: &[u8] = include_bytes!("assets/history-original.png");
+
+    /// COPIAGO_SHOT_LANG=en renders the English UI with English sample data.
+    fn language() -> Language {
+        if env::var_os("COPIAGO_SHOT_LANG").is_some_and(|value| value == "en") {
+            Language::En
+        } else {
+            Language::ZhCn
+        }
+    }
+
+    fn t(zh: &'static str, en: &'static str) -> &'static str {
+        if language() == Language::En { en } else { zh }
+    }
 
     fn fake_page(sample: &str) -> (HistoryPage, [HistoryList; 2]) {
         let today = Local::now().date_naive();
@@ -79,8 +94,11 @@ mod example {
                 today,
                 "14:23",
                 "text",
-                "会议改到周四下午三点，请提前十分钟到五楼会议室，带上评审材料和项目进度说明。"
-                    .as_bytes(),
+                t(
+                    "会议改到周四下午三点，请提前十分钟到五楼会议室，带上评审材料和项目进度说明。",
+                    "The review moved to Thursday at 3 PM. Please arrive ten minutes early with the project notes.",
+                )
+                .as_bytes(),
             ),
             entry(5, today, "13:08", "image", PREVIEW),
             entry(
@@ -95,19 +113,19 @@ mod example {
                 date(4),
                 "16:30",
                 "file",
-                "项目交付清单.pdf\n1394606".as_bytes(),
+                t("项目交付清单.pdf\n1394606", "Delivery checklist.pdf\n1394606").as_bytes(),
             ),
-            entry(2, old, "09:19", "text", "跨年保留的示例条目".as_bytes()),
+            entry(2, old, "09:19", "text", t("跨年保留的示例条目", "An item kept from last year").as_bytes()),
         ];
         let pc = vec![
             entry(12, today, "15:04", "text", b"Release checklist: verify the portable build, inspect the release notes, and update the sample"),
             entry(11, date(1), "17:42", "image", PREVIEW),
-            entry(10, date(7), "16:56", "text", "从电脑复制的项目备注".as_bytes()),
+            entry(10, date(7), "16:56", "text", t("从电脑复制的项目备注", "Project notes copied on the PC").as_bytes()),
         ];
-        let mut page = HistoryPage::new(Language::ZhCn);
+        let mut page = HistoryPage::new(language());
         page.set_status(HistoryStatus {
             connection: Status::Connected,
-            device_name: "示例 iPhone".into(),
+            device_name: t("示例 iPhone", "iPhone").into(),
             detail: Some(message!("已连接（无线）")),
             tone: StatusTone::Success,
             ..HistoryStatus::default()
@@ -200,7 +218,9 @@ mod example {
     }
 
     fn thumbnail(request: ThumbnailRequest<'_>) -> Option<ThumbnailPixels> {
-        let picture = decode_scaled(request.preview?, 88, 56).ok()?;
+        let picture = decode_scaled(ORIGINAL, request.width, request.height)
+            .or_else(|_| decode_scaled(request.preview.unwrap_or(PREVIEW), 88, 56))
+            .ok()?;
         let (width, height) = picture.dimensions();
         Some(ThumbnailPixels {
             width,

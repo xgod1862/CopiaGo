@@ -1,6 +1,5 @@
 use std::fs::{self, OpenOptions};
 use std::os::windows::fs::OpenOptionsExt;
-use std::path::Path;
 use std::process::Command;
 
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
@@ -8,6 +7,8 @@ use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 use crate::paths::{DEVICE_DATA_DIR, ensure_data_dir};
 use crate::test_support::TestDir;
 use crate::{DeviceInfo, atomic, dpapi};
+
+mod acl;
 
 #[test]
 fn dpapi_pairing_and_history_round_trip() {
@@ -139,79 +140,4 @@ fn reads_python_compatible_powershell_fixture() {
             os_version: "18.1".to_owned(),
         }
     );
-}
-
-#[test]
-fn icacls_confirms_only_user_and_system_and_inheritance() {
-    let dir = TestDir::new();
-    let private_dir = dir.path().join("private");
-    ensure_data_dir(&private_dir).unwrap();
-    let child = private_dir.join("child");
-    fs::create_dir(&child).unwrap();
-    atomic::write(&child.join("sample.bin"), b"synthetic sample").unwrap();
-
-    let acl_file = dir.path().join("acl-export.txt");
-    let output = Command::new("icacls.exe")
-        .arg(&private_dir)
-        .arg("/save")
-        .arg(&acl_file)
-        .args(["/t", "/q"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "icacls /save failed");
-    let export = read_utf16_file(&acl_file);
-    let sddl: Vec<_> = export
-        .lines()
-        .filter(|line| line.starts_with("D:"))
-        .collect();
-    assert_eq!(
-        sddl.len(),
-        3,
-        "icacls should export both folders and the file"
-    );
-
-    let whoami = Command::new("whoami.exe")
-        .args(["/user", "/fo", "csv", "/nh"])
-        .output()
-        .unwrap();
-    assert!(
-        whoami.status.success(),
-        "whoami could not query the test user SID"
-    );
-    let whoami_csv = String::from_utf8_lossy(&whoami.stdout);
-    let user_sid = whoami_csv
-        .trim_end()
-        .rsplit_once(',')
-        .unwrap()
-        .1
-        .trim_matches('"');
-
-    assert!(
-        sddl[0].starts_with("D:P"),
-        "the directory DACL must be protected"
-    );
-    assert_acl_principals(sddl[0], "OICI", user_sid);
-    assert_acl_principals(sddl[1], "OICIID", user_sid);
-    assert_acl_principals(sddl[2], "ID", user_sid);
-}
-
-fn assert_acl_principals(sddl: &str, flags: &str, user_sid: &str) {
-    let system = format!("A;{flags};FA;;;SY)");
-    let user = format!("A;{flags};FA;;;{user_sid})");
-    let aces: Vec<_> = sddl.split('(').skip(1).collect();
-    let expected_count = if user_sid == "S-1-5-18" { 1 } else { 2 };
-    assert!(
-        aces.len() == expected_count
-            && aces.contains(&system.as_str())
-            && (expected_count == 1 || aces.contains(&user.as_str())),
-        "icacls showed unexpected ACEs in the test DACL"
-    );
-}
-
-fn read_utf16_file(path: &Path) -> String {
-    let raw = fs::read(path).unwrap();
-    let (chunks, remainder) = raw.as_chunks::<2>();
-    assert!(remainder.is_empty(), "expected UTF-16 icacls export");
-    let units: Vec<_> = chunks.iter().copied().map(u16::from_le_bytes).collect();
-    String::from_utf16(&units).unwrap()
 }

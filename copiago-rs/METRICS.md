@@ -348,7 +348,7 @@ Measure-CopiaGo $process.Id
 | 安装后大小 | ≤ 12 MB，排除运行时 DDI | 7,785,968 字节，TestId 全新实装，含卸载器及许可证 | 通过 |
 | 托盘空闲专用工作集 | ≤ 10 MB | 峰值 2,334,720 字节，假配对断线 | 本机通过，连机未测 |
 | 打开弹窗专用工作集 | ≤ 20 MB | 历史页峰值 12,808,192，设置页峰值 13,025,280 字节，断线 | 本机通过，连机未测 |
-| 瞬时专用工作集 | ≤ 30 MB | 正式 EXE 常规四状态的 1 s 采样最大值 13,025,280 字节。当前源码的独立 Debug 渐进 JPEG 缩略图探针最高 146,251,776 字节 | 缩略图路径有超线复现，正式 EXE 端到端峰值未测 |
+| 瞬时专用工作集 | ≤ 30 MB | 正式 EXE 常规四状态的 1 s 采样最大值 13,025,280 字节。48 MP 渐进 JPEG 缩略图修复后峰值 12,087,296 字节（修复前 146,251,776 字节），基线 JPEG 14,360,576 字节 | 缩略图路径已修复，正式 EXE 端到端峰值待真机 |
 | Wi‑Fi 冷启动至连上 | ≤ 3 s，已解锁、同一局域网 | 最终 EXE 无成功会话样本。断线场景从发起启动到观察到 `event=ready` 为 86.53 ms（1 次） | 待真机 |
 | N-3 已连接空闲 CPU | 平均 < 0.1%，排除 2 s 元数据轮询 | 断线短测 109.375 ms CPU / 122.813 s，折合单逻辑核 0.089058%，整机 0.004453% | 待真机 |
 | N-4 24 h 内存 | 每小时采样，增长 < 2 MB 且无持续增长 | 断线收起后连续 61 点，首末样本相距 120.743 s。专用工作集变化 −139,264 字节，Private Bytes 变化 +77,824 字节 | 待 24 h 真机 |
@@ -418,6 +418,7 @@ cargo run --release --locked -p copiago-device --example connection_probe -- --s
 ### 问题清单
 
 - **渐进 JPEG 峰值越线。** 同一 Pillow 13.0.0 双色合成图（8000 × 6000，quality 85），用当前源码的独立 Debug 子进程走 `decode_scaled` 并编码为 96 × 72 PNG。基线 JPEG 三次通过，子进程峰值总工作集为 13,058,048–13,066,240 字节。渐进 JPEG 三次均解码成功后触发峰值断言，`K32GetProcessMemoryInfo` 的采样专用工作集为 146,247,680–146,251,776 字节，峰值私有提交为 147,091,456–147,116,032 字节。此场景超 30 MB，最终 GUI 收到真机大图时的峰值待测。[缩略图测试](crates/copiago-win/src/image/tests.rs) · [Microsoft PROCESS_MEMORY_COUNTERS_EX2](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex2)
+  - **已修复**：`decode_scaled` 识别渐进 JPEG（SOF2/6/10/14）。WIC 对这类文件也报告可原生缩小，实际仍整幅解码。对无法原生缩小、且超过 6 MP 的图片，改用文件内嵌预览，没有预览时返回 `ImageTooLarge`，弹窗显示通用图片图标。同一 8000 × 6000 渐进样本子进程峰值总工作集 12,087,296 字节、峰值私有提交 2,772,992 字节；基线 JPEG 不变（14,360,576 字节）。复验：用 Pillow `progressive=True` 生成样本，设置 `COPIAGO_PROGRESSIVE_JPEG` 后运行 `cargo test -p copiago-win --lib image::tests::progressive_jpeg_thumbnail_uses_bounded_memory -- --ignored --exact --nocapture`。
 - **仅 HEIC 样本在本机无法准备 Windows 剪贴板数据。** 当前测试读取一个 660 字节合成 HEIC 时返回 `0xc00d5212`。若同一手机条目没有可用 PNG/JPEG 替代，还需评估目标电脑的编解码器及实际粘贴路径。[HEIC 样本测试](crates/copiago-win/src/clipboard/tests.rs) · [替代格式请求](crates/copiago-device/src/pasteboard/content.rs)
 - **真机证据缺口。** 本轮没有建立 iPhone 会话。Wi‑Fi 冷启、连机 CPU、连机内存、24 h 和第 8 节所列端到端动作仍待验，包括升级后无须重配的首连。短测中专用工作集比收起后的首样本略降，Private Bytes 略升，持续性待长测。
 

@@ -247,3 +247,64 @@ fn synthetic_jpeg() -> Result<Vec<u8>> {
         }
     })
 }
+
+const PROGRESSIVE_CHILD: &str = "COPIAGO_PROGRESSIVE_THUMBNAIL_CHILD";
+
+/// A 48 MP progressive JPEG cannot be shrunk while decoding. Scaled decoding
+/// must stay within the transient budget: it either uses the embedded preview
+/// or reports `ImageTooLarge` so the popup shows the generic image icon.
+/// Point `COPIAGO_PROGRESSIVE_JPEG` at such a file (e.g. Pillow `progressive=True`).
+#[test]
+#[ignore = "needs COPIAGO_PROGRESSIVE_JPEG pointing at a large progressive JPEG"]
+fn progressive_jpeg_thumbnail_uses_bounded_memory() {
+    if std::env::var_os(PROGRESSIVE_CHILD).is_some() {
+        let mut jpeg = Vec::new();
+        std::io::stdin()
+            .lock()
+            .take(MAX_IMAGE_BYTES as u64 + 1)
+            .read_to_end(&mut jpeg)
+            .unwrap();
+        let outcome = match decode_scaled(&jpeg, 96, 96) {
+            Ok(preview) => format!(
+                "thumbnail={}x{}",
+                preview.dimensions().0,
+                preview.dimensions().1
+            ),
+            Err(ImageError::ImageTooLarge) => "fallback=icon".to_string(),
+            Err(other) => panic!("unexpected error: {other}"),
+        };
+        let counters = memory_peaks();
+        println!(
+            "{outcome} peak_working_set_bytes={} peak_private_commit_bytes={}",
+            counters.PeakWorkingSetSize, counters.PeakPagefileUsage
+        );
+        assert!((1..PEAK_LIMIT_BYTES).contains(&counters.PeakWorkingSetSize));
+        assert!((1..PEAK_LIMIT_BYTES).contains(&counters.PeakPagefileUsage));
+        return;
+    }
+    let path = std::env::var_os("COPIAGO_PROGRESSIVE_JPEG").expect("set COPIAGO_PROGRESSIVE_JPEG");
+    let jpeg = std::fs::read(path).unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "image::tests::progressive_jpeg_thumbnail_uses_bounded_memory",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(PROGRESSIVE_CHILD, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let send = child.stdin.take().unwrap().write_all(&jpeg);
+    let output = child.wait_with_output().unwrap();
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && report.contains("peak_working_set_bytes="),
+        "{report}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    send.unwrap();
+    print!("{report}");
+}

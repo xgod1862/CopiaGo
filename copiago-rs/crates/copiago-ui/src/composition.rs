@@ -10,6 +10,10 @@ pub use window::POPUP_SETTINGS_CHANGED;
 
 use std::{cell::OnceCell, rc::Rc};
 
+use crate::{
+    components::Rect,
+    focus::{Card, FocusElement, FocusEvent, FocusId, FocusRing},
+};
 use drawing::Drawing;
 use window::{CLOSE_POPUP, DPI_CHANGED, Placement, PopupWindows};
 use windows::{
@@ -21,7 +25,7 @@ use windows::{
         },
     },
     Win32::{
-        Foundation::{E_INVALIDARG, HWND, POINT},
+        Foundation::{E_FAIL, E_INVALIDARG, HWND, POINT},
         System::WinRT::Composition::ICompositorDesktopInterop,
         UI::WindowsAndMessaging::MSG,
     },
@@ -108,8 +112,9 @@ impl<'ui> PopupHost<'ui> {
         let placement = Placement::new(position, bounds, self.windows.dpi_at(position)?)?;
         let visible = VisiblePopup::new(self.windows.visual(), placement, build)?;
         self.windows.place(placement)?;
+        self.place_accessibility(placement);
         if let Err(error) = self.windows.show(activate) {
-            self.windows.hide();
+            self.hide();
             return Err(error);
         }
         self.visible = Some(visible);
@@ -127,6 +132,7 @@ impl<'ui> PopupHost<'ui> {
                 return Err(error);
             }
             visible.placement = placement;
+            self.place_accessibility(placement);
         }
         Ok(())
     }
@@ -156,6 +162,8 @@ impl<'ui> PopupHost<'ui> {
                         self.hide();
                         return Err(error);
                     }
+                    self.place_accessibility(placement);
+                    self.refresh_focus()?;
                 }
             }
             _ => return Ok(false),
@@ -165,8 +173,71 @@ impl<'ui> PopupHost<'ui> {
 
     /// Hide immediately and tear down the visual tree, surfaces, and graphics devices.
     pub fn hide(&mut self) {
+        self.windows.interaction().hide();
         self.windows.hide();
         self.visible = None;
+    }
+
+    /// Publish the visible page's controls in tab order. Call again after
+    /// a page, scroll offset, layout or label change. Existing focus survives
+    /// while the same control stays enabled and present.
+    pub fn set_focus_elements(&self, elements: Vec<FocusElement>) -> Result<()> {
+        if self.visible.is_none() {
+            return Err(Error::new(E_FAIL, "The popup is hidden"));
+        }
+        self.windows.interaction().publish(self.hwnd(), elements)?;
+        self.refresh_focus()
+    }
+
+    /// The last logical target, including while this popup has lost Win32 focus.
+    pub fn focused_element(&self) -> Option<FocusId> {
+        self.windows.interaction().focused_element()
+    }
+
+    /// Update logical focus without setting Win32 focus. Call for pointer selection
+    /// or to set a default action when opening a page. None clears logical focus.
+    pub fn set_focused_element(&self, id: Option<FocusId>) -> Result<bool> {
+        let changed = self.windows.interaction().request_focus(id);
+        if changed {
+            self.refresh_focus()?;
+        }
+        Ok(changed)
+    }
+
+    /// Process the card's queued keyboard or UI Automation messages before
+    /// TranslateMessage/DispatchMessage. Some means the message was consumed.
+    pub fn handle_focus_message(&self, message: &MSG) -> Result<Option<FocusEvent>> {
+        if message.hwnd != self.hwnd() || self.visible.is_none() {
+            return Ok(None);
+        }
+        let event = self.windows.interaction().handle_message(message);
+        if matches!(event, Some(FocusEvent::Changed(_))) {
+            self.refresh_focus()?;
+        }
+        Ok(event)
+    }
+
+    /// Notify assistive technology that a button or list item action ran.
+    /// Call before an action that removes its own element or starts longer work.
+    pub fn notify_invoked(&self, id: FocusId) {
+        self.windows.interaction().notify_invoked(self.hwnd(), id);
+    }
+
+    fn place_accessibility(&self, placement: Placement) {
+        self.windows.interaction().place(Card {
+            origin: placement.position,
+            bounds: Rect::new(0.0, 0.0, placement.bounds.width, placement.bounds.height),
+            scale: f64::from(placement.scale()),
+        });
+    }
+
+    fn refresh_focus(&self) -> Result<()> {
+        let interaction = self.windows.interaction();
+        if let Some(scene) = self.scene() {
+            scene.show_focus(interaction.focus_bounds())?;
+        }
+        interaction.announce_focus(self.hwnd());
+        Ok(())
     }
 }
 
@@ -184,6 +255,7 @@ pub struct PopupScene {
     root: ContainerVisual,
     motion_root: ContainerVisual,
     content: ContainerVisual,
+    focus_ring: OnceCell<FocusRing>,
     dpi: u32,
 }
 
@@ -238,6 +310,7 @@ impl PopupScene {
             root,
             motion_root,
             content,
+            focus_ring: OnceCell::new(),
             dpi: placement.dpi,
         })
     }
@@ -284,6 +357,17 @@ impl PopupScene {
         }
         let drawing = Drawing::new(&self.compositor)?;
         draw(self.drawing.get_or_init(|| drawing))
+    }
+
+    fn show_focus(&self, bounds: Option<Rect>) -> Result<()> {
+        if let Some(ring) = self.focus_ring.get() {
+            return ring.show(bounds);
+        }
+        if bounds.is_some() {
+            let ring = FocusRing::new(self)?;
+            self.focus_ring.get_or_init(|| ring).show(bounds)?;
+        }
+        Ok(())
     }
 }
 
@@ -384,4 +468,70 @@ fn bounded_radius(size: Vector2, radius: f32) -> Result<f32> {
         ));
     }
     Ok(radius.min(size.X.min(size.Y) / 2.0))
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use windows::Win32::{
+        Foundation::WPARAM,
+        UI::{
+            Input::KeyboardAndMouse::{VK_RETURN, VK_TAB},
+            WindowsAndMessaging::{SendMessageW, WM_KEYDOWN, WM_KILLFOCUS, WM_SETFOCUS},
+        },
+    };
+
+    use super::*;
+    use crate::focus::FocusRole;
+
+    #[test]
+    #[ignore = "requires a desktop with Windows Composition"]
+    fn isolated_window_paints_focus_and_routes_keys_without_native_input() -> Result<()> {
+        let thread = CompositionThread::new()?;
+        let mut popup = PopupHost::new(&thread)?;
+        popup.show(
+            POINT { x: 72, y: 72 },
+            PopupBounds::new(120.0, 100.0, 12.0),
+            false,
+            |_| Ok(()),
+        )?;
+        let id = FocusId(1);
+        popup.set_focus_elements(vec![FocusElement {
+            id,
+            parent: None,
+            name: String::from("Test control"),
+            role: FocusRole::Button,
+            bounds: Some(Rect::new(10.0, 12.0, 80.0, 35.0)),
+            enabled: true,
+        }])?;
+        let mut message = MSG {
+            hwnd: popup.hwnd(),
+            message: WM_KEYDOWN,
+            wParam: WPARAM(usize::from(VK_TAB.0)),
+            ..Default::default()
+        };
+        assert_eq!(popup.handle_focus_message(&message)?, None);
+        // SAFETY: Send notifications to our own HWND on this thread without
+        // changing the Windows foreground window or injecting keyboard input.
+        unsafe { SendMessageW(popup.hwnd(), WM_SETFOCUS, None, None) };
+        assert_eq!(
+            popup.handle_focus_message(&message)?,
+            Some(FocusEvent::Changed(Some(id)))
+        );
+        let ring = popup.scene().unwrap().focus_ring.get().unwrap();
+        assert!(ring.is_visible()?);
+        message.wParam = WPARAM(usize::from(VK_RETURN.0));
+        assert_eq!(
+            popup.handle_focus_message(&message)?,
+            Some(FocusEvent::Activated(id))
+        );
+        // SAFETY: The test still owns this HWND and sends a local notification.
+        unsafe { SendMessageW(popup.hwnd(), WM_KILLFOCUS, None, None) };
+        popup.refresh_focus()?;
+        assert!(!ring.is_visible()?);
+        assert_eq!(popup.handle_focus_message(&message)?, None);
+        popup.hide();
+        assert!(popup.scene().is_none());
+        assert_eq!(popup.focused_element(), None);
+        Ok(())
+    }
 }

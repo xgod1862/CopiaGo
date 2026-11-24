@@ -17,6 +17,20 @@ cargo build --release
 
 产物位于 `target/release/copiago.exe`。
 
+## USB 配对真机复验
+
+在 `copiago-rs` 中选用专用测试 iPhone 和测试电脑，确认测试机运行 Apple Mobile Device Service，并为每个场景指定新的临时数据目录。CopiaGo 在初次写入时为目录设置仅当前用户和 SYSTEM 可访问的 ACL。`ICB_DATA_DIR` 隔离 CopiaGo 文件，首次信任和无线开关仍作用于测试设备。
+
+```powershell
+$env:ICB_DATA_DIR = Join-Path $env:TEMP ('copiago-pair-' + [guid]::NewGuid().ToString('N'))
+cargo run --release -p copiago-device --example pairing_probe -- pair
+```
+
+- 接入两台测试 iPhone，再运行 `pair`，应提示「请暂时只连接一台 iPhone」。
+- 在从未信任测试电脑的单台 iPhone 上点「不信任」，应提示重新插拔并选择「信任」。保持测试手机解锁并重新运行 `pair`，点「信任」并输入锁屏密码。
+- 配对输出 `pairing_saved=true` 后拔线，保持在同一 Wi‑Fi 网络。运行 `cargo run --release -p copiago-device --example wifi_probe`，应输出 `pair_verify=true`、RSD 服务数量和 `identifier_migration=AlreadyPresent`。
+- 在同一临时目录运行 `cargo run --release -p copiago-device --example pairing_probe -- forget`，应回到 `Setup`，目录里的 `remote_*.plist` 和 `device-info.bin` 应消失。再次运行 `wifi_probe` 应报告没有 RemotePairing 记录，再接 USB 运行 `pair` 可重新配对。
+
 ## 目录
 
 | Crate | 职责 |

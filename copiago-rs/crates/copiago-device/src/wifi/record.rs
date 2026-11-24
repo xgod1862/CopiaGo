@@ -1,9 +1,10 @@
+use std::ffi::OsStr;
 use std::fs;
-use std::io::{Cursor, ErrorKind};
+use std::io::{self, Cursor, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::ptr;
 
-use copiago_core::{atomic, dpapi, paths::DEVICE_DATA_DIR};
+use copiago_core::{DeviceInfo, atomic, dpapi, paths::DEVICE_DATA_DIR};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use idevice::remote_pairing::RpPairingFile;
 use plist::{Dictionary, Value};
@@ -114,16 +115,56 @@ impl RemoteRecord {
             "identifier".into(),
             Value::String(self.pairing.identifier().to_owned()),
         );
-        let mut plaintext = Zeroizing::new(Vec::new());
-        self.fields
-            .0
-            .to_writer_binary(&mut *plaintext)
-            .map_err(|_| WifiProbeError::InvalidPairingRecord)?;
-        let sealed = dpapi::protect(&plaintext).map_err(|_| WifiProbeError::ReadPairingRecord)?;
+        let sealed = self
+            .fields
+            .seal()
+            .map_err(|_| WifiProbeError::ReadPairingRecord)?;
 
         atomic::replace_existing_if_unchanged(&self.path, &self.original, &sealed)
             .map_err(|_| WifiProbeError::ReadPairingRecord)
     }
+}
+
+pub(crate) fn save_remote_record(
+    path: &Path,
+    mut pairing: RpPairingFile,
+    unlock_key: String,
+) -> io::Result<()> {
+    // idevice names the value alt_irk. CopiaGo and Python match ads using peer_alt_irk.
+    let mut irk = Zeroizing::new(pairing.alt_irk.take().unwrap_or_default());
+    let mut unlock_key = Zeroizing::new(unlock_key);
+    if irk.len() != 16 {
+        return Err(io::Error::new(ErrorKind::InvalidData, "missing peer IRK"));
+    }
+    let fields = SensitivePlist(Value::Dictionary(Dictionary::from_iter([
+        ("private_key", Value::Data(pairing.private_key_bytes())),
+        ("public_key", Value::Data(pairing.public_key_bytes())),
+        ("identifier", Value::String(pairing.identifier)),
+        ("peer_alt_irk", Value::Data(std::mem::take(&mut *irk))),
+        (
+            "remote_unlock_host_key",
+            Value::String(std::mem::take(&mut *unlock_key)),
+        ),
+    ])));
+    atomic::write(path, &fields.seal()?)
+}
+
+pub(crate) fn forget_remote_records(data_root: &Path) -> io::Result<()> {
+    let entries = match fs::read_dir(data_root.join(DEVICE_DATA_DIR)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if remote_record_serial(&entry.file_name()).is_some() && entry.file_type()?.is_file() {
+            match fs::remove_file(entry.path()) {
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                result => result?,
+            }
+        }
+    }
+    DeviceInfo::remove(data_root)
 }
 
 pub(crate) fn find_paired_device(data_root: &Path) -> Result<PairedDevice, WifiProbeError> {
@@ -138,11 +179,7 @@ pub(crate) fn find_paired_device(data_root: &Path) -> Result<PairedDevice, WifiP
     for entry in entries {
         let entry = entry.map_err(|_| WifiProbeError::ReadPairingRecord)?;
         let name = entry.file_name();
-        let serial = name
-            .to_str()
-            .and_then(|name| name.strip_prefix("remote_"))
-            .and_then(|name| name.strip_suffix(".plist"))
-            .filter(|id| !id.is_empty());
+        let serial = remote_record_serial(&name).filter(|id| !id.is_empty());
         if let Some(serial) = serial
             && entry
                 .file_type()
@@ -159,6 +196,18 @@ pub(crate) fn find_paired_device(data_root: &Path) -> Result<PairedDevice, WifiP
         }
     }
     paired.ok_or(WifiProbeError::NoPairingRecord)
+}
+
+fn remote_record_serial(name: &OsStr) -> Option<&str> {
+    let name = Path::new(name);
+    if !name.extension()?.eq_ignore_ascii_case("plist") {
+        return None;
+    }
+    let (prefix, serial) = name
+        .file_stem()?
+        .to_str()?
+        .split_at_checked("remote_".len())?;
+    prefix.eq_ignore_ascii_case("remote_").then_some(serial)
 }
 
 fn record_key<'a>(fields: &'a Dictionary, key: &str) -> Result<&'a [u8; 32], WifiProbeError> {
@@ -185,12 +234,16 @@ fn record_identifier(
     if let Some(id) = string_field("host_identifier") {
         return Ok((id.to_owned(), true));
     }
-    let host = hostname()?;
-    let id = Uuid::new_v3(&Uuid::NAMESPACE_DNS, host.as_bytes());
-    Ok((id.to_string().to_ascii_uppercase(), true))
+    Ok((host_identifier(&hostname()?), true))
 }
 
-fn windows_hostname() -> Result<String, WifiProbeError> {
+pub(crate) fn host_identifier(hostname: &str) -> String {
+    Uuid::new_v3(&Uuid::NAMESPACE_DNS, hostname.as_bytes())
+        .to_string()
+        .to_ascii_uppercase()
+}
+
+pub(crate) fn windows_hostname() -> Result<String, WifiProbeError> {
     // CPython's socket.gethostname() uses the physical DNS host name on Windows.
     let mut len = 0;
     // SAFETY: A null buffer and zero length request the required capacity.
@@ -215,6 +268,16 @@ fn windows_hostname() -> Result<String, WifiProbeError> {
 }
 
 struct SensitivePlist(Value);
+
+impl SensitivePlist {
+    fn seal(&self) -> io::Result<Vec<u8>> {
+        let mut plaintext = Zeroizing::new(Vec::new());
+        self.0
+            .to_writer_binary(&mut *plaintext)
+            .map_err(io::Error::other)?;
+        dpapi::protect(&plaintext)
+    }
+}
 
 impl Drop for SensitivePlist {
     fn drop(&mut self) {

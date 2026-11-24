@@ -24,7 +24,10 @@ use crate::{
 mod record;
 mod transport;
 
-pub(crate) use record::{PairedDevice, find_paired_device};
+pub(crate) use record::{
+    PairedDevice, find_paired_device, forget_remote_records, host_identifier, save_remote_record,
+    windows_hostname,
+};
 const ENDPOINT_TIMEOUT: Duration = Duration::from_secs(4);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IPV6_TCP_HEADERS: usize = 60;

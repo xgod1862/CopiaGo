@@ -15,6 +15,7 @@ idevice = { version = "=0.1.68", default-features = false, features = [
     "usbmuxd",
     "core_device_proxy",
     "notification_proxy",
+    "pair",
     "remote_pairing",
     "tunnel_tcp_stack",
     "rsd",

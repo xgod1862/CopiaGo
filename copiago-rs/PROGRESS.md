@@ -17,7 +17,7 @@
 | T-APP-01 | 待真机验证 | https://github.com/xgod1862/CopiaGo/pull/10 | 真机 Wi-Fi 基线 30 分钟，121 个样本，峰值专用工作集 2.18 MB。集成候选冷启中位 1.92 s，注入消息恢复通过；双向文本/PNG、USB 和系统睡眠待验。 |
 | T-DEV-07 | 待真机验证 | — | thresholdData 分块写盘，保留 512 MiB 上限。100/500 MiB 模拟矩阵 12/12 长度和 SHA-256 一致，USB/Wi-Fi 真机文件传输待测。 |
 | T-DEV-08 | 待办 | — | |
-| T-DEV-09 | 待办 | — | |
+| T-DEV-09 | 待真机验证 | — | USB 信任、无线配对保存与 Forget 已接线，DPAPI 合成记录由 Rust/Python 读回。本机无 USB 设备，从零配对和拒绝信任待验。 |
 | T-CORE-05 | 已合并 | — | 使用系统 winsqlite3、DPAPI 和原表。双来源上限、去重、旧列迁移及合成 Python 双向实测通过。关闭保存后保留原历史，独立清空。 |
 | T-IMG-01 | 已合并 | — | 统一 WIC 解码、缩放、PNG 与 DIB。48 MP 基线 JPEG 缩略图 5 次峰值 ≤ 13.20 MB，透明像素保持。渐进式 48 MP 可解码但超 30 MB（155.39 MB）。 |
 | T-IMG-02 | 待真机验证 | — | 同一条目优先 PNG/JPEG，HEIC 交给 WIC。无 HEVC 实测验证替代路径，HEIC-only 报缺解码器；四种来源及相册端到端待验。 |

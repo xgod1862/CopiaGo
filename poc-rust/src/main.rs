@@ -370,6 +370,10 @@ async fn run(args: &Args) -> Res<()> {
         pb3.set_text(&original, GENERAL_PASTEBOARD).await?;
         // Swallow the notification for the restore.
         let _ = tokio::time::timeout(Duration::from_secs(2), np.receive_notification()).await;
+        // Fail only after restoring the user's text.
+        if !matches!(&name, Ok(Ok(n)) if n == PASTEBOARD_CHANGED) {
+            return Err(format!("notify self-test failed: {name:?}").into());
+        }
     }
     let listing = pb.get_with_policy(GENERAL_PASTEBOARD, DataInclusionPolicy::AllPromised).await?;
     eprintln!("watching {PASTEBOARD_CHANGED} for {}s (copy something on the iPhone)", args.idle);

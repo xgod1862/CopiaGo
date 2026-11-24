@@ -89,6 +89,10 @@ impl Snapshot {
             .flat_map(|item| item.types.iter().map(String::as_str))
     }
 
+    pub(super) fn has_different_change(&self, other: &Self) -> bool {
+        matches!((&self.change, &other.change), (Some(left), Some(right)) if left != right)
+    }
+
     pub(super) fn file_item_index(&self, uti: &str) -> Option<usize> {
         self.items.iter().find_map(|item| {
             item.entries.get(uti)?.as_dictionary()?;
@@ -171,7 +175,7 @@ impl Snapshot {
         Update {
             change: self.change,
             event,
-            timed_out: false,
+            skipped: false,
         }
     }
 
@@ -179,7 +183,7 @@ impl Snapshot {
         Update {
             change: self.change,
             event: None,
-            timed_out: true,
+            skipped: true,
         }
     }
 }
@@ -266,7 +270,7 @@ fn is_file_like(uti: &str) -> bool {
 pub(super) struct Update {
     pub change: Option<PasteboardChange>,
     pub event: Option<DeviceEvent>,
-    pub timed_out: bool,
+    pub skipped: bool,
 }
 
 pub(super) async fn read_clip(
@@ -276,15 +280,14 @@ pub(super) async fn read_clip(
 ) -> Result<Update, PasteboardError> {
     if let Some(uti) = file_offer::content_type(&listing).map(str::to_owned) {
         return match pull(backend, PullPolicy::Threshold(DESCRIPTION_BYTES)).await {
-            Ok(described)
-                if listing.change.is_none()
-                    || described.change.is_none()
-                    || described.change == listing.change =>
-            {
+            // Remember the listing's ID so the next poll can discover the
+            // newer change and fetch its own description.
+            Ok(described) if listing.has_different_change(&described) => Ok(listing.skip()),
+            Ok(described) => {
                 let offer = file_offer::describe(described, uti, listing.change.clone(), language);
                 Ok(listing.into_update(Some(Clip::File(offer))))
             }
-            Ok(_) | Err(PasteboardError::RequestTimeout) => Ok(listing.skip()),
+            Err(PasteboardError::RequestTimeout) => Ok(listing.skip()),
             Err(error) => Err(error),
         };
     }

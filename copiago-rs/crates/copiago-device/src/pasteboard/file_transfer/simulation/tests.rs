@@ -1,3 +1,4 @@
+use super::super::ReceivedFile;
 use super::*;
 use copiago_core::clip::PasteboardChange;
 use std::time::Duration;
@@ -131,22 +132,7 @@ async fn consumes_padded_frames_and_rejects_wrong_command_after_data() {
 
 #[tokio::test]
 async fn rejects_threshold_reply_for_a_newer_change_after_staging_bytes() {
-    let message = idevice::xpc!({
-        "command": "PULL_REPLY",
-        "pasteboard": {
-            "items": XPCObject::Array(vec![idevice::xpc!({
-                "data": { "public.zip-archive": { "data": XPCObject::Data(vec![1, 2, 3]) } },
-            })]),
-            "metadata": { "changeCount": 42i64 },
-        },
-    });
-    let wire = XPCMessage {
-        flags: 0x0002_0101,
-        message: Some(message),
-        message_id: Some(1),
-    }
-    .encode(1)
-    .unwrap();
+    let wire = threshold_wire(Some(idevice::xpc!({ "changeCount": 42i64 })));
     let change = PasteboardChange {
         count: 41,
         nonce: None,
@@ -155,6 +141,100 @@ async fn rejects_threshold_reply_for_a_newer_change_after_staging_bytes() {
         receive_wire_with_change(Method::Threshold, &wire, Some(3), true, Some(&change)).await;
     assert_eq!(result, Err(Error::OfferExpired));
     assert_eq!(staged, [1, 2, 3]);
+}
+
+#[tokio::test]
+async fn matching_threshold_reply_completes_without_another_listing() {
+    let change = PasteboardChange {
+        count: 41,
+        nonce: None,
+    };
+    let wire = threshold_wire(Some(idevice::xpc!({ "changeCount": 41i64 })));
+    let (result, staged) =
+        receive_wire_with_change(Method::Threshold, &wire, Some(3), true, Some(&change)).await;
+    let bytes = result
+        .unwrap()
+        .confirm_change(Method::Threshold, Some(&change), async || {
+            panic!("a matching reply should not require a listing")
+        })
+        .await;
+    assert_eq!(bytes, Ok(3));
+    assert_eq!(staged, [1, 2, 3]);
+}
+
+#[tokio::test]
+async fn missing_threshold_id_requires_a_matching_listing_after_staging() {
+    let change = PasteboardChange {
+        count: 41,
+        nonce: None,
+    };
+    for metadata in [None, Some(idevice::xpc!({ "pasteboardName": "general" }))] {
+        let wire = threshold_wire(metadata);
+        for (listing, expected) in [
+            (Ok(Some(change.clone())), Ok(3)),
+            (
+                Ok(Some(PasteboardChange {
+                    count: 42,
+                    nonce: None,
+                })),
+                Err(Error::OfferExpired),
+            ),
+            (Ok(None), Err(Error::OfferExpired)),
+            (Err(Error::TimedOut), Err(Error::TimedOut)),
+        ] {
+            let (result, staged) =
+                receive_wire_with_change(Method::Threshold, &wire, Some(3), true, Some(&change))
+                    .await;
+            let bytes = result
+                .unwrap()
+                .confirm_change(Method::Threshold, Some(&change), async move || listing)
+                .await;
+            assert_eq!(bytes, expected);
+            assert_eq!(staged, [1, 2, 3]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_threshold_change_is_rejected_without_requiring_a_listing() {
+    let change = PasteboardChange {
+        count: 41,
+        nonce: None,
+    };
+    for metadata in [
+        XPCObject::String("invalid".to_owned()),
+        idevice::xpc!({ "changeCount": "invalid" }),
+        idevice::xpc!({ "nonce": "incomplete" }),
+    ] {
+        let wire = threshold_wire(Some(metadata));
+        let (result, staged) =
+            receive_wire_with_change(Method::Threshold, &wire, Some(3), true, Some(&change)).await;
+        assert_eq!(result, Err(Error::InvalidReply));
+        assert_eq!(staged, [1, 2, 3]);
+    }
+}
+
+fn threshold_wire(metadata: Option<XPCObject>) -> Vec<u8> {
+    let mut board = idevice::xpc!({
+        "items": XPCObject::Array(vec![idevice::xpc!({
+            "data": { "public.zip-archive": { "data": XPCObject::Data(vec![1, 2, 3]) } },
+        })]),
+    })
+    .to_dictionary()
+    .unwrap();
+    if let Some(metadata) = metadata {
+        board.insert("metadata".to_owned(), metadata);
+    }
+    XPCMessage {
+        flags: 0x0002_0101,
+        message: Some(idevice::xpc!({
+            "command": "PULL_REPLY",
+            "pasteboard": XPCObject::Dictionary(board),
+        })),
+        message_id: Some(1),
+    }
+    .encode(1)
+    .unwrap()
 }
 
 #[test]
@@ -204,7 +284,8 @@ async fn receive_wire(
     size: Option<u64>,
     end_stream: bool,
 ) -> (Result<u64, Error>, Vec<u8>) {
-    receive_wire_with_change(method, wire, size, end_stream, None).await
+    let (result, staged) = receive_wire_with_change(method, wire, size, end_stream, None).await;
+    (result.map(|reply| reply.bytes), staged)
 }
 
 async fn receive_wire_with_change(
@@ -213,7 +294,7 @@ async fn receive_wire_with_change(
     size: Option<u64>,
     end_stream: bool,
     change: Option<&PasteboardChange>,
-) -> (Result<u64, Error>, Vec<u8>) {
+) -> (Result<ReceivedFile, Error>, Vec<u8>) {
     let (mut client, mut server) = duplex(4096);
     let mut output = Vec::new();
     let client = receive(

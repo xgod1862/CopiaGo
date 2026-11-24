@@ -170,12 +170,20 @@ begin
     Exit;
   Old := AddBackslash(RelocateFrom);
   NewData := ExpandConstant('{app}\data');
-  // Same volume, so the account folders move whole with their ACLs. Never merge.
+  // Same volume, so the account folders move whole with their ACLs. Never merge. Whatever
+  // stays behind is kept: CopiaGo copies an account's data from here on first start while
+  // its new data folder is still empty, so a failed move recovers and can be retried.
   if DirExists(Old + 'data') then
     if DirExists(NewData) then
-      Log('The destination already has data; keeping the old data folder.')
+    begin
+      Log('The destination already has data; keeping the old data folder.');
+      if DirExists(NewData + '\' + ExpandConstant('{username}')) and
+         DirExists(Old + 'data\' + ExpandConstant('{username}')) then
+        SuppressibleMsgBox(FmtMessage(CustomMessage('OldDataKept'), [Old + 'data']),
+          mbInformation, MB_OK, IDOK);
+    end
     else if not RenameFile(Old + 'data', NewData) then
-      Log('Moving the old data folder failed; keeping it in place.');
+      Log('Moving the old data folder failed; CopiaGo copies it on first start.');
   DelTree(Old + '_internal', True, True, True);
   DelTree(Old + 'licenses', True, True, True);
   DeleteFile(Old + '{#PythonExeName}');

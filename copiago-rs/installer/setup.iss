@@ -106,6 +106,8 @@ english.OpenCopiaGo=Open CopiaGo and connect an iPhone
 chinesesimp.OpenCopiaGo=打开并连接 iPhone
 english.DeleteClipData=Also remove iPhone pairing records and clipboard history?%nChoose No to keep these for a future installation.
 chinesesimp.DeleteClipData=是否同时删除 iPhone 配对记录和剪贴板历史？%n选择「否」会保留这些数据，重新安装后可直接使用。
+english.OldDataKept=The new installation folder already has CopiaGo data, so it was kept and nothing was overwritten.%nYour data from the previous folder is still in:%n%1
+chinesesimp.OldDataKept=新安装目录中已有 CopiaGo 数据，已保留且未覆盖。%n旧目录中的数据仍在：%n%1
 
 [Tasks]
 Name: startup; Description: "{cm:StartAtSignIn}"; Flags: checkedonce

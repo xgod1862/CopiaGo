@@ -160,3 +160,45 @@ fn interrupted_installed_upgrade_uses_legacy_and_discards_partial_copy() {
     drop(locked);
     assert_eq!(fs::read(source).unwrap(), b"locked sample");
 }
+
+#[test]
+fn data_left_in_the_old_default_install_is_preferred_for_migration() {
+    let dir = TestDir::new();
+    let local = dir.path();
+    let target = local
+        .join("Programs")
+        .join("CopiaGo")
+        .join("data")
+        .join("user");
+    let old = local
+        .join("Programs")
+        .join(LEGACY_INSTALL_DIR_NAME)
+        .join("data")
+        .join("user");
+
+    // Without an old install, the Python data folder is the only source.
+    assert_eq!(legacy_source(&target, local), local.join(LEGACY_DIR_NAME));
+
+    // A relocation whose data move failed leaves the account folder in the old install.
+    ensure_data_dir(&old).unwrap();
+    fs::write(old.join("settings.json"), br#"{"pull":false}"#).unwrap();
+    assert_eq!(legacy_source(&target, local), old);
+    assert_eq!(
+        upgrade::prepare(target.clone(), old.clone()).unwrap(),
+        target
+    );
+    assert_eq!(
+        fs::read(target.join("settings.json")).unwrap(),
+        br#"{"pull":false}"#
+    );
+    assert!(!old.exists());
+
+    // A copy still installed in the old folder keeps using its own data.
+    let in_place = local
+        .join("Programs")
+        .join(LEGACY_INSTALL_DIR_NAME)
+        .join("data")
+        .join("other");
+    ensure_data_dir(&in_place).unwrap();
+    assert_eq!(legacy_source(&in_place, local), local.join(LEGACY_DIR_NAME));
+}

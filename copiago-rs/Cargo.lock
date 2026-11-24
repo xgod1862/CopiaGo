@@ -281,6 +281,11 @@ dependencies = [
 [[package]]
 name = "copiago-ui"
 version = "2.0.0-beta"
+dependencies = [
+ "windows",
+ "windows-future",
+ "windows-numerics",
+]
 
 [[package]]
 name = "copiago-win"

@@ -8,7 +8,7 @@
 | T-CORE-03 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/9 | 10 项设置，非法值回落、未知键和原子更新测试通过。真实 Python 设置只读验证通过 |
 | T-CORE-04 | 已合并 | https://github.com/xgod1862/CopiaGo/pull/9 | 170 组翻译逐项核对，命名占位符、延迟渲染和系统语言测试通过 |
 | T-DEV-01 | 待真机验证 | — | USB 隧道和设备公共接口已集成。本机 usbmuxd 可用，待接单台已信任 iPhone 验证 RSD |
-| T-DEV-02 | 待办 | — | |
+| T-DEV-02 | 待真机验证 | — | 通知、2 秒轮询及剪贴板拉取的 20 项单测通过，待 USB 真机验证事件延迟与 Notes |
 | T-DEV-03 | 待办 | — | |
 | T-DEV-04 | 待办 | — | |
 | T-DEV-05 | 待办 | — | |

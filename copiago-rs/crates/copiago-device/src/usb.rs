@@ -2,10 +2,11 @@
 
 use std::fmt;
 use std::fs;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use copiago_core::{dpapi, paths::DEVICE_DATA_DIR};
+use copiago_core::{dpapi, i18n::Language, paths::DEVICE_DATA_DIR};
 use idevice::{
     IdeviceError, IdeviceService,
     core_device_proxy::CoreDeviceProxy,
@@ -20,7 +21,11 @@ use tokio::time::timeout;
 use tracing::{Dispatch, instrument::WithSubscriber};
 use zeroize::{Zeroize, Zeroizing};
 
-const PASTEBOARD_SERVICE: &str = "com.apple.coredevice.pasteboardservice";
+use crate::{
+    DeviceEvent, PasteboardError,
+    pasteboard::{PASTEBOARD_SERVICE, watch_rsd},
+};
+
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const USBMUX_PAIR_RECORD_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -80,6 +85,24 @@ impl fmt::Display for UsbProbeError {
 
 impl std::error::Error for UsbProbeError {}
 
+/// Failures from opening a USB tunnel or watching the remote clipboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsbWatchError {
+    Usb(UsbProbeError),
+    Pasteboard(PasteboardError),
+}
+
+impl fmt::Display for UsbWatchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Usb(error) => error.fmt(formatter),
+            Self::Pasteboard(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for UsbWatchError {}
+
 /// Lists USB devices and reads the advertised services of one already-paired iPhone.
 /// Pass the CopiaGo data root containing the device-data directory.
 /// Run on a Tokio runtime with I/O and time enabled.
@@ -95,6 +118,41 @@ pub async fn probe_usb(data_dir: &Path) -> Result<UsbProbe, UsbProbeError> {
 }
 
 async fn probe_on_addr(addr: &UsbmuxdAddr, data_dir: &Path) -> Result<UsbProbe, UsbProbeError> {
+    let (mut tunnel, pairing_record_source) = open_single_usb_tunnel(addr, data_dir).await?;
+    let summary = UsbProbe {
+        service_count: tunnel.rsd.services.len(),
+        pasteboard_advertised: tunnel.rsd.services.contains_key(PASTEBOARD_SERVICE),
+        pairing_record_source,
+    };
+    let _ = tunnel.adapter.close().await;
+    Ok(summary)
+}
+
+/// Watch clipboard changes from a single already-paired USB iPhone.
+/// Run on a Tokio runtime with I/O and time enabled. Return
+/// [`ControlFlow::Break`] from the callback to close the watch.
+pub async fn watch_usb(
+    data_dir: &Path,
+    language: Language,
+    emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
+) -> Result<(), UsbWatchError> {
+    let (mut tunnel, _) = timeout(
+        PROBE_TIMEOUT,
+        open_single_usb_tunnel(&UsbmuxdAddr::default(), data_dir),
+    )
+    .with_subscriber(Dispatch::none())
+    .await
+    .unwrap_or(Err(UsbProbeError::Timeout))
+    .map_err(UsbWatchError::Usb)?;
+    let result = watch_rsd(&mut tunnel.adapter, &mut tunnel.rsd, false, language, emit).await;
+    let _ = tunnel.adapter.close().await;
+    result.map_err(UsbWatchError::Pasteboard)
+}
+
+async fn open_single_usb_tunnel(
+    addr: &UsbmuxdAddr,
+    data_dir: &Path,
+) -> Result<(RsdTunnel, PairingRecordSource), UsbProbeError> {
     let devices = list_usb_devices(addr).await?;
     let device = match devices.as_slice() {
         [device] => device,
@@ -103,14 +161,7 @@ async fn probe_on_addr(addr: &UsbmuxdAddr, data_dir: &Path) -> Result<UsbProbe, 
     };
 
     let provider = device.to_provider(addr.clone(), "CopiaGo");
-    let (mut tunnel, pairing_record_source) = open_usb_tunnel(&provider, data_dir).await?;
-    let summary = UsbProbe {
-        service_count: tunnel.rsd.services.len(),
-        pasteboard_advertised: tunnel.rsd.services.contains_key(PASTEBOARD_SERVICE),
-        pairing_record_source,
-    };
-    let _ = tunnel.adapter.close().await;
-    Ok(summary)
+    open_usb_tunnel(&provider, data_dir).await
 }
 
 async fn list_usb_devices(addr: &UsbmuxdAddr) -> Result<Vec<UsbmuxdDevice>, UsbProbeError> {

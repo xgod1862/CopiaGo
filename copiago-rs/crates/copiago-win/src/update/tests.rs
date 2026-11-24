@@ -224,6 +224,7 @@ fn serve_once(response: impl FnOnce(TcpStream) + Send + 'static) -> (String, Joi
                 Err(error) => panic!("{error}"),
             }
         };
+        stream.set_nonblocking(false).unwrap();
         stream.set_read_timeout(Some(TEST_WAIT)).unwrap();
         stream.set_write_timeout(Some(TEST_WAIT)).unwrap();
         response(stream);

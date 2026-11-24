@@ -1,7 +1,6 @@
 //! Clipboard synchronization on a live CoreDevice tunnel.
 
 use std::fmt;
-use std::future::pending;
 use std::ops::ControlFlow;
 use std::time::Duration;
 
@@ -10,7 +9,7 @@ use copiago_core::{
     i18n::{Language, Message},
 };
 use tokio::{
-    sync::{Notify, mpsc},
+    sync::Notify,
     time::{Instant, sleep_until, timeout},
 };
 
@@ -62,7 +61,7 @@ impl fmt::Display for PasteboardError {
             Self::MetadataUnresponsive => "device tunnel stopped responding to pasteboard polls",
             Self::UnsupportedPush => "pasteboard push requires text or a prepared PNG",
             Self::Disconnected => "iPhone is not connected",
-            Self::PushBusy => "a pasteboard push is already queued",
+            Self::PushBusy => "the waiting pasteboard pushes exceed the queue's memory budget",
         };
         formatter.write_str(message)
     }
@@ -155,7 +154,7 @@ async fn watch(
     wireless: bool,
     language: Language,
     state: &mut PasteboardState,
-    commands: Option<&mut mpsc::Receiver<DeviceCommand>>,
+    next_command: impl AsyncFnMut() -> Option<DeviceCommand>,
     emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
 ) -> Result<Option<DeviceCommand>, PasteboardError> {
     let changed = Notify::new();
@@ -163,7 +162,7 @@ async fn watch(
     // in-progress read can leave the proxy between its length header and payload.
     tokio::select! {
         result = relay_changes(&changed, receive) => result.map(|()| None),
-        result = watch_updates(backend, &changed, wireless, language, state, commands, emit) => result,
+        result = watch_updates(backend, &changed, wireless, language, state, next_command, emit) => result,
     }
 }
 
@@ -185,7 +184,7 @@ async fn watch_updates(
     wireless: bool,
     language: Language,
     state: &mut PasteboardState,
-    mut commands: Option<&mut mpsc::Receiver<DeviceCommand>>,
+    mut next_command: impl AsyncFnMut() -> Option<DeviceCommand>,
     mut emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
 ) -> Result<Option<DeviceCommand>, PasteboardError> {
     let initial = pull(backend, PullPolicy::AllPromised).await?.change;
@@ -214,12 +213,7 @@ async fn watch_updates(
         // Metadata, content and SET share one backend. Complete each request
         // and update the change id before handling the next notification.
         tokio::select! {
-            command = async {
-                match &mut commands {
-                    Some(receiver) => receiver.recv().await,
-                    None => pending().await,
-                }
-            } => {
+            command = next_command() => {
                 match command {
                     Some(DeviceCommand::Push(clip)) => {
                         let result = state.push(backend, clip).await;

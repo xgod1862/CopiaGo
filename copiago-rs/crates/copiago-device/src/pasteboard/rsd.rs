@@ -9,7 +9,7 @@ use idevice::{
     xpc::{Dictionary, XPCObject},
 };
 use plist::Value;
-use tokio::{sync::mpsc, time::timeout};
+use tokio::time::timeout;
 use tracing::{Dispatch, instrument::WithSubscriber};
 
 use crate::{DeviceCommand, DeviceEvent};
@@ -33,7 +33,7 @@ pub(crate) async fn watch_rsd(
     wireless: bool,
     language: Language,
     state: &mut PasteboardState,
-    commands: Option<&mut mpsc::Receiver<DeviceCommand>>,
+    next_command: impl AsyncFnMut() -> Option<DeviceCommand>,
     emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
 ) -> Result<Option<DeviceCommand>, PasteboardError> {
     let port = rsd
@@ -59,7 +59,7 @@ pub(crate) async fn watch_rsd(
         wireless,
         language,
         state,
-        commands,
+        next_command,
         emit,
     )
     .await

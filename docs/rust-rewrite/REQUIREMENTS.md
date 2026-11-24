@@ -167,7 +167,7 @@ copiago-rs/
 | F-CLIP-1 | **变化检测**（与 `device.py::_watch` 一致）：notification proxy 订阅 `com.apple.pasteboard.notify.changed`、`com.apple.springboard.lockstate`、`com.apple.mobile.keybagd.lock_status`；另外每 2 s 用 `PULL allPromised` 拉一次元数据兜底；用 `(nonce, changeCount)` 作为变化标识。 |
 | F-CLIP-2 | **拉取策略**（与 `read_clip` 一致）：先 `allPromised` 只取类型（8 s 超时）→ 是文件且有内容类型 → 走文件描述（F-FILE）；没有文本/图片类型 → 判定为不支持，按 `unsupported_kind` 提示；否则 `promiseSecondary`（15 s）；主类型不是图片但声明了图片类型时再 `allResolved`（30 s）。超时只跳过这次复制，不断开连接。 |
 | F-CLIP-3 | 文本过滤：去掉 `￼`、空白后为空的文本不算内容；图片优先级 PNG > JPEG > HEIC > TIFF > GIF > WebP；Notes/Safari 的 `com.apple.webarchive` 里的首张图片作为兜底。 |
-| F-CLIP-4 | **断线期间的复制**：重连后发现 changeCount 与上次不同，以 `while_disconnected = true` 投递，UI 不自动写入系统剪贴板，而是在托盘菜单"使用 iPhone 上最新复制的内容"中提供。 |
+| F-CLIP-4 | **断线期间的复制**：重连后发现 `(nonce, changeCount)` 与上次不同，以 `while_disconnected = true` 投递。宿主按 `pull_types` 过滤。关闭拉取，或旧首包遇到电脑剪贴板已被其他程序更新时，保存给托盘菜单"使用 iPhone 上最新复制的内容"。拉取开启且电脑剪贴板未被其他程序更新时，旧首包照常同步。 |
 | F-CLIP-5 | **推送**（电脑 → iPhone）：监听 Windows 剪贴板（`AddClipboardFormatListener`），`push` 开启且类型在 `push_types` 中时 SET 到手机；文本用 `public.utf8-plain-text`/`public.plain-text`/`public.text` 三个 UTI；图片转 PNG 以 `public.png` 发送。SET 超时 20 s。 |
 | F-CLIP-6 | **回声抑制**：本机推送后 120 s 内，若手机回来的内容指纹（`clipboard.py::fingerprint`）与刚推送的相同则丢弃；推送回复中的 changeCount 记为 `last_change`。同理，写入 Windows 剪贴板时要打标记，避免被自己的监听再推回手机。 |
 | F-CLIP-7 | **写入 Windows 剪贴板**：文本 `CF_UNICODETEXT`；图片同时提供 `CF_DIBV5`（含透明）和 `PNG` 注册格式；文件见 F-FILE-4。打开剪贴板按 `clipboard.py::_open` 最多尝试 8 次，失败后依次等待 50、100、150、200、250、300、350 ms。 |

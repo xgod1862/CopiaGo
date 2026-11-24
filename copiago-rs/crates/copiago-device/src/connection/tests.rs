@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::VecDeque, path::PathBuf};
 
 use copiago_core::clip::{Clip, PasteboardChange};
 use tokio::{
-    sync::mpsc,
+    sync::{Notify, mpsc},
     time::{Instant, timeout},
 };
 
@@ -22,6 +22,8 @@ enum Session {
     Failure(Failure),
     Connected,
     Opening,
+    SlowPull,
+    SlowSet,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,6 +38,9 @@ struct FakePhone {
     attached: Cell<Option<&'static str>>,
     sessions: RefCell<VecDeque<Session>>,
     calls: RefCell<Vec<(Instant, Call)>>,
+    request_started: Notify,
+    release_request: Notify,
+    pushed: RefCell<Vec<Clip>>,
 }
 
 impl FakePhone {
@@ -45,11 +50,19 @@ impl FakePhone {
             attached: Cell::new(attached),
             sessions: RefCell::new(sessions.into_iter().collect()),
             calls: RefCell::new(Vec::new()),
+            request_started: Notify::new(),
+            release_request: Notify::new(),
+            pushed: RefCell::new(Vec::new()),
         }
     }
 
     fn record_call(&self, call: Call) {
         self.calls.borrow_mut().push((Instant::now(), call));
+    }
+
+    async fn pause_request(&self) {
+        self.request_started.notify_one();
+        self.release_request.notified().await;
     }
 
     fn attempts(&self) -> Vec<Transport> {
@@ -80,7 +93,7 @@ impl Backend for FakePhone {
         _device: &PairedDevice,
         transport: Transport,
         _clipboard: &mut PasteboardState,
-        _commands: &mut mpsc::Receiver<DeviceCommand>,
+        pushes: &PushQueue,
         emit: impl Fn(DeviceEvent) -> ControlFlow<()>,
     ) -> Result<(), Failure> {
         self.record_call(Call::Attempt(transport));
@@ -91,14 +104,30 @@ impl Backend for FakePhone {
             .expect("extra connection");
         match session {
             Session::Failure(error) => Err(error),
-            Session::Connected => {
+            Session::Connected | Session::SlowPull | Session::SlowSet => {
                 let connected = ConnState::Connected {
                     wireless: transport == Transport::Wifi,
                 };
                 if emit(DeviceEvent::Status(connected, message!(""))).is_break() {
                     return Ok(());
                 }
-                pending().await
+                if matches!(session, Session::Connected) {
+                    return pending().await;
+                }
+                if matches!(session, Session::SlowPull) {
+                    self.pause_request().await;
+                }
+                let mut slow_set = matches!(session, Session::SlowSet);
+                loop {
+                    let clip = pushes.recv().await;
+                    self.pushed.borrow_mut().push(clip);
+                    if std::mem::take(&mut slow_set) {
+                        self.pause_request().await;
+                    }
+                    if emit(DeviceEvent::PushResult(Ok(()))).is_break() {
+                        return Ok(());
+                    }
+                }
             }
             Session::Opening => pending().await,
         }
@@ -483,4 +512,108 @@ async fn offline_push_is_reported_without_a_device_session() {
     })
     .await;
     assert!(phone.attempts().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn pushes_queued_during_a_slow_pull_are_delivered_fifo() {
+    let phone = FakePhone::new(None, [Session::SlowPull]);
+    let (send, mut commands) = mpsc::channel(4);
+    let (events, mut statuses) = mpsc::unbounded_channel();
+    let (result, mut results) = mpsc::unbounded_channel();
+    let mut inputs = Inputs {
+        commands: &mut commands,
+        signals: Some(()),
+        detached: None,
+    };
+    let emit_status = collect_status(events);
+    let emit = |event| match event {
+        DeviceEvent::PushResult(reply) => {
+            result.send(reply).unwrap();
+            ControlFlow::Continue(())
+        }
+        event => emit_status(event),
+    };
+    let verify = async {
+        status(&mut statuses, ConnState::Connecting).await;
+        status(&mut statuses, ConnState::Connected { wireless: true }).await;
+        for text in ["First copy", "Second copy"] {
+            send.try_send(DeviceCommand::Push(Clip::Text(text.into())))
+                .unwrap();
+        }
+        sleep(Duration::from_secs(1)).await;
+        assert!(phone.pushed.borrow().is_empty());
+        phone.release_request.notify_one();
+        for _ in 0..2 {
+            assert_eq!(
+                timeout(Duration::from_secs(1), results.recv())
+                    .await
+                    .unwrap(),
+                Some(Ok(())),
+            );
+        }
+        send.send(DeviceCommand::Shutdown).await.unwrap();
+    };
+    tokio::join!(run(&phone, &mut inputs, &emit), verify);
+    assert!(
+        phone.pushed.into_inner()
+            == [
+                Clip::Text("First copy".into()),
+                Clip::Text("Second copy".into()),
+            ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn resume_or_forget_interrupts_a_slow_set_and_fails_outstanding_pushes() {
+    for forget in [false, true] {
+        let phone = FakePhone::new(None, [Session::SlowSet, Session::Connected]);
+        let (send, mut commands) = mpsc::channel(4);
+        let (wake, signals) = mpsc::channel(1);
+        let (events, mut statuses) = mpsc::unbounded_channel();
+        let (result, mut results) = mpsc::unbounded_channel();
+        let mut inputs = rig(&mut commands, signals, None);
+        let emit_status = collect_status(events);
+        let emit = |event| match event {
+            DeviceEvent::PushResult(reply) => {
+                result.send(reply).unwrap();
+                ControlFlow::Continue(())
+            }
+            event => emit_status(event),
+        };
+        let verify = async {
+            status(&mut statuses, ConnState::Connecting).await;
+            status(&mut statuses, ConnState::Connected { wireless: true }).await;
+            send.send(DeviceCommand::Push(Clip::Text("In flight".into())))
+                .await
+                .unwrap();
+            timeout(Duration::from_secs(1), phone.request_started.notified())
+                .await
+                .unwrap();
+            for text in ["First waiting copy", "Second waiting copy"] {
+                send.try_send(DeviceCommand::Push(Clip::Text(text.into())))
+                    .unwrap();
+            }
+            // Give the worker a chance to queue the copies before interrupting.
+            sleep(Duration::from_secs(1)).await;
+            assert!(results.try_recv().is_err());
+            let interrupted = Instant::now();
+            if forget {
+                phone.record.set(Err(WifiProbeError::NoPairingRecord));
+                send.send(DeviceCommand::Forget).await.unwrap();
+                status(&mut statuses, ConnState::Setup).await;
+            } else {
+                wake.send(HostSignal::Resumed).await.unwrap();
+                status(&mut statuses, ConnState::Connecting).await;
+                status(&mut statuses, ConnState::Connected { wireless: true }).await;
+            }
+            assert_eq!(Instant::now(), interrupted);
+            for _ in 0..3 {
+                assert_eq!(results.try_recv(), Ok(Err(PasteboardError::Disconnected)),);
+            }
+            assert!(results.try_recv().is_err());
+            send.send(DeviceCommand::Shutdown).await.unwrap();
+        };
+        tokio::join!(run(&phone, &mut inputs, &emit), verify);
+        assert!(phone.pushed.into_inner() == [Clip::Text("In flight".into())]);
+    }
 }

@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::fs;
+use std::future::pending;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -162,7 +163,7 @@ pub async fn sync_usb(
 async fn run_usb(
     data_dir: &Path,
     language: Language,
-    commands: Option<&mut mpsc::Receiver<DeviceCommand>>,
+    mut commands: Option<&mut mpsc::Receiver<DeviceCommand>>,
     emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
 ) -> Result<Option<DeviceCommand>, UsbWatchError> {
     let (mut tunnel, _) = timeout(
@@ -179,7 +180,10 @@ async fn run_usb(
         false,
         language,
         &mut PasteboardState::default(),
-        commands,
+        async || match &mut commands {
+            Some(receiver) => receiver.recv().await,
+            None => pending().await,
+        },
         emit,
     )
     .await;

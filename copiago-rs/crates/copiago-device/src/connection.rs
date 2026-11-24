@@ -9,6 +9,7 @@ use std::{
 };
 
 use copiago_core::{
+    clip::Clip,
     ddi::DdiStage,
     i18n::{Language, LanguagePreference, Message, message},
 };
@@ -21,11 +22,16 @@ use crate::{
 };
 
 mod native;
+mod push_queue;
 #[cfg(test)]
 mod tests;
 
+use push_queue::PushQueue;
+
 const RETRY_DELAY: Duration = Duration::from_secs(4);
 const MULTIPLE_RECORDS_DELAY: Duration = Duration::from_secs(5);
+// Budget a maximum-size Windows PNG plus room for queue entries and small copies.
+const MAX_QUEUED_PUSH_BYTES: usize = 64 * 1024 * 1024 + 64 * 1024;
 
 /// Power and network notifications provided by the desktop host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,6 +82,8 @@ impl Default for DeviceRunOptions {
 /// discovery after a transport failure, desktop resume or network change.
 /// Shutdown, a closed command channel, or a callback break stops the worker.
 /// Pairing, persistent forgetting and file downloads are handled outside this worker.
+/// Pending pushes are processed in order. If their byte budget is exhausted,
+/// new pushes receive a `PushResult` with `PasteboardError::PushBusy`.
 pub async fn run_device(
     data_dir: &Path,
     options: DeviceRunOptions,
@@ -115,7 +123,7 @@ trait Backend {
         device: &PairedDevice,
         transport: Transport,
         clipboard: &mut PasteboardState,
-        commands: &mut mpsc::Receiver<DeviceCommand>,
+        pushes: &PushQueue,
         emit: impl Fn(DeviceEvent) -> ControlFlow<()>,
     ) -> Result<(), Failure>;
 }
@@ -337,22 +345,23 @@ async fn attempt(
         Transport::Usb(_) => "正在建立USB连接…",
     });
     emit_event(emit, DeviceEvent::Status(ConnState::Connecting, connecting))?;
-    let (send, mut commands) = mpsc::channel(1);
     let active = ActiveSession {
         transport,
         ready: Cell::new(false),
-        pushes: Cell::new(0),
-        commands: send,
+        outstanding_pushes: Cell::new(0),
+        pushes: PushQueue::new(MAX_QUEUED_PUSH_BYTES),
     };
     let session = backend.session(
         device,
         transport,
         &mut state.clipboard,
-        &mut commands,
+        &active.pushes,
         |event| {
             match &event {
                 DeviceEvent::Status(ConnState::Connected { .. }, _) => active.ready.set(true),
-                DeviceEvent::PushResult(_) => active.pushes.set(active.pushes.get() - 1),
+                DeviceEvent::PushResult(_) => active
+                    .outstanding_pushes
+                    .set(active.outstanding_pushes.get() - 1),
                 _ => {}
             }
             emit(event)
@@ -368,7 +377,7 @@ async fn attempt(
         Ok(Ok(())) | Err(Interrupted::Stop) => return Err(Interrupted::Stop),
         Err(other) => Err(other),
     };
-    for _ in 0..active.pushes.get() {
+    for _ in 0..active.outstanding_pushes.get() {
         emit_event(
             emit,
             DeviceEvent::PushResult(Err(PasteboardError::Disconnected)),
@@ -380,8 +389,20 @@ async fn attempt(
 struct ActiveSession {
     transport: Transport,
     ready: Cell<bool>,
-    pushes: Cell<usize>,
-    commands: mpsc::Sender<DeviceCommand>,
+    outstanding_pushes: Cell<usize>,
+    pushes: PushQueue,
+}
+
+impl ActiveSession {
+    fn queue_push(&self, clip: Clip) -> Result<(), PasteboardError> {
+        if !self.ready.get() {
+            return Err(PasteboardError::Disconnected);
+        }
+        self.pushes.send(clip)?;
+        self.outstanding_pushes
+            .set(self.outstanding_pushes.get() + 1);
+        Ok(())
+    }
 }
 
 enum Phase<'a> {
@@ -475,22 +496,13 @@ impl Phase<'_> {
                 return Err(Interrupted::UsbDetached);
             }
             Input::Command(DeviceCommand::Push(clip)) => {
-                let error = match self {
-                    Self::Session(active) if active.ready.get() => {
-                        match active.commands.try_send(DeviceCommand::Push(clip)) {
-                            Ok(()) => {
-                                active.pushes.set(active.pushes.get() + 1);
-                                return Ok(());
-                            }
-                            Err(mpsc::error::TrySendError::Full(_)) => PasteboardError::PushBusy,
-                            Err(mpsc::error::TrySendError::Closed(_)) => {
-                                PasteboardError::Disconnected
-                            }
-                        }
-                    }
-                    _ => PasteboardError::Disconnected,
+                let result = match self {
+                    Self::Session(active) => active.queue_push(clip),
+                    _ => Err(PasteboardError::Disconnected),
                 };
-                emit_event(emit, DeviceEvent::PushResult(Err(error)))?;
+                if result.is_err() {
+                    emit_event(emit, DeviceEvent::PushResult(result))?;
+                }
             }
             _ => {}
         }

@@ -2,7 +2,6 @@ use std::{ops::ControlFlow, path::Path};
 
 use copiago_core::ddi::DdiStage;
 use idevice::{rsd::RsdHandshake, tcp::handle::AdapterHandle, usbmuxd::UsbmuxdAddr};
-use tokio::sync::mpsc;
 
 use crate::{
     DeviceCommand, DeviceEvent, PasteboardError, UsbProbeError, WifiProbeError,
@@ -11,7 +10,7 @@ use crate::{
     wifi::{PairedDevice, WifiProbeOptions, WifiTunnel, find_paired_device, open_wifi_tunnel},
 };
 
-use super::{Backend, DeviceRunOptions, Failure, Transport};
+use super::{Backend, DeviceRunOptions, Failure, PushQueue, Transport};
 
 mod device_info;
 
@@ -35,7 +34,7 @@ impl Backend for NativeDevice<'_> {
         device: &PairedDevice,
         transport: Transport,
         clipboard: &mut PasteboardState,
-        commands: &mut mpsc::Receiver<DeviceCommand>,
+        pushes: &PushQueue,
         emit: impl Fn(DeviceEvent) -> ControlFlow<()>,
     ) -> Result<(), Failure> {
         let mut tunnel = self.open(device, transport).await?;
@@ -60,7 +59,7 @@ impl Backend for NativeDevice<'_> {
                     wireless,
                     self.options.language,
                     clipboard,
-                    Some(commands),
+                    async || Some(DeviceCommand::Push(pushes.recv().await)),
                     emit,
                 )
                 .await

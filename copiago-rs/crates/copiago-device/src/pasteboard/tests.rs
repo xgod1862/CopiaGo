@@ -4,7 +4,10 @@ use std::future::pending;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use copiago_core::clip::{Clip, FileOffer};
 use plist::Value;
-use tokio::time::{advance, sleep};
+use tokio::{
+    sync::mpsc,
+    time::{advance, sleep},
+};
 
 use super::content::Snapshot;
 use super::file_offer::FILE_DESCRIPTOR;
@@ -136,7 +139,7 @@ async fn watch_read_only(
         wireless,
         language,
         &mut PasteboardState::default(),
-        None,
+        async || pending().await,
         emit,
     )
     .await
@@ -805,7 +808,7 @@ async fn reconnect_baseline_marks_only_the_disconnected_clip() {
             true,
             Language::ZhCn,
             &mut state,
-            None,
+            async || pending().await,
             |event| {
                 if let DeviceEvent::Clip {
                     clip: Clip::Text(text),
@@ -857,7 +860,7 @@ async fn reconnect_preserves_the_echo_window() {
         true,
         Language::ZhCn,
         &mut state,
-        None,
+        async || pending().await,
         |event| {
             if let DeviceEvent::Clip {
                 clip: Clip::Text(text),
@@ -942,7 +945,7 @@ async fn push_and_pull_round_trip_while_suppressing_both_kinds_of_echo() {
             false,
             Language::ZhCn,
             &mut PasteboardState::default(),
-            Some(&mut commands),
+            async || commands.recv().await,
             |event| {
                 match event {
                     DeviceEvent::Status(..) => {
@@ -1050,7 +1053,7 @@ async fn failed_push_reports_an_error_and_leaves_the_session_available() {
         false,
         Language::ZhCn,
         &mut PasteboardState::default(),
-        Some(&mut commands),
+        async || commands.recv().await,
         |event| {
             match event {
                 DeviceEvent::Status(..) => {

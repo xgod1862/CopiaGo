@@ -12,16 +12,25 @@ idevice = { version = "=0.1.68", default-features = false, features = [
     "ring",
     "usbmuxd",
     "core_device_proxy",
+    "remote_pairing",
     "tunnel_tcp_stack",
     "rsd",
 ] }
-tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "sync", "time"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_Dns",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
 zeroize = "1.9"
 
 [target.'cfg(windows)'.dev-dependencies]
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 plist = { version = "1", default-features = false }
-tokio = { version = "1", default-features = false, features = ["io-util"] }
+tokio = { version = "1", default-features = false, features = ["io-util", "macros", "test-util"] }
 
 [lints]
 workspace = true

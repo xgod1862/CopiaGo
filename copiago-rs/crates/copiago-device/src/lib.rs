@@ -2,6 +2,9 @@
 
 #[cfg(windows)]
 mod contract;
+
+#[cfg(windows)]
+pub mod discovery;
 #[cfg(windows)]
 mod usb;
 

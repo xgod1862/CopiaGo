@@ -10,6 +10,8 @@ pub mod i18n;
 #[cfg(windows)]
 pub mod paths;
 #[cfg(windows)]
+pub mod settings;
+#[cfg(windows)]
 mod win32;
 
 #[cfg(windows)]

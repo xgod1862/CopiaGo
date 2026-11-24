@@ -172,6 +172,32 @@ fn probe_requires_one_usb_device() {
     });
 }
 
+#[test]
+fn pairing_stops_before_prompt_or_writes_when_usb_selection_is_ambiguous() {
+    run(async {
+        let cases = [
+            (vec![mux_device(4, "Network")], UsbProbeError::NoUsbDevice),
+            (
+                vec![mux_device(4, "USB"), mux_device(5, "USB")],
+                UsbProbeError::MultipleUsbDevices(2),
+            ),
+        ];
+        let local = LocalFixture::new();
+        for (devices, expected) in cases {
+            let (addr, task) = mock_device_list(devices).await;
+            let result = pair_over_usb(&addr, &local.root, |_| panic!("prompted for trust")).await;
+            assert_eq!(result, Err(PairingError::Usb(expected)));
+            assert!(
+                fs::read_dir(local.root.join(DEVICE_DATA_DIR))
+                    .unwrap()
+                    .next()
+                    .is_none()
+            );
+            task.await.unwrap();
+        }
+    });
+}
+
 async fn mock_pair_record(response: UsbmuxdServerResponse) -> (UsbmuxdProvider, JoinHandle<()>) {
     let (addr, task) = mock_mux(|request| {
         assert!(matches!(

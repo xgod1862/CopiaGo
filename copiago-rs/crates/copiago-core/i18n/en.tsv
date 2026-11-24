@@ -80,6 +80,7 @@ iPhone 剪贴板历史未开启	iPhone clipboard history is off
 连接与设置	Connection & settings
 退出	Quit
 无法删除配对记录	Could not remove the pairing record.
+当前为只读模式，无法配对	Pairing is unavailable in read-only mode.
 已忘记 iPhone。请用数据线连接后重新配对	iPhone forgotten. Reconnect the USB cable to pair again.
 正在安装 Apple 连接组件，请完成 Windows 提示。	Installing Apple device support. Follow the Windows prompts.
 连接组件已就绪，可以连接 iPhone。	Apple device support is ready. You can connect your iPhone.

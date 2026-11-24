@@ -5,6 +5,8 @@ mod connection;
 #[cfg(windows)]
 mod contract;
 #[cfg(windows)]
+mod device_info;
+#[cfg(windows)]
 pub mod discovery;
 #[cfg(windows)]
 mod pasteboard;

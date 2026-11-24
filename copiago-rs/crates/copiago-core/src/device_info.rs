@@ -43,6 +43,14 @@ impl DeviceInfo {
         atomic::write(&directory.join(INFO_FILE), &sealed)
     }
 
+    /// Removes the cached details, including when no details were saved.
+    pub fn remove(data_dir: &Path) -> io::Result<()> {
+        match fs::remove_file(data_dir.join(DEVICE_DATA_DIR).join(INFO_FILE)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    }
+
     fn read(data_dir: &Path) -> io::Result<Self> {
         let file = Zeroizing::new(fs::read(data_dir.join(DEVICE_DATA_DIR).join(INFO_FILE))?);
         let plaintext = Zeroizing::new(dpapi::unprotect(&file)?);

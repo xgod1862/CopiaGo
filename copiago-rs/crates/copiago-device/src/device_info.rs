@@ -11,7 +11,7 @@ use tracing::{Dispatch, instrument::WithSubscriber};
 
 const NAME_TIMEOUT: Duration = Duration::from_secs(3);
 
-pub(super) async fn read(
+pub(crate) async fn read_rsd(
     adapter: &mut AdapterHandle,
     rsd: &mut RsdHandshake,
     data_dir: &Path,
@@ -32,6 +32,29 @@ pub(super) async fn read(
         info.os_version = version.to_owned();
     }
     info
+}
+
+pub(crate) async fn read_lockdown(lockdown: &mut LockdownClient, data_dir: &Path) -> DeviceInfo {
+    let mut info = DeviceInfo::load(data_dir);
+    if let Some(name) = lockdown_property(lockdown, "DeviceName").await {
+        info.name = name;
+    }
+    if let Some(product) = lockdown_property(lockdown, "ProductType").await {
+        info.model = model_name(&product).to_owned();
+    }
+    if let Some(version) = lockdown_property(lockdown, "ProductVersion").await {
+        info.os_version = version;
+    }
+    info
+}
+
+async fn lockdown_property(lockdown: &mut LockdownClient, key: &str) -> Option<String> {
+    lockdown
+        .get_value(Some(key), None)
+        .await
+        .ok()?
+        .into_string()
+        .filter(|value| !value.is_empty())
 }
 
 async fn lockdown_name(

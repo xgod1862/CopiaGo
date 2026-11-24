@@ -84,7 +84,7 @@ SignTool=CopiaGoRelease
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimp"; MessagesFile: "{#RepoRoot}\source\ChineseSimplified.isl"
+Name: "chinesesimp"; MessagesFile: "{#RepoRoot}\copiago-rs\installer\ChineseSimplified.isl"
 
 [Files]
 #ifdef SignRelease

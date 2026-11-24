@@ -1,9 +1,7 @@
 # Keeps the SHA-pinned actions in .github/workflows current.
 #
-# Python dependencies are left out on purpose. A pymobiledevice3 upgrade also needs DDI_REF,
-# DDI_BUILD and PINNED_FILES in source/iphone_clip/developer_setup.py, and every dependency
-# upgrade needs its license folder under source/licenses updated. An automatic pull request
-# would change requirements.txt alone.
+# Cargo dependencies are left out on purpose. idevice upgrades need the pinned developer image
+# files re-verified, and every dependency change needs cargo-deny and the bundled licenses checked.
 version: 2
 updates:
   - package-ecosystem: github-actions

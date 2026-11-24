@@ -4,72 +4,75 @@
 
 Copy on your iPhone and paste directly into Windows apps. Pair once over USB, then sync wirelessly on the same local network. Your iPhone needs no companion app.
 
-**[Download the Windows x64 installer](https://github.com/xgod1862/CopiaGo/releases/latest)** · [Detailed user guide (Chinese)](source/README.md)
+**[Download the Windows x64 installer](https://github.com/xgod1862/CopiaGo/releases/latest)**
+
+## Requirements
+
+| | Requirement |
+| --- | --- |
+| iPhone | **iOS 17 or later** (iPhone XS / XR and newer). Developer Mode must be on; CopiaGo walks you through it. **iOS 16 and earlier are not supported.** |
+| Windows | **Windows 10 21H2 (build 19044) or later, including Windows 11**, x64. Apple's device connection components are required; CopiaGo prompts you to install [Apple Devices](https://support.apple.com/en-us/118290) if they are missing. |
+| Network | First-time pairing needs a USB cable. Wireless sync then needs the PC and iPhone on the same local network, able to discover each other. The first developer-service setup downloads about 18 MB and requests a signature from Apple. |
 
 ## Quick start
 
-1. Run the installer on Windows. If CopiaGo asks for Apple connection components, install [Apple Devices](https://support.apple.com/en-us/118290).
+1. Run the installer on Windows.
 2. Connect your iPhone with a USB cable and unlock it. Tap **Trust** if your iPhone prompts you, and enable [Developer Mode](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device) when CopiaGo asks.
-3. Select **Connect iPhone** (「连接 iPhone」) in CopiaGo. Once pairing is complete, unplug the cable and wait for the tray panel to show **Connected (Wi-Fi)** (「已连接（无线）」).
+3. Select **Connect iPhone** in CopiaGo. Once pairing is complete, unplug the cable and wait for the tray panel to show **Connected (Wi-Fi)**.
 4. Copy some text on your iPhone and press `Ctrl+V` in a Windows app.
 
-The installer and CopiaGo use your Windows display language to choose English or Simplified Chinese. In CopiaGo, open **Settings → Language** to follow Windows or choose a language manually. Settings are also available from the pairing screen.
+The installer and CopiaGo use your Windows display language to choose English or Simplified Chinese. In CopiaGo, open **Settings → Language** to follow Windows or choose a language manually.
+
+### Upgrading
+
+Run the new installer over the old version. Pairing records, history and settings are kept, so you don't need to pair again. Installations in the old default folder `%LOCALAPPDATA%\Programs\iPhoneClipboard` move to `%LOCALAPPDATA%\Programs\CopiaGo`; a folder you chose yourself stays where it is.
 
 ## Screenshots
 
 | First-time pairing | System tray popup | Clipboard history |
 | --- | --- | --- |
-| [![The CopiaGo guide for pairing an iPhone](docs/images/first-pairing-en.png)](docs/images/first-pairing-en.png) | [![The CopiaGo tray popup with clipboard history off](docs/images/tray-popup-en.png)](docs/images/tray-popup-en.png) | [![CopiaGo clipboard history with text, an image, and a file](docs/images/clipboard-history-en.png)](docs/images/clipboard-history-en.png) |
+| [![CopiaGo first-time pairing guide](docs/images/first-pairing.png)](docs/images/first-pairing.png) | [![CopiaGo system tray popup with clipboard history turned off](docs/images/tray-popup.png)](docs/images/tray-popup.png) | [![CopiaGo clipboard history with text, image, and file entries](docs/images/clipboard-history.png)](docs/images/clipboard-history.png) |
 
-### Interface language
-
-[![CopiaGo Settings showing System, Simplified Chinese, and English language choices](docs/images/language-en.png)](docs/images/language-en.png)
-
-These screenshots show CopiaGo 1.1.0 with a sample connection and clipboard history. Click an image to view it at full size.
+Screenshots are from CopiaGo 1.1.0 with sample connection status and history. Some interface details changed in 1.3.0.
 
 ## What syncs
 
-| Direction | Supported content | Default behavior |
+| Direction | Content | Default behavior |
 | --- | --- | --- |
-| iPhone → Windows | Text, images, and files copied from the Files app | Syncs automatically, with confirmation for large files |
-| Windows → iPhone | Text and images | Automatic sync is off by default. Enable it in Settings or send items manually from Windows clipboard history. |
+| iPhone → Windows | Text, images, and files copied in the Files app | Syncs automatically; asks before large files |
+| Windows → iPhone | Text and images | Turn on automatic sync in Settings, or send items from PC history |
 
-- Both clipboard histories are off by default. Enable either history to view and clear it from the Windows system tray.
-- CopiaGo uses the iPhone's system clipboard developer service, so compatibility depends on the iOS version. For wireless sync, both devices must be able to discover each other on the local network.
-- Image pasting depends on what the source app puts on the clipboard. If it only provides text or a filename, save the image to Photos and copy it from there. Copying videos from Photos is currently unsupported.
+- History for both directions is off by default. Once on, you can view, copy, send and clear it from the Windows tray panel.
+- Image pasting depends on what the source app puts on the clipboard. If an app provides only text or a file name, save the image to Photos first and copy it there. Copying videos from the Photos app is not supported yet.
+- When your iPhone leaves the network, CopiaGo reconnects as soon as it is back, without opening the panel.
 
 ## Privacy
 
-- Wireless sync uses an encrypted tunnel to the paired iPhone. Clipboard contents do not go through a cloud relay.
-- [Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata) protects pairing records and, when history is enabled, saved clipboard contents and previews. Received files are temporarily stored in the data directory's `received` folder.
-- Pair only with Windows computers you trust. When you stop using CopiaGo on a computer, select **Forget this iPhone** (「忘记此 iPhone」) in the tray settings.
-- About 15 seconds after each start, CopiaGo asks GitHub once for the latest release and shows a notice at the bottom of the tray panel when a newer version exists. Nothing is downloaded or installed automatically. GitHub sees this computer's IP address and the CopiaGo version. Turn off **Check for updates at startup** (「启动时检查新版本」) in settings to stop the check.
+- Wireless transfers use the encrypted tunnel to the paired device. CopiaGo does not relay clipboard data through a cloud service.
+- [Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata) protects pairing records and, when history is on, history content and previews. Received files are staged in the `received` folder in the data directory.
+- Pair only with a Windows PC you trust. When you stop using CopiaGo, select **Forget this iPhone** in Settings.
+- About 15 seconds after each launch, CopiaGo checks GitHub once for a newer version. If one is available, the tray panel shows a notice at the bottom; nothing is downloaded or installed automatically. GitHub can see this PC's IP address and the CopiaGo version. Turn off **Check for updates at startup** in Settings to disable it.
 
-## Run or build from source
+## Building from source
 
-Use 64-bit Python 3.12 with Tk. Building the installer also requires Inno Setup 6.
-
-```powershell
-Set-Location source
-py -3.12 -m venv ..\.venv
-$python = '..\.venv\Scripts\python.exe'
-& $python -m pip install -r requirements.txt
-& $python -m unittest discover -s tests
-& $python main.py
-```
-
-Run the following commands from `source` to build the executable and installer.
+CopiaGo is written in Rust; the source is in [`copiago-rs`](copiago-rs). Install [rustup](https://rustup.rs/); `rust-toolchain.toml` selects the toolchain.
 
 ```powershell
-$root = (Resolve-Path ..).Path
-.\build.ps1 -Python $python -DistPath ..\build\dist -BuildPath ..\build\work
-& 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' "/DRoot=$root" .\setup.iss
+Set-Location copiago-rs
+cargo test --workspace --locked
+cargo build --release --locked
 ```
 
-If Inno Setup is installed elsewhere, replace the path to `ISCC.exe`. The installer is written to the `release` directory at the repository root.
+Packaging the installer and portable ZIP also needs [Inno Setup 6](https://jrsoftware.org/isinfo.php). From the repository root:
+
+```powershell
+.\copiago-rs\scripts\build.ps1 -IsccPath 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+```
+
+Packages are written to `copiago-rs\target\packages`. See [copiago-rs/README.md](copiago-rs/README.md) for build, test and upgrade-verification details. The Python code for 1.2.0 and earlier remains in git history and at the [`v1.2.0`](https://github.com/xgod1862/CopiaGo/tree/v1.2.0) tag.
 
 ## Feedback and license
 
 Report issues through [GitHub Issues](https://github.com/xgod1862/CopiaGo/issues/new). Include your Windows, iOS, and CopiaGo versions and steps to reproduce the issue. Remove pairing records, clipboard contents, and other personal information before posting.
 
-CopiaGo is licensed under [GPL-3.0-or-later](LICENSE). See the [third-party licenses](source/licenses) for the notices shipped with the installer. Thanks to [pymobiledevice3](https://github.com/doronz88/pymobiledevice3), [Relais](https://github.com/williamcachamwri/Relais), and the [Inno Setup Simplified Chinese translation](https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation) project.
+CopiaGo is licensed under [GPL-3.0-or-later](LICENSE). Third-party notices distributed with the installer are installed in the `licenses` folder of the program directory. Thanks to [idevice](https://github.com/jkcoxson/idevice), [pymobiledevice3](https://github.com/doronz88/pymobiledevice3), [Relais](https://github.com/williamcachamwri/Relais), and the [Inno Setup Simplified Chinese translation](https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation).

@@ -71,7 +71,7 @@ try {
     $payload = New-Item -ItemType Directory -Path (Join-Path $stage.FullName 'payload')
     Copy-Item -LiteralPath $exe.FullName,(Join-Path $repo 'LICENSE') -Destination $payload.FullName
     $licenses = New-Item -ItemType Directory -Path (Join-Path $payload.FullName 'licenses')
-    $chineseLicense = Join-Path $repo 'source\licenses\inno-setup-zh-cn\LICENSE'
+    $chineseLicense = Join-Path $workspace 'installer\licenses\inno-setup-zh-cn\LICENSE'
     Copy-Item -LiteralPath $chineseLicense -Destination (Join-Path $licenses.FullName 'inno-setup-zh-cn.txt')
     Copy-Item -LiteralPath (Join-Path $workspace 'crates\copiago-ddi\src\setup\idevice-LICENSE.txt'),
         (Join-Path $workspace 'crates\copiago-win\src\update\Unicode-LICENSE.txt') -Destination $licenses.FullName

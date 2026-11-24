@@ -10,7 +10,9 @@ use crate::DeviceEvent;
 
 use super::{PasteboardBackend, PasteboardError, PullPolicy, file_offer, pull};
 
-const INLINE_TEXT: [&str; 3] = ["public.utf8-plain-text", "public.plain-text", "public.text"];
+pub(super) const INLINE_TEXT: [&str; 3] =
+    ["public.utf8-plain-text", "public.plain-text", "public.text"];
+pub(super) const PNG_UTI: &str = "public.png";
 // These also justify the lightweight content request. The current Python
 // reader still extracts text only from the inline UTF-8 representations.
 const DECLARED_TEXT: [&str; 3] = [
@@ -19,7 +21,7 @@ const DECLARED_TEXT: [&str; 3] = [
     "public.url",
 ];
 const IMAGE_FORMATS: [(&str, &str); 6] = [
-    ("public.png", "image/png"),
+    (PNG_UTI, "image/png"),
     ("public.jpeg", "image/jpeg"),
     ("public.heic", "image/heic"),
     ("public.tiff", "image/tiff"),
@@ -48,7 +50,7 @@ impl Snapshot {
         let Some(mut board) = reply.remove("pasteboard").and_then(Value::into_dictionary) else {
             return Ok(Self::default());
         };
-        let change = board.get("metadata").and_then(change_id);
+        let change = change_id(&board);
         let items = board
             .remove("items")
             .and_then(Value::into_array)
@@ -174,8 +176,8 @@ impl Item {
     }
 }
 
-fn change_id(metadata: &Value) -> Option<PasteboardChange> {
-    let metadata = metadata.as_dictionary()?;
+pub(super) fn change_id(board: &Dictionary) -> Option<PasteboardChange> {
+    let metadata = board.get("metadata")?.as_dictionary()?;
     let count = metadata.get("changeCount")?.as_signed_integer()?;
     // Keep a typed representation: equal-looking text and binary nonces are
     // different. RemoteXPC maps XPC null to an empty plist string.

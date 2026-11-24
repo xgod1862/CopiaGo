@@ -186,6 +186,25 @@ fn local_record_path_cannot_use_an_unsafe_udid() {
     }
 }
 
+#[tokio::test]
+#[ignore = "requires a dedicated trusted USB iPhone with an empty pasteboard"]
+async fn usb_push_round_trip() {
+    let root =
+        std::env::var_os("ICB_DATA_DIR").expect("set ICB_DATA_DIR to an isolated test directory");
+    let addr = UsbmuxdAddr::default();
+    let (mut tunnel, _) = timeout(
+        PROBE_TIMEOUT,
+        open_single_usb_tunnel(&addr, Path::new(&root)),
+    )
+    .with_subscriber(Dispatch::none())
+    .await
+    .expect("USB tunnel timed out")
+    .expect("USB tunnel unavailable");
+    let checked = crate::pasteboard::verify_push_round_trip(&mut tunnel.adapter, &tunnel.rsd).await;
+    let _ = tunnel.adapter.close().await;
+    checked.expect("USB clipboard round trip");
+}
+
 struct LocalFixture {
     root: PathBuf,
     file: PathBuf,

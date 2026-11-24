@@ -14,4 +14,6 @@ pub use contract::{ConnState, DeviceCommand, DeviceEvent};
 #[cfg(windows)]
 pub use pasteboard::PasteboardError;
 #[cfg(windows)]
-pub use usb::{PairingRecordSource, UsbProbe, UsbProbeError, UsbWatchError, probe_usb, watch_usb};
+pub use usb::{
+    PairingRecordSource, UsbProbe, UsbProbeError, UsbWatchError, probe_usb, sync_usb, watch_usb,
+};

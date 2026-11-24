@@ -1,9 +1,10 @@
 use std::collections::VecDeque;
 use std::future::pending;
 
-use copiago_core::clip::Clip;
+use base64::{Engine, engine::general_purpose::STANDARD};
+use copiago_core::clip::{Clip, FileOffer};
 use plist::Value;
-use tokio::time::sleep;
+use tokio::time::{advance, sleep};
 
 use super::content::Snapshot;
 use super::file_offer::FILE_DESCRIPTOR;
@@ -15,8 +16,27 @@ const PNG: &str = "public.png";
 const JPEG: &str = "public.jpeg";
 const HEIC: &str = "public.heic";
 const WEB_ARCHIVE: &str = "com.apple.webarchive";
+pub(super) const PUSH_TEXT: &str = "你好😀";
 
-struct FakeBackend(VecDeque<(PullPolicy, Duration, Result<Snapshot, PasteboardError>)>);
+pub(super) fn push_png() -> Vec<u8> {
+    // Synthetic 1×1 RGBA PNG with a translucent pixel.
+    STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQOKDQAAADRQFx69dJcgAAAABJRU5ErkJggg==").unwrap()
+}
+
+enum Request {
+    Pull {
+        policy: PullPolicy,
+        delay: Duration,
+        result: Result<Snapshot, PasteboardError>,
+    },
+    Set {
+        item: SetItem,
+        delay: Duration,
+        result: Result<Option<PasteboardChange>, PasteboardError>,
+    },
+}
+
+struct FakeBackend(VecDeque<Request>);
 
 impl FakeBackend {
     fn new() -> Self {
@@ -24,19 +44,43 @@ impl FakeBackend {
     }
 
     fn answer(mut self, policy: PullPolicy, snapshot: Snapshot) -> Self {
-        self.0.push_back((policy, Duration::ZERO, Ok(snapshot)));
+        self.0.push_back(Request::Pull {
+            policy,
+            delay: Duration::ZERO,
+            result: Ok(snapshot),
+        });
         self
     }
 
     fn delay(mut self, policy: PullPolicy, seconds: u64, snapshot: Snapshot) -> Self {
-        self.0
-            .push_back((policy, Duration::from_secs(seconds), Ok(snapshot)));
+        self.0.push_back(Request::Pull {
+            policy,
+            delay: Duration::from_secs(seconds),
+            result: Ok(snapshot),
+        });
         self
     }
 
     fn error(mut self, policy: PullPolicy) -> Self {
-        self.0
-            .push_back((policy, Duration::ZERO, Err(PasteboardError::RequestFailed)));
+        self.0.push_back(Request::Pull {
+            policy,
+            delay: Duration::ZERO,
+            result: Err(PasteboardError::RequestFailed),
+        });
+        self
+    }
+
+    fn expect_set(
+        mut self,
+        item: SetItem,
+        delay: Duration,
+        result: Result<Option<PasteboardChange>, PasteboardError>,
+    ) -> Self {
+        self.0.push_back(Request::Set {
+            item,
+            delay,
+            result,
+        });
         self
     }
 
@@ -47,13 +91,56 @@ impl FakeBackend {
 
 impl PasteboardBackend for FakeBackend {
     async fn pull(&mut self, policy: PullPolicy) -> Result<Snapshot, PasteboardError> {
-        let (expected, delay, result) = self.0.pop_front().expect("unexpected request");
+        let Some(Request::Pull {
+            policy: expected,
+            delay,
+            result,
+        }) = self.0.pop_front()
+        else {
+            panic!("unexpected PULL");
+        };
         assert_eq!(policy, expected);
         if !delay.is_zero() {
             sleep(delay).await;
         }
         result
     }
+
+    async fn set(&mut self, item: SetItem) -> Result<Option<PasteboardChange>, PasteboardError> {
+        let Some(Request::Set {
+            item: expected,
+            delay,
+            result,
+        }) = self.0.pop_front()
+        else {
+            panic!("unexpected SET");
+        };
+        assert!(item == expected, "unexpected SET payload");
+        if !delay.is_zero() {
+            sleep(delay).await;
+        }
+        result
+    }
+}
+
+async fn watch_read_only(
+    backend: &mut FakeBackend,
+    receive: impl AsyncFnMut() -> Result<String, PasteboardError>,
+    wireless: bool,
+    language: Language,
+    emit: impl FnMut(DeviceEvent) -> ControlFlow<()>,
+) -> Result<(), PasteboardError> {
+    watch(
+        backend,
+        receive,
+        wireless,
+        language,
+        &mut PasteboardState::default(),
+        None,
+        emit,
+    )
+    .await
+    .map(|_| ())
 }
 
 fn dictionary<const N: usize>(fields: [(&str, Value); N]) -> Value {
@@ -448,7 +535,7 @@ async fn notifications_trigger_a_pull_before_the_poll_interval() {
         let started = Instant::now();
         let mut names = VecDeque::from(["unrelated notification", notification]);
         let mut ready = false;
-        watch(
+        watch_read_only(
             &mut backend,
             async || match names.pop_front() {
                 Some(name) => {
@@ -503,7 +590,7 @@ async fn two_second_poll_detects_nonce_change_at_the_same_count() {
             ),
         );
     let started = Instant::now();
-    watch(&mut backend, pending, false, Language::ZhCn, |event| {
+    watch_read_only(&mut backend, pending, false, Language::ZhCn, |event| {
         if matches!(event, DeviceEvent::Status(..)) {
             return ControlFlow::Continue(());
         }
@@ -548,7 +635,7 @@ async fn notes_64_second_response_times_out_and_next_copy_arrives() {
     let started = Instant::now();
     let mut signals = VecDeque::from([50, 30_500, 31_000]);
     let mut saw_timeout = false;
-    watch(
+    watch_read_only(
         &mut backend,
         async || {
             if let Some(millis) = signals.pop_front() {
@@ -613,7 +700,7 @@ async fn listing_timeout_retries_after_five_seconds() {
         .answer(PullPolicy::PromiseSecondary, text_at(2, "after retry"));
     let started = Instant::now();
     let mut triggered = false;
-    watch(
+    watch_read_only(
         &mut backend,
         async || {
             if triggered {
@@ -650,7 +737,7 @@ async fn three_consecutive_failed_polls_end_the_watch() {
         .error(PullPolicy::AllPromised)
         .error(PullPolicy::AllPromised)
         .error(PullPolicy::AllPromised);
-    let result = watch(&mut backend, pending, false, Language::ZhCn, |event| {
+    let result = watch_read_only(&mut backend, pending, false, Language::ZhCn, |event| {
         assert!(matches!(event, DeviceEvent::Status(..)));
         ControlFlow::Continue(())
     })
@@ -662,7 +749,7 @@ async fn three_consecutive_failed_polls_end_the_watch() {
 #[tokio::test(start_paused = true)]
 async fn notification_stream_end_is_reported() {
     let mut backend = FakeBackend::new().answer(PullPolicy::AllPromised, snapshot(1, &[TEXT], []));
-    let result = watch(
+    let result = watch_read_only(
         &mut backend,
         async || {
             sleep(Duration::from_millis(50)).await;
@@ -677,5 +764,231 @@ async fn notification_stream_end_is_reported() {
     )
     .await;
     assert_eq!(result, Err(PasteboardError::NotificationsClosed));
+    backend.verify();
+}
+
+#[tokio::test(start_paused = true)]
+async fn push_and_pull_round_trip_while_suppressing_both_kinds_of_echo() {
+    for (uti, bytes, clip, payload) in [
+        (
+            TEXT,
+            PUSH_TEXT.as_bytes().to_vec(),
+            Clip::Text(PUSH_TEXT.to_owned()),
+            SetItem::Text(PUSH_TEXT.to_owned()),
+        ),
+        (
+            PNG,
+            push_png(),
+            Clip::Image {
+                bytes: push_png(),
+                uti: PNG.to_owned(),
+            },
+            SetItem::Png(push_png()),
+        ),
+    ] {
+        let read_back = || snapshot(3, &[uti], [(uti, inline(&bytes))]);
+        let decoded = next_update(
+            FakeBackend::new()
+                .answer(PullPolicy::AllPromised, snapshot(3, &[uti], []))
+                .answer(PullPolicy::PromiseSecondary, read_back()),
+        )
+        .await;
+        assert_clip(decoded.event, clip.clone());
+        let different_nonce = |entries| {
+            board(
+                metadata("new daemon".into(), 3),
+                vec![item(&[TEXT], entries)],
+            )
+        };
+        let mut backend = FakeBackend::new()
+            .answer(PullPolicy::AllPromised, snapshot(1, &[TEXT], []))
+            .expect_set(
+                payload,
+                Duration::from_millis(200),
+                Ok(snapshot(2, &[uti], []).change),
+            )
+            .answer(PullPolicy::AllPromised, snapshot(2, &[uti], []))
+            .answer(PullPolicy::AllPromised, snapshot(3, &[uti], []))
+            .answer(PullPolicy::PromiseSecondary, read_back())
+            .answer(PullPolicy::AllPromised, different_nonce(dictionary([])))
+            .answer(
+                PullPolicy::PromiseSecondary,
+                different_nonce(dictionary([(TEXT, inline(b"new phone content"))])),
+            );
+        let (sender, mut commands) = mpsc::channel(1);
+        let started = Instant::now();
+        // The first notification arrives while SET is still awaiting its reply.
+        let mut signals = VecDeque::from([10, 300, 400]);
+        let mut pushed = Some(clip);
+        let mut successful_set = false;
+        let result = watch(
+            &mut backend,
+            async || match signals.pop_front() {
+                Some(millis) => {
+                    sleep_until(started + Duration::from_millis(millis)).await;
+                    Ok(NOTIFICATIONS[0].to_owned())
+                }
+                None => pending().await,
+            },
+            false,
+            Language::ZhCn,
+            &mut PasteboardState::default(),
+            Some(&mut commands),
+            |event| {
+                match event {
+                    DeviceEvent::Status(..) => {
+                        assert!(
+                            sender
+                                .try_send(DeviceCommand::Push(pushed.take().unwrap()))
+                                .is_ok()
+                        );
+                    }
+                    DeviceEvent::PushResult(Ok(())) => successful_set = true,
+                    event => {
+                        assert!(successful_set);
+                        assert_clip(Some(event), Clip::Text("new phone content".to_owned()));
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            },
+        )
+        .await;
+        assert!(matches!(result, Ok(None)));
+        backend.verify();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn echo_window_ends_at_120_seconds_from_set_start() {
+    let clip = Clip::Text(PUSH_TEXT.to_owned());
+    let mut state = PasteboardState::default();
+    let mut backend = FakeBackend::new().expect_set(
+        SetItem::Text(PUSH_TEXT.to_owned()),
+        Duration::from_secs(1),
+        Ok(None),
+    );
+    assert!(!state.is_echo(&clip));
+    let started = Instant::now();
+    state.push(&mut backend, clip.clone()).await.unwrap();
+    assert!(state.is_echo(&clip));
+    assert!(!state.is_echo(&Clip::Text("other text".to_owned())));
+    let before_expiry = ECHO_WINDOW - Duration::from_millis(1);
+    advance(before_expiry - started.elapsed()).await;
+    assert!(state.is_echo(&clip));
+    advance(Duration::from_millis(1)).await;
+    assert!(!state.is_echo(&clip));
+    backend.verify();
+}
+
+#[tokio::test(start_paused = true)]
+async fn set_timeout_and_missing_count_keep_the_previous_change() {
+    let mut state = PasteboardState {
+        last_change: snapshot(4, &[TEXT], []).change,
+        ..PasteboardState::default()
+    };
+    let initial = state.last_change.clone();
+    let mut backend = FakeBackend::new()
+        .expect_set(SetItem::Text("first".to_owned()), Duration::ZERO, Ok(None))
+        .expect_set(
+            SetItem::Text("second".to_owned()),
+            Duration::from_secs(64),
+            Ok(snapshot(5, &[TEXT], []).change),
+        );
+    let first = Clip::Text("first".to_owned());
+    state.push(&mut backend, first.clone()).await.unwrap();
+    assert!(state.last_change == initial);
+    assert!(state.is_echo(&first));
+
+    let second = Clip::Text("second".to_owned());
+    let started = Instant::now();
+    assert_eq!(
+        state.push(&mut backend, second.clone()).await,
+        Err(PasteboardError::RequestTimeout),
+    );
+    assert!(started.elapsed() >= SET_TIMEOUT);
+    assert!(started.elapsed() < SET_TIMEOUT + Duration::from_millis(100));
+    assert!(state.last_change == initial);
+    assert!(!state.is_echo(&first));
+    assert!(state.is_echo(&second));
+    backend.verify();
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_push_reports_an_error_and_leaves_the_session_available() {
+    let mut backend = FakeBackend::new()
+        .answer(PullPolicy::AllPromised, snapshot(1, &[TEXT], []))
+        .expect_set(
+            SetItem::Text(PUSH_TEXT.to_owned()),
+            Duration::ZERO,
+            Err(PasteboardError::RequestFailed),
+        )
+        .answer(PullPolicy::AllPromised, snapshot(2, &[TEXT], []))
+        .answer(PullPolicy::PromiseSecondary, text_at(2, "a phone copy"));
+    let (sender, mut commands) = mpsc::channel(1);
+    let mut signaled = false;
+    let mut saw_error = false;
+    let result = watch(
+        &mut backend,
+        async || {
+            if signaled {
+                return pending().await;
+            }
+            signaled = true;
+            sleep(Duration::from_millis(50)).await;
+            Ok(NOTIFICATIONS[0].to_owned())
+        },
+        false,
+        Language::ZhCn,
+        &mut PasteboardState::default(),
+        Some(&mut commands),
+        |event| {
+            match event {
+                DeviceEvent::Status(..) => {
+                    let push = DeviceCommand::Push(Clip::Text(PUSH_TEXT.to_owned()));
+                    assert!(sender.try_send(push).is_ok());
+                }
+                DeviceEvent::PushResult(Err(PasteboardError::RequestFailed)) => saw_error = true,
+                event => {
+                    assert!(saw_error);
+                    assert_clip(Some(event), Clip::Text("a phone copy".to_owned()));
+                    assert!(sender.try_send(DeviceCommand::Retry).is_ok());
+                }
+            }
+            ControlFlow::Continue(())
+        },
+    )
+    .await;
+    assert!(matches!(result, Ok(Some(DeviceCommand::Retry))));
+    backend.verify();
+}
+
+#[tokio::test]
+async fn an_offer_and_unprepared_images_never_reach_set() {
+    let mut backend = FakeBackend::new();
+    let mut state = PasteboardState::default();
+    for clip in [
+        Clip::File(FileOffer {
+            name: "sample.txt".to_owned(),
+            uti: TEXT.to_owned(),
+            size: 4,
+            change: None,
+            data: Some(b"test".to_vec()),
+        }),
+        Clip::Image {
+            bytes: vec![1],
+            uti: JPEG.to_owned(),
+        },
+        Clip::Image {
+            bytes: Vec::new(),
+            uti: PNG.to_owned(),
+        },
+    ] {
+        assert_eq!(
+            state.push(&mut backend, clip).await,
+            Err(PasteboardError::UnsupportedPush),
+        );
+    }
+    assert!(state.last_push.is_none());
     backend.verify();
 }

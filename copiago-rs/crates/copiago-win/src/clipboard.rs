@@ -1,6 +1,5 @@
 //! Read and write the current Windows clipboard without exposing its contents to logs.
 
-mod image;
 mod memory;
 #[cfg(test)]
 mod tests;
@@ -29,10 +28,10 @@ use windows_sys::w;
 
 pub use windows_sys::Win32::UI::WindowsAndMessaging::WM_CLIPBOARDUPDATE;
 
-use self::memory::{LockedMemory, OwnedMemory};
+use crate::image::{self, ImageError};
+pub use crate::image::{MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS};
 
-pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_IMAGE_PIXELS: u64 = 50_000_000;
+use self::memory::{LockedMemory, OwnedMemory};
 
 #[derive(Debug)]
 pub enum ClipboardError {
@@ -70,6 +69,16 @@ impl From<io::Error> for ClipboardError {
 impl From<windows::core::Error> for ClipboardError {
     fn from(error: windows::core::Error) -> Self {
         Self::ImageCodec(error.code().0)
+    }
+}
+
+impl From<ImageError> for ClipboardError {
+    fn from(error: ImageError) -> Self {
+        match error {
+            ImageError::InvalidImage => Self::InvalidImage,
+            ImageError::ImageTooLarge => Self::ImageTooLarge,
+            ImageError::Codec(code) => Self::ImageCodec(code),
+        }
     }
 }
 
@@ -149,7 +158,7 @@ impl Clipboard {
 
     /// Publishes an alpha-capable DIBV5 bitmap and a PNG representation.
     pub fn write_image(&self, encoded: &[u8]) -> Result<()> {
-        let (dib, png) = image::prepare_write(encoded)?;
+        let (dib, png) = prepare_image_write(encoded)?;
         self.write([(CF_DIBV5.into(), dib), (self.formats.png, png)])
     }
 
@@ -184,6 +193,18 @@ impl Clipboard {
             Ok(())
         })
     }
+}
+
+fn prepare_image_write(encoded: &[u8]) -> Result<(OwnedMemory, OwnedMemory)> {
+    image::with_clipboard_source(encoded, |factory, source, size, original_png| {
+        let mut dib = OwnedMemory::new(size.dib_bytes())?;
+        dib.with_bytes(|data| image::write_dib_v5(source, size, data))??;
+        let png = match original_png {
+            Some(png) => OwnedMemory::from_bytes(png)?,
+            None => OwnedMemory::from_bytes(&image::encode_source_png(factory, source, size)?)?,
+        };
+        Ok((dib, png))
+    })?
 }
 
 impl Drop for Clipboard {

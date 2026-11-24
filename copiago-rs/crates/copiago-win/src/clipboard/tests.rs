@@ -72,7 +72,7 @@ fn image_limits_and_padding() {
     assert!(image::png_payload(&padded).is_ok_and(|data| data == PNG));
     assert!(matches!(
         image::png_payload(&PNG[..PNG.len() - 1]),
-        Err(ClipboardError::InvalidImage)
+        Err(ImageError::InvalidImage)
     ));
 
     let mut max_pixels = PNG.to_vec();
@@ -81,13 +81,13 @@ fn image_limits_and_padding() {
     // The envelope reader checks dimensions before handing the stream to WIC.
     assert!(image::png_payload(&max_pixels).is_ok());
     assert!(matches!(
-        image::prepare_write(&oversized_png()),
+        prepare_image_write(&oversized_png()),
         Err(ClipboardError::ImageTooLarge)
     ));
 
     let too_many_bytes = vec![0; MAX_IMAGE_BYTES + 1];
     assert!(matches!(
-        image::prepare_write(&too_many_bytes),
+        prepare_image_write(&too_many_bytes),
         Err(ClipboardError::ImageTooLarge)
     ));
 
@@ -95,7 +95,7 @@ fn image_limits_and_padding() {
     oversized_length[33..37].copy_from_slice(&(MAX_IMAGE_BYTES as u32).to_be_bytes());
     assert!(matches!(
         image::png_payload(&oversized_length),
-        Err(ClipboardError::ImageTooLarge)
+        Err(ImageError::ImageTooLarge)
     ));
 
     let mut large_bmp = dib24();
@@ -103,13 +103,13 @@ fn image_limits_and_padding() {
     large_bmp[8..12].copy_from_slice(&5_000i32.to_le_bytes());
     assert!(matches!(
         image::dib_as_bmp(&large_bmp),
-        Err(ClipboardError::ImageTooLarge)
+        Err(ImageError::ImageTooLarge)
     ));
 }
 
 #[test]
 fn wic_preserves_alpha_in_png_and_dib_v5() {
-    let (mut dib, mut png) = image::prepare_write(PNG).unwrap();
+    let (mut dib, mut png) = prepare_image_write(PNG).unwrap();
     png.with_bytes(|data| assert!(*data == *PNG)).unwrap();
     let bmp = dib
         .with_bytes(|data| {
@@ -126,7 +126,10 @@ fn wic_preserves_alpha_in_png_and_dib_v5() {
 
 #[test]
 fn wic_applies_tiff_orientation_to_both_formats() {
-    let (mut dib, mut png) = image::prepare_write(&tiff_with_orientation(5)).unwrap();
+    let tiff = tiff_with_orientation(5);
+    let preview = image::decode_scaled(&tiff, 88, 56).unwrap();
+    assert_eq!(preview.dimensions(), (2, 1)); // Python history uses stored orientation.
+    let (mut dib, mut png) = prepare_image_write(&tiff).unwrap();
     let expected = &[3, 2, 1, 255, 6, 5, 4, 255];
     dib.with_bytes(|data| {
         assert!(data[4..8] == 1u32.to_le_bytes());
@@ -368,7 +371,7 @@ fn dib24() -> Vec<u8> {
 }
 
 fn assert_png_pixels(png: &[u8], expected: &[u8]) {
-    let (mut dib, _) = image::prepare_write(png).expect("decode PNG for pixel validation");
+    let (mut dib, _) = prepare_image_write(png).expect("decode PNG for pixel validation");
     dib.with_bytes(|data| {
         assert!(data.get(DIB_V5_HEADER_BYTES..) == Some(expected));
     })

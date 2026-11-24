@@ -191,7 +191,7 @@ copiago-rs/
 | F-HIST-1 | 与 Python 共用 `history.sqlite3`：表 `items(id INTEGER PRIMARY KEY, created TEXT, kind TEXT, preview BLOB, payload BLOB, source TEXT DEFAULT 'phone')`，`PRAGMA secure_delete = ON`；没有 `source` 列时自动 `ALTER TABLE`。 |
 | F-HIST-2 | 两个列表 `phone`/`pc` 各自限制：≤ 50 条、≤ 128 MB，单条 ≤ 32 MB；与上一条内容相同则不重复插入（逻辑同 `history.py::add`）。 |
 | F-HIST-3 | 实现优先用系统 `winsqlite3.dll`（动态加载）。若它在目标系统上不可用或 API 不全，再改用 `rusqlite` bundled，并在体积报告里记录增量。 |
-| F-HIST-4 | 关闭"保存历史"时清空对应列表。 |
+| F-HIST-4 | 关闭相应来源的"保存历史"开关后停止记录，保留已有条目。可通过"清空"操作独立删除对应列表的全部条目。行为以 `ui.py::change_history`、`change_pc_history`、`clear_items` 为准。 |
 
 ### 4.9 图片处理（win）
 
@@ -367,7 +367,7 @@ copiago-rs/
 - [ ] 电脑睡眠唤醒、切换 Wi‑Fi、开关 VPN → 自动恢复
 - [ ] 所有设置项生效且重启后保留；语言切换即时生效
 - [ ] 忘记设备 → 需要重新 USB 配对
-- [ ] 历史：两个列表、上限、删除、清空、关闭保存后清空
+- [ ] 历史：两个列表、上限、删除单条、独立清空对应列表、关闭保存后停止记录并保留已有历史
 - [ ] 开机启动开关与注册表一致
 - [ ] 更新检查提示与跳转
 - [ ] Python 1.2.0 数据目录原样接管

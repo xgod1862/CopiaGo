@@ -110,7 +110,7 @@ Name: startup; Description: "{cm:StartAtSignIn}"; Flags: checkedonce
 
 [Registry]
 Root: HKCU; Subkey: "{#StartupKey}"; ValueType: string; ValueName: "{#StartupValue}"; ValueData: """{app}\{#AppExeName}"" --minimized"; Tasks: startup; Flags: uninsdeletevalue
-Root: HKCU; Subkey: "{#StartupKey}"; ValueType: none; ValueName: "{#StartupValue}"; Tasks: not startup; Check: HasPythonStartup; Flags: deletevalue dontcreatekey
+Root: HKCU; Subkey: "{#StartupKey}"; ValueType: none; ValueName: "{#StartupValue}"; Tasks: not startup; Check: HasInstalledStartup; Flags: deletevalue dontcreatekey
 ; The app can enable startup after setup.
 Root: HKCU; Subkey: "{#StartupKey}"; ValueType: none; ValueName: "{#StartupValue}"; Flags: uninsdeletevalue dontcreatekey
 

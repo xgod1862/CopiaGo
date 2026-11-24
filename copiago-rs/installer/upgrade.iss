@@ -119,18 +119,20 @@ begin
   end;
 end;
 
-function PythonStartupIn(Directory: String): Boolean;
+function InstalledStartupIn(Directory: String): Boolean;
 var
-  Command: String;
+  Command, Prefix: String;
 begin
-  // Match the Python settings page's exact command comparison.
+  // Match the exact commands written by either version in this directory.
+  Prefix := '"' + AddBackslash(Directory);
   Result := RegQueryStringValue(HKCU, '{#StartupKey}', '{#StartupValue}', Command) and
-    (Command = '"' + AddBackslash(Directory) + '{#PythonExeName}" --minimized');
+    ((Command = Prefix + '{#PythonExeName}" --minimized') or
+     (Command = Prefix + '{#AppExeName}" --minimized'));
 end;
 
-function HasPythonStartup: Boolean;
+function HasInstalledStartup: Boolean;
 begin
-  Result := PythonStartupIn(ExpandConstant('{app}'));
+  Result := InstalledStartupIn(ExpandConstant('{app}'));
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -154,8 +156,9 @@ begin
   if StartupTaskDir = '' then
     DefaultStartupTask := WizardIsTaskSelected('startup');
   StartupTaskDir := Directory;
-  if FileExists(AddBackslash(Directory) + '{#PythonExeName}') then
-    SelectStartup := PythonStartupIn(Directory)
+  if FileExists(AddBackslash(Directory) + '{#PythonExeName}') or
+     FileExists(AddBackslash(Directory) + '{#AppExeName}') then
+    SelectStartup := InstalledStartupIn(Directory)
   else
     SelectStartup := DefaultStartupTask;
   if SelectStartup then

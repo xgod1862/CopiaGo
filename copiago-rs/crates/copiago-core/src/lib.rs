@@ -6,6 +6,7 @@ pub mod atomic;
 pub mod device_info;
 #[cfg(windows)]
 pub mod dpapi;
+pub mod i18n;
 #[cfg(windows)]
 pub mod paths;
 #[cfg(windows)]

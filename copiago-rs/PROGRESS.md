@@ -10,7 +10,7 @@
 | T-DEV-01 | 待真机验证 | — | USB 隧道和设备公共接口已集成。本机 usbmuxd 可用，待接单台已信任 iPhone 验证 RSD |
 | T-DEV-02 | 待真机验证 | — | 通知、2 秒轮询及剪贴板拉取的 20 项单测通过，待 USB 真机验证事件延迟与 Notes |
 | T-DEV-03 | 待办 | — | |
-| T-DEV-04 | 待办 | — | |
+| T-DEV-04 | 已合并 | — | 真机自动发现和显式 IPv4 均完成 pair-verify/RSD。临时 DPAPI 写回和 Python 互通通过 |
 | T-DEV-05 | 待办 | — | |
 | T-DEV-06 | 已合并 | — | 原生 mDNS 在物理 Wi-Fi 与虚拟网卡并存时实机匹配 8/8，正常间隔均 < 1 s |
 | T-WIN-01 | 已合并 | — | 真实 Windows runner 剪贴板通过文本、透明 PNG、DIB、文件及监听与隐私标记验收 |

@@ -8,6 +8,8 @@ pub mod discovery;
 mod pasteboard;
 #[cfg(windows)]
 mod usb;
+#[cfg(windows)]
+mod wifi;
 
 #[cfg(windows)]
 pub use contract::{ConnState, DeviceCommand, DeviceEvent};
@@ -15,3 +17,5 @@ pub use contract::{ConnState, DeviceCommand, DeviceEvent};
 pub use pasteboard::PasteboardError;
 #[cfg(windows)]
 pub use usb::{PairingRecordSource, UsbProbe, UsbProbeError, UsbWatchError, probe_usb, watch_usb};
+#[cfg(windows)]
+pub use wifi::{IdentifierMigration, WifiProbe, WifiProbeError, WifiProbeOptions, probe_wifi};

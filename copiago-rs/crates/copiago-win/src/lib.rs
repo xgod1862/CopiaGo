@@ -6,3 +6,11 @@ pub mod clipboard;
 pub mod http;
 #[cfg(windows)]
 pub mod image;
+#[cfg(windows)]
+pub mod instance;
+#[cfg(windows)]
+mod registry;
+#[cfg(windows)]
+pub mod startup;
+#[cfg(windows)]
+pub mod tray;

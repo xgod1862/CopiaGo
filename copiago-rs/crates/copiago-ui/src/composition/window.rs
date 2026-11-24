@@ -18,7 +18,7 @@ use windows::{
                 RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
                 SWP_SHOWWINDOW, SetForegroundWindow, SetLayeredWindowAttributes, SetWindowLongPtrW,
                 SetWindowPos, ShowWindow, WM_APP, WM_CLOSE, WM_DPICHANGED, WM_NCCREATE,
-                WM_NCDESTROY, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+                WM_NCDESTROY, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
                 WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
                 WS_POPUP,
             },
@@ -32,6 +32,8 @@ use super::{DEFAULT_DPI, PopupBounds, SHADOW_MARGIN, bounded_radius};
 const CLASS: PCWSTR = w!("CopiaGo.CompositionPopup");
 pub(super) const DPI_CHANGED: u32 = WM_APP + 1;
 pub(super) const CLOSE_POPUP: u32 = WM_APP + 2;
+/// A system settings broadcast was received. Re-read system preferences on the UI thread.
+pub const POPUP_SETTINGS_CHANGED: u32 = WM_APP + 3;
 
 type DpiChange = (u32, POINT);
 
@@ -294,6 +296,11 @@ extern "system" fn window_proc(
                     let _ = PostMessageW(Some(hwnd), CLOSE_POPUP, WPARAM(0), LPARAM(0));
                 }
                 return LRESULT(0);
+            }
+            WM_SETTINGCHANGE => {
+                if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != 0 {
+                    let _ = PostMessageW(Some(hwnd), POPUP_SETTINGS_CHANGED, WPARAM(0), LPARAM(0));
+                }
             }
             WM_DPICHANGED => {
                 let change =

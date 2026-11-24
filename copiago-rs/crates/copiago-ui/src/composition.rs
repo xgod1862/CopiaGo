@@ -6,6 +6,7 @@ mod window;
 
 pub use drawing::{Font, TextStyle, TextSurface};
 pub use thread::CompositionThread;
+pub use window::POPUP_SETTINGS_CHANGED;
 
 use std::{cell::OnceCell, rc::Rc};
 

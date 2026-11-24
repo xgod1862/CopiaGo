@@ -17,6 +17,8 @@ cargo build --release
 
 产物位于 `target/release/copiago.exe`。
 
+默认 MSVC 构建静态链接 C 运行库，安装版和便携版均无需另外安装 Visual C++ Redistributable。
+
 ## 安装包与便携版
 
 在仓库根目录运行以下命令。使用 Inno Setup 6.5 或更新的 6.x 版本，按本机路径设置 `-IsccPath`。

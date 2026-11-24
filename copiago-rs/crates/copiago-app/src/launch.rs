@@ -45,6 +45,13 @@ impl Launch {
         } else {
             RunMode::Development
         };
-        paths::data_dir(mode)
+        let target = paths::data_dir(mode)?;
+        if mode == RunMode::Packaged
+            && !portable
+            && env::var_os("ICB_DATA_DIR").is_none_or(|path| path.is_empty())
+        {
+            return paths::prepare_installed_data_dir(target);
+        }
+        Ok(target)
     }
 }

@@ -66,7 +66,12 @@ pub const REPAIR_NOT_INSTALLED: u32 = 3;
 /// Exit code of a repair process that started without administrator rights, which
 /// happens for standard users when UAC is turned off.
 pub const REPAIR_ACCESS_DENIED: u32 = 5;
-/// Apple's USB driver, installed with Apple Mobile Device Support.
+/// Apple's USB driver, installed with Apple Mobile Device Support. Apple ships x64 and
+/// x86 builds only; on other architectures the file is absent and the repair reports
+/// that the components need reinstalling.
+#[cfg(target_arch = "x86")]
+const DRIVER_INF: &str = "Apple\\Mobile Device Support\\Drivers\\usbaapl.inf";
+#[cfg(not(target_arch = "x86"))]
 const DRIVER_INF: &str = "Apple\\Mobile Device Support\\Drivers\\usbaapl64.inf";
 
 const SERVICE_NAME: PCWSTR = w!("Apple Mobile Device Service");

@@ -10,9 +10,9 @@ Copy on your iPhone and paste directly into Windows apps. Pair once over USB, th
 
 | | Requirement |
 | --- | --- |
-| iPhone | **iOS 17 or later** (iPhone XS / XR and newer). Developer Mode must be on; CopiaGo walks you through it. **iOS 16 and earlier are not supported.** |
-| Windows | **Windows 10 21H2 (build 19044) or later, including Windows 11**, x64. Apple's device connection components are required; CopiaGo prompts you to install [Apple Devices](https://support.apple.com/en-us/118290) if they are missing. |
-| Network | First-time pairing needs a USB cable. Wireless sync then needs the PC and iPhone on the same local network, able to discover each other. The first developer-service setup downloads about 18 MB and requests a signature from Apple. |
+| iPhone | **iOS 17 or later** (iPhone XS / XR and newer). Developer Mode must be on; CopiaGo walks you through it. If the switch is not in Settings yet, CopiaGo makes it appear once the phone is connected by USB; turning it on and restarting still happen on the phone. **iOS 16 and earlier are not supported**, and pairing tells you to update. |
+| Windows | **Windows 10 21H2 (build 19044) or later, including Windows 11**, x64. Apple's device connection components (Apple Mobile Device Support) are required. If they are missing, select **Install Apple support** in CopiaGo to install them with the Windows Package Manager (winget). On PCs without winget or Microsoft Store (such as LTSC or trimmed editions), select **Download manually** to get [Apple Devices](https://support.apple.com/en-us/118290) from Microsoft Store, or iTunes from apple.com. |
+| Network | First-time pairing needs a USB cable. Wireless sync then needs the PC and iPhone on the same local network, able to discover each other; a VPN or a proxy "TUN mode" on the PC can block local connections. The first developer-service setup downloads about 18 MB and requests a signature from Apple. |
 
 ## Size and resource use
 
@@ -38,6 +38,16 @@ Memory is process private memory (private commit), measured on Windows 11 x64 wi
 4. Copy some text on your iPhone and press `Ctrl+V` in a Windows app.
 
 The installer and CopiaGo use your Windows display language to choose English or Simplified Chinese. In CopiaGo, open **Settings → Language** to follow Windows or choose a language manually.
+
+### If connecting fails
+
+When a step fails, CopiaGo shows the reason and what to do next. These problems can be fixed from inside the app:
+
+- **The Apple connection service is stopped, disabled, or not responding**: select **Repair connection service**. After administrator approval, CopiaGo starts or restarts Apple Mobile Device Service and sets it back to start with Windows (Apple's default). If another program uses port 27015, CopiaGo names it.
+- **Windows sees the iPhone, but the Apple USB driver is not working**: select **Repair Apple driver**. After administrator approval, CopiaGo uses the built-in `pnputil` to reinstall the USB driver that comes with Apple's components.
+- **Windows does not see the iPhone**: usually a charge-only cable or a port problem. Try another cable, or plug directly into the PC.
+
+If it still does not connect, select **Copy diagnostics** in the guide or Settings and send the text to the developer. Or select **Report a problem**: CopiaGo copies the diagnostics and opens a prefilled GitHub issue (a GitHub account is required), where you paste them into the description.
 
 ### Upgrading
 
@@ -68,6 +78,11 @@ Screenshots are from CopiaGo 1.3.0 with sample connection status and history.
 - [Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata) protects pairing records and, when history is on, history content and previews. Received files are staged in the `received` folder in the data directory.
 - Pair only with a Windows PC you trust. When you stop using CopiaGo, select **Forget this iPhone** in Settings.
 - About 15 seconds after each launch, CopiaGo checks GitHub once for a newer version. If one is available, the tray panel shows a notice at the bottom; nothing is downloaded or installed automatically. GitHub can see this PC's IP address and the CopiaGo version. Turn off **Check for updates at startup** in Settings to disable it.
+- During the first developer-service setup, CopiaGo tries raw.githubusercontent.com, ghfast.top (a third-party GitHub mirror) and fastly.jsdelivr.net in turn, and checks every file against a fixed SHA-256. It then requests a signature from Apple's signing server. These services can see this PC's IP address.
+- CopiaGo writes a diagnostic log, `diagnostic.log`, in the data directory (rotated at 512 KB, about 1 MB at most). It records event types, stages, error categories and numbers only; never clipboard content, file names, the iPhone's name, serial numbers or file paths. The log stays on this PC. It is copied to the clipboard only when you select **Copy diagnostics** or **Report a problem**, and you decide whether to send it. The copied text also includes the Windows and CopiaGo versions and the iPhone model and iOS version; review it before sending.
+- Administrator approval is requested only when you select the matching button, or when you select **Connect iPhone** and the Apple service (disabled, stopped or not responding) is the only obstacle, and Windows always confirms it: installing Apple's components (through winget, which accepts Apple's license on your behalf), starting the Apple connection service and setting it back to start automatically, and reinstalling the Apple USB driver.
+- Developer Mode relaxes some iPhone security restrictions and must stay on while you use CopiaGo. When you no longer need it, turn it off in **Settings → Privacy & Security → Developer Mode** on the iPhone.
+- Uninstalling asks whether to delete the data directory, including pairing records, history, settings and the diagnostic log.
 
 ## Building from source
 
@@ -89,6 +104,6 @@ Packages are written to `copiago-rs\target\packages`. See [copiago-rs/README.md]
 
 ## Feedback and license
 
-Report issues through [GitHub Issues](https://github.com/xgod1862/CopiaGo/issues/new). Include your Windows, iOS, and CopiaGo versions and steps to reproduce the issue. Remove pairing records, clipboard contents, and other personal information before posting.
+Select **Report a problem** in the app, or report through [GitHub Issues](https://github.com/xgod1862/CopiaGo/issues/new) directly. Include the text from **Copy diagnostics** and steps to reproduce the issue. Do not attach pairing record files, clipboard contents, or other personal information.
 
 CopiaGo is licensed under [GPL-3.0-or-later](LICENSE). Third-party notices distributed with the installer are installed in the `licenses` folder of the program directory. Thanks to [idevice](https://github.com/jkcoxson/idevice), [pymobiledevice3](https://github.com/doronz88/pymobiledevice3), [Relais](https://github.com/williamcachamwri/Relais), and the [Inno Setup Simplified Chinese translation](https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation).

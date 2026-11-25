@@ -77,7 +77,7 @@ pub(super) fn diagnose(enumeration_failed: bool) -> ServiceCheck {
             "Apple Mobile Device Service 已被禁用，常见于系统优化软件。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会把它改回自动启动并启动它。"
         )),
         Diagnosis::Stopped => Some(message!(
-            "Apple Mobile Device Service 没有运行。点「修复连接服务」并在 Windows 弹窗中点「是」即可启动。"
+            "Apple Mobile Device Service 没有运行。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会启动它并恢复为随 Windows 自动启动（Apple 的默认设置）。"
         )),
         Diagnosis::PortTaken => Some(message!(
             "端口 27015 被「{program}」占用，Apple 连接服务无法工作。请退出该程序（或在任务管理器中结束它），然后点「修复连接服务」。",

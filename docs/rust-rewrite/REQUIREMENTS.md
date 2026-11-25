@@ -209,7 +209,7 @@ copiago-rs/
 | F-DDI-2 | 下载用 WinHTTP：断点续传（`Range`）、30 s 无数据视为停滞并换源、总超时 15 min、可取消、进度事件（已下载/总量/速度）。先下到 staging 目录，校验通过后原子移动。 |
 | F-DDI-3 | 签名与挂载：跟随 Python 版固定的 pymobiledevice3 11.61.1。iOS 27.0 起，RSD 提供 `cryptexd` 且其能力列表包含 `CryptexInstall` 或未提供能力信息时，使用 Cryptex1（优先 `Cryptex1,Ticket`，兼容 `ApImg4Ticket`）。其余受支持的 iOS 17+ 设备使用 personalized（`mobile_image_mounter`，`ApImg4Ticket`）。TSS 签名超时 45 s，安装超时 240 s。已挂载视为成功。 |
 | F-DDI-4 | 每个阶段（download/sign/install）的结果写入 `developer-setup.log`（与 `record_setup_event` 格式一致），失败时给出可操作的文案（网络、Apple 服务器、手机未解锁、开发者模式未开等）。 |
-| F-DDI-5 | 检查开发者模式状态（`query_developer_mode_status`），未开启时引导用户到"设置 > 隐私与安全性 > 开发者模式"。 |
+| F-DDI-5 | 检查开发者模式状态（`query_developer_mode_status`），未开启时引导用户到"设置 > 隐私与安全性 > 开发者模式"。手机通过 USB 连接时，先经 `com.apple.amfi.lockdown`（`action: 0`）请求显示该开关，并核对回复为成功；无法请求时提示用数据线连接。不替用户开启开发者模式。 |
 
 ### 4.11 托盘与系统集成（win）
 
@@ -270,8 +270,18 @@ copiago-rs/
 
 | 编号 | 需求 |
 |---|---|
-| F-LOG-1 | 环境变量 `ICB_DIAGNOSTIC_FILE` 指定时写诊断事件（与 `diagnostic_event` 同类事件名：`paired_records=`、`tunnel_open`、`monitor_ready`、`pull timeout types=`、`unsupported types=` 等），只记录类型和大小，**绝不记录内容**。 |
-| F-LOG-2 | 崩溃（panic=abort 前的 panic hook）写一行到数据目录下的 `crash.log`，带版本号和位置。 |
+| F-LOG-1 | 默认写诊断事件到数据目录的 `diagnostic.log`，超过 512 KB 轮换为 `diagnostic.old.log`；环境变量 `ICB_DIAGNOSTIC_FILE` 非空时改写到指定文件。事件名与 `diagnostic_event` 同类（`paired_records=`、`tunnel_open`、`monitor_ready`、`pull timeout types=` 等），另记录配对、USB 隧道步骤、服务诊断等结果。只记录类型、类别和数值，**绝不记录剪贴板内容、文件名、设备名、序列号或路径**；库错误中 12 位以上的十六进制串替换为 `<id>`。 |
+| F-LOG-2 | 崩溃（panic=abort 前的 panic hook）写一行到数据目录下的 `crash.log`，带版本号和位置，同时写入诊断日志。 |
+| F-LOG-3 | 引导页处于卡住状态时、以及设置页底部，提供「复制诊断信息」和「反馈问题」。复制内容含版本、Windows 版本、连接阶段、Apple 服务状态、iPhone 机型与 iOS 版本和最近的诊断日志，不含设备名；写入剪贴板时标记为本机写入，不同步到 iPhone、不进电脑历史。「反馈问题」另打开预填模板的 GitHub Issue，URL 中不含任何诊断内容。 |
+
+### 4.15a Apple 设备连接组件（app）
+
+| 编号 | 需求 |
+|---|---|
+| F-AMDS-1 | 不用管理员权限诊断 Apple Mobile Device Service：是否安装（服务管理器）、运行状态、启动类型（注册表 `Start`）、`127.0.0.1:27015` 是否监听及监听进程的文件名，并给出对应提示（未安装、被禁用、未运行、端口被占用、无响应）。 |
+| F-AMDS-2 | 修复以管理员身份运行 `copiago.exe --repair-apple-service`，直接调用服务接口：启动类型为禁用或手动时恢复为自动，运行中无响应时重启，否则启动。UAC 等待放在后台线程。点「连接 iPhone」时若只差服务这一步，直接发起修复。 |
+| F-AMDS-3 | 配对找不到 iPhone 时，用 SetupAPI 检查 Windows 是否看到 Apple 移动设备（`VID_05AC&PID_12xx`）及设备节点是否有问题码，区分"未检测到"、"驱动异常"和"已检测到但未信任/锁定"。驱动异常时以管理员身份运行 `copiago.exe --repair-apple-driver`，用系统 `pnputil` 重装 Apple 组件自带的 `usbaapl64.inf`（x86 为 `usbaapl.inf`）。 |
+| F-AMDS-4 | 安装组件优先用 winget；没有 winget 时在诊断阶段即说明。「手动下载安装」在有 Microsoft Store 时打开 Apple Devices，否则打开 apple.com 的 iTunes 下载。提权进程无管理员权限、用户取消授权、授权弹窗超时分别提示。 |
 
 ### 4.16 安装与分发
 
@@ -295,7 +305,7 @@ copiago-rs/
 | N-4 | 连续运行 24 h，内存无持续增长（每小时采样一次，增长 < 2 MB）。 |
 | N-5 | 所有 `unsafe` 块要有 `// SAFETY:` 注释；`clippy::undocumented_unsafe_blocks` 开启。 |
 | N-6 | 依赖许可证仅限 MIT / Apache‑2.0 / BSD / ISC / Zlib / Unicode；LGPL 仅允许以动态链接 DLL 形式附带（HEIC 兜底）。**禁止**引入或逐行翻译 GPL 代码（pymobiledevice3 只能参考协议）。用 `cargo-deny` 检查。 |
-| N-7 | 隐私：不上传任何数据；网络请求只有 GitHub（更新检查、镜像）、镜像源、Apple TSS。 |
+| N-7 | 隐私：不自动上传任何数据；程序发出的网络请求只有 GitHub（更新检查、镜像）、镜像源（ghfast.top、fastly.jsdelivr.net）、Apple TSS。用户主动点击时会在浏览器中打开 Microsoft Store、apple.com 的 iTunes 下载或 GitHub Issue 页面。 |
 
 ---
 

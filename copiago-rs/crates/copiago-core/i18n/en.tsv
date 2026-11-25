@@ -184,7 +184,7 @@ iPhone 文件 {timestamp}.{extension}	iPhone file {timestamp}.{extension}
 删除	Delete
 发送到 iPhone	Send to iPhone
 {count} 字	{count} chars
-Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务，可能暂时中断其他 Apple 软件的设备连接。	The Apple connection service is unavailable or cannot list devices. Repair requires administrator permission and starts or restarts the service, which may briefly interrupt other Apple apps connected to your device.
+Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务并恢复为自动启动，可能暂时中断其他 Apple 软件的设备连接。	The Apple connection service is unavailable or cannot list devices. Repair requires administrator permission. It starts or restarts the service and sets it to start automatically, which may briefly interrupt other Apple apps connected to your device.
 正在处理…	Working…
 修复连接服务	Repair connection service
 正在修复 Apple 连接服务，请完成 Windows 管理员授权。	Repairing the Apple connection service. Approve the Windows administrator prompt.
@@ -197,12 +197,12 @@ Apple 连接服务不可用或无法读取设备。修复将请求管理员权�
 已打开 GitHub，但诊断信息复制失败。请先点「复制诊断信息」，再粘贴到问题描述里。	GitHub opened, but diagnostics could not be copied. Select Copy diagnostics, then paste them into the description.
 无法打开浏览器。诊断信息已复制，可以直接粘贴发给开发者。	Could not open the browser. Diagnostics are copied; paste them to the developer.
 无法打开浏览器，也无法复制诊断信息，请稍后重试。	Could not open the browser or copy diagnostics. Try again later.
-未找到 Apple 设备连接组件。点「安装连接组件」即可自动安装。	Apple connection components were not found. Select Install components to install them.
+未找到 Apple 设备连接组件。点「安装连接组件」即可自动安装。	Apple connection components were not found. Select Install Apple support to install them.
 Apple Mobile Device Service 已被禁用，常见于系统优化软件。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会把它改回自动启动并启动它。	Apple Mobile Device Service is disabled, often by a system optimizer. Select Repair connection service and choose Yes in the Windows prompt. CopiaGo sets it back to automatic and starts it.
-Apple Mobile Device Service 没有运行。点「修复连接服务」并在 Windows 弹窗中点「是」即可启动。	Apple Mobile Device Service is not running. Select Repair connection service and choose Yes in the Windows prompt to start it.
+Apple Mobile Device Service 没有运行。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会启动它并恢复为随 Windows 自动启动（Apple 的默认设置）。	Apple Mobile Device Service is not running. Select Repair connection service and choose Yes in the Windows prompt. CopiaGo starts it and sets it back to start with Windows (Apple's default).
 端口 27015 被「{program}」占用，Apple 连接服务无法工作。请退出该程序（或在任务管理器中结束它），然后点「修复连接服务」。	Port 27015 is used by {program}, so the Apple connection service cannot work. Quit that program (or end it in Task Manager), then select Repair connection service.
 Apple Mobile Device Service 没有响应。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会重启它；仍不行请重启电脑。	Apple Mobile Device Service is not responding. Select Repair connection service and choose Yes in the Windows prompt to restart it. If that fails, restart your PC.
-未找到 Apple Mobile Device Service。请点「安装连接组件」重新安装。	Apple Mobile Device Service was not found. Select Install components to reinstall it.
+未找到 Apple Mobile Device Service。请点「安装连接组件」重新安装。	Apple Mobile Device Service was not found. Select Install Apple support to reinstall it.
 USB 连接超时。请把 iPhone 直接插在电脑机身的 USB 口（不要经过扩展坞或延长线），保持解锁，再点「继续连接」。	USB timed out. Plug your iPhone directly into a USB port on the PC (no hub or extension), keep it unlocked, then select Continue.
 与 iPhone 的连接中断。请插紧数据线并保持手机解锁，再点「继续连接」；反复断开时请换一个 USB 口或数据线。	The iPhone connection ended. Seat the cable firmly, keep the phone unlocked, then select Continue. If it keeps dropping, try another USB port or cable.
 iPhone 需要开启开发者模式，但「设置」里还没有这个开关。请用数据线连接并解锁 iPhone，再点「继续连接」，CopiaGo 会让这个开关出现。	Your iPhone needs Developer Mode, but the switch is not in Settings yet. Connect it by USB, unlock it, and select Continue. CopiaGo will make the switch appear.
@@ -211,7 +211,7 @@ CopiaGo 需要 iOS 17 或更高版本，这台 iPhone 的系统版本过低。�
 正在修复 Apple USB 驱动，请完成 Windows 管理员授权。	Repairing the Apple USB driver. Approve the Windows administrator prompt.
 修复 Apple 驱动	Repair Apple driver
 电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。修复将请求管理员权限，为这台电脑重新安装 Apple 自带的驱动。	Windows sees your iPhone, but the Apple USB driver is not working. Repair requires administrator permission and reinstalls the driver that came with Apple Mobile Device Support.
-没有找到 Apple 自带的 USB 驱动文件。请点「安装连接组件」重新安装 Apple Mobile Device Support。	The Apple USB driver files were not found. Select Install components to reinstall Apple Mobile Device Support.
+没有找到 Apple 自带的 USB 驱动文件。请点「安装连接组件」重新安装 Apple Mobile Device Support。	The Apple USB driver files were not found. Select Install Apple support to reinstall Apple Mobile Device Support.
 电脑没有检测到 iPhone。请确认数据线能传输数据（有些线只能充电），把手机直接插在电脑机身的 USB 口并解锁，然后点「连接 iPhone」。	Windows does not see an iPhone. Use a cable that carries data (some only charge), plug the phone directly into the PC, unlock it, then select Connect iPhone.
 电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。点「修复 Apple 驱动」并在 Windows 弹窗中点「是」即可自动修复。	Windows sees your iPhone, but the Apple USB driver is not working. Select Repair Apple driver and choose Yes in the Windows prompt to fix it.
 电脑检测到了 iPhone，但还不能和它通信。请解锁 iPhone 并停留在主屏幕，手机上出现「要信任此电脑吗」时点「信任」，然后点「连接 iPhone」。	Windows sees your iPhone but cannot talk to it yet. Unlock it and stay on the Home Screen, tap Trust if asked, then select Connect iPhone.

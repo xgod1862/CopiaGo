@@ -29,7 +29,7 @@ const DEVELOPER_HELP: &str = concat!(
     "重启后解锁，在弹窗中点「打开」，再点下方按钮。若仍没有该开关，可能是公司或学校管理的设备。"
 );
 const DRIVER_HELP: &str = "需要先安装 Apple 设备连接组件。将通过 Windows 包管理器安装 Apple Mobile Device Support，并代表你接受其许可协议。";
-const SERVICE_HELP: &str = "Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务，可能暂时中断其他 Apple 软件的设备连接。";
+const SERVICE_HELP: &str = "Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务并恢复为自动启动，可能暂时中断其他 Apple 软件的设备连接。";
 const USB_DRIVER_HELP: &str = "电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。修复将请求管理员权限，为这台电脑重新安装 Apple 自带的驱动。";
 
 impl Builder<'_> {

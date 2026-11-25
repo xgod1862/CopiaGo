@@ -233,6 +233,17 @@ impl Button {
         enabled_hit(self.bounds, self.enabled, point)
     }
 
+    /// Set the enabled state of a button that has not been shown yet. Views rebuild their
+    /// buttons on every state change, so a new disabled button must not fade in from the
+    /// enabled fill.
+    pub fn with_enabled(mut self, enabled: bool) -> Result<Self> {
+        self.enabled = enabled;
+        if !enabled {
+            self.fill.brush.SetColor(self.colors.disabled)?;
+        }
+        Ok(self)
+    }
+
     pub fn set_enabled(&mut self, animator: &Animator, enabled: bool) -> Result<()> {
         if self.enabled != enabled {
             self.enabled = enabled;

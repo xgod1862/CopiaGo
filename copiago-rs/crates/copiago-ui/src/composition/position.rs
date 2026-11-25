@@ -8,7 +8,10 @@ use windows::{
             MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, MonitorFromRect,
             MonitorFromWindow,
         },
-        UI::WindowsAndMessaging::{FindWindowExW, GetCursorPos, GetWindowRect},
+        UI::{
+            Shell::{ABM_GETTASKBARPOS, APPBARDATA, SHAppBarMessage},
+            WindowsAndMessaging::{FindWindowExW, GetCursorPos, GetWindowRect},
+        },
     },
     core::{Error, Interface, PCWSTR, Result, w},
 };
@@ -100,6 +103,14 @@ impl TrayPlacement {
         }
     }
 
+    pub(super) fn available_height(self, dpi: u32) -> f32 {
+        let scale = dpi as f32 / super::DEFAULT_DPI as f32;
+        let margin = (GAP_DIPS * scale).round() as i64;
+        ((span(self.work.top, self.work.bottom) - 2 * margin).max(1) as f32 / scale)
+            .floor()
+            .max(1.0)
+    }
+
     pub(super) fn dpi_sample(self) -> POINT {
         POINT {
             x: self.work.left.midpoint(self.work.right),
@@ -108,6 +119,11 @@ impl TrayPlacement {
     }
 
     pub(super) fn place(self, bounds: PopupBounds, dpi: u32) -> Result<Placement> {
+        let mut bounds = bounds;
+        // Also constrain old sizes supplied by an in-flight resize or DPI change.
+        if bounds.height.is_finite() && dpi > 0 {
+            bounds.height = bounds.height.min(self.available_height(dpi));
+        }
         let (width, height) = bounds.pixel_size(dpi)?;
         let gap = (GAP_DIPS * dpi as f32 / super::DEFAULT_DPI as f32).round() as i64;
         let (left, right) = origin_limits(self.work.left, self.work.right, width, gap);
@@ -194,7 +210,12 @@ impl Edge {
         }
         let width = span(bar.left, bar.right);
         let height = span(bar.top, bar.bottom);
-        if width >= height {
+        // Ignore near-square placeholder HWNDs (including a 1x1 window at
+        // the virtual origin) while Explorer is creating or replacing its taskbar.
+        if width.max(height) < 2 * width.min(height) {
+            return None;
+        }
+        if width > height {
             Some(
                 if bar.top.midpoint(bar.bottom) < screen.top.midpoint(screen.bottom) {
                     Self::Top
@@ -214,23 +235,23 @@ impl Edge {
     }
 
     fn from_work_area(screen: RECT, work: RECT, icon: Option<RECT>) -> Self {
-        // If there are multiple reserved edges, prefer the one containing
-        // the icon. Fall back to the widest reservation, then the bottom.
-        let mut edge = Self::Bottom;
-        let mut rank = (false, 0);
-        for candidate in [Self::Bottom, Self::Top, Self::Left, Self::Right] {
-            let strip = candidate.strip(screen, work);
-            let size = match candidate {
-                Self::Top | Self::Bottom => span(strip.top, strip.bottom),
-                Self::Left | Self::Right => span(strip.left, strip.right),
-            };
-            let contains_icon = icon.is_some_and(|icon| intersection(strip, icon).is_some());
-            if (contains_icon, size) > rank {
-                edge = candidate;
-                rank = (contains_icon, size);
-            }
+        // A work-area inset may belong to a dock or another app. Accept it as
+        // the taskbar only when the tray icon's center identifies one reserved edge.
+        let Some(icon) = icon.filter(|icon| valid(*icon)) else {
+            return Self::Bottom;
+        };
+        let x = icon.left.midpoint(icon.right);
+        let y = icon.top.midpoint(icon.bottom);
+        let mut matches = [Self::Top, Self::Left, Self::Right, Self::Bottom]
+            .into_iter()
+            .filter(|edge| {
+                let strip = edge.strip(screen, work);
+                strip.left <= x && x < strip.right && strip.top <= y && y < strip.bottom
+            });
+        match (matches.next(), matches.next()) {
+            (Some(edge), None) => edge,
+            _ => Self::Bottom,
         }
-        edge
     }
 
     fn strip(self, screen: RECT, work: RECT) -> RECT {
@@ -292,7 +313,7 @@ impl Edge {
 
 fn taskbar_on(monitor: HMONITOR, screen: RECT) -> Option<(Edge, RECT)> {
     // Explorer exposes a separate window for each taskbar. Fall back to the
-    // monitor's work-area insets when these window classes are unavailable.
+    // shell's system taskbar query when the window classes are unavailable.
     for class in [w!("Shell_TrayWnd"), w!("Shell_SecondaryTrayWnd")] {
         let mut previous = None;
         // SAFETY: Search desktop windows by a static class with no title filter.
@@ -309,7 +330,22 @@ fn taskbar_on(monitor: HMONITOR, screen: RECT) -> Option<(Edge, RECT)> {
             }
         }
     }
-    None
+    // Explorer's system taskbar query also works when no usable tray HWND was found.
+    // Only use its rectangle on the monitor to which it actually belongs.
+    let mut data = APPBARDATA {
+        cbSize: size_of::<APPBARDATA>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: The shell writes into a correctly sized APPBARDATA. rc is copied
+    // before borrowing it because the structure may be packed on 32-bit Windows.
+    let found = unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut data) } != 0;
+    let rect = data.rc;
+    // SAFETY: rect is an aligned local RECT valid for the duration of the query.
+    if found && unsafe { MonitorFromRect(&rect, MONITOR_DEFAULTTONULL) } == monitor {
+        Edge::from_bar(screen, rect).map(|edge| (edge, rect))
+    } else {
+        None
+    }
 }
 
 fn cursor_position() -> Option<POINT> {

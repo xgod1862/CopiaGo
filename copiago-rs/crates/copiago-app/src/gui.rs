@@ -18,7 +18,7 @@ use copiago_core::{
 };
 use copiago_device::{DeviceRunOptions, HostSignal, has_pairing_records};
 use copiago_ui::{
-    history::{HistoryAction, HistoryPage, HistoryTarget, StatusTone},
+    history::{HistoryPage, HistoryTarget, StatusTone},
     settings_page::{ConnectionState, SettingsState, StartupState},
 };
 use copiago_win::{
@@ -472,12 +472,6 @@ impl Host<'_> {
         self.settings.set_available_version(version.clone());
         self.history_page.set_update(version);
         self.redraw(now);
-    }
-
-    fn feedback(&mut self, action: HistoryAction) {
-        if let Err(error) = self.popup.feedback(&self.history_page, action) {
-            self.render_failed(error);
-        }
     }
 }
 

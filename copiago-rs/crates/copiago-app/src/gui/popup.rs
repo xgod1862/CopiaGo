@@ -15,8 +15,10 @@ use copiago_ui::{
         HistoryAction, HistoryLayout, HistoryPage, HistoryTarget, HistoryView, ThumbnailPixels,
         ThumbnailRequest,
     },
-    page_transition::{PageDirection, transition_pages},
-    settings_page::{ControlRole, SettingsAction, SettingsScreen, SettingsState, SettingsView},
+    page_transition::{PageDirection, crossfade, transition_pages},
+    settings_page::{
+        ControlRole, SettingsAction, SettingsLayout, SettingsScreen, SettingsState, SettingsView,
+    },
 };
 use copiago_win::{image::decode_scaled, tray::Tray};
 use windows::{
@@ -92,6 +94,9 @@ pub(super) struct Popup<'a> {
     next_focus: u64,
     sample_until: Option<Instant>,
     next_frame: Option<Instant>,
+    height: f32,
+    available_height: f32,
+    resize: Option<HeightTransition>,
 }
 
 impl<'a> Popup<'a> {
@@ -109,6 +114,9 @@ impl<'a> Popup<'a> {
             next_focus: 0,
             sample_until: None,
             next_frame: None,
+            height: 0.0,
+            available_height: 0.0,
+            resize: None,
         }
     }
 
@@ -147,8 +155,7 @@ impl<'a> Popup<'a> {
         self.screen = screen;
         self.policy = MotionPolicy::system();
         self.clear_pointer();
-        let layout = Layout::new(screen, models.history)?;
-        self.viewport = layout.viewport();
+
         if self.thread.get().is_none() {
             let _ = self.thread.set(CompositionThread::new()?);
         }
@@ -168,17 +175,29 @@ impl<'a> Popup<'a> {
             right: rect.right,
             bottom: rect.bottom,
         });
-        host.show_at_tray(anchor, None, layout.bounds(), activate, |scene| {
-            self.view = Some(PageView::new(
-                scene,
-                screen,
-                &layout,
-                &models,
-                self.policy,
-                now,
-            )?);
-            attach(scene, self.view.as_ref().unwrap())
-        })?;
+        host.show_at_tray_with_layout(
+            anchor,
+            None,
+            activate,
+            |available| {
+                self.available_height = available;
+                let layout = Layout::new(screen, &models, available)?;
+                Ok((layout.bounds(), layout))
+            },
+            |scene, layout| {
+                self.viewport = layout.viewport();
+                self.height = layout.bounds().height;
+                self.view = Some(PageView::new(
+                    scene,
+                    screen,
+                    &layout,
+                    &models,
+                    self.policy,
+                    now,
+                )?);
+                attach(scene, self.view.as_ref().unwrap())
+            },
+        )?;
         self.publish_and_decode(models, now)
     }
 
@@ -192,10 +211,11 @@ impl<'a> Popup<'a> {
             PageDirection::Back
         };
         self.clear_pointer();
+        let layout = Layout::new(screen, &models, self.available_height)?;
+        self.resize_to(layout.bounds(), now)?;
+        self.schedule_frames(now);
         let host = self.host.as_mut().unwrap();
         let previous = self.view.as_ref().unwrap();
-        let layout = Layout::new(screen, models.history)?;
-        host.resize_at_tray(layout.bounds())?;
         host.set_dismiss_on_focus_loss(screen != Screen::Guide);
         let scene = host.scene().unwrap();
         let view = PageView::new(scene, screen, &layout, &models, self.policy, now)?;
@@ -216,35 +236,63 @@ impl<'a> Popup<'a> {
         if !self.visible() {
             return Ok(());
         }
-        let layout = Layout::new(self.screen, models.history)?;
-        let host = self.host.as_mut().unwrap();
+        let layout = Layout::new(self.screen, &models, self.available_height)?;
+        self.resize_to(layout.bounds(), now)?;
+        let host = self.host.as_ref().unwrap();
+        let scene = host.scene().unwrap();
         let view = self.view.as_mut().unwrap();
         if self.viewport != layout.viewport() {
-            let scroll = view
-                .history()
-                .map_or(0.0, |history| history.scroll_offset());
-            host.rebuild_at_tray(layout.bounds(), |scene| {
-                *view = PageView::new(scene, self.screen, &layout, &models, self.policy, now)?;
-                if let Some(history) = view.history() {
-                    history.restore_scroll(scroll, now)?;
-                }
-                attach(scene, view)
-            })?;
+            let scroll = view.scroll_offset();
+            let mut next = PageView::new(scene, self.screen, &layout, &models, self.policy, now)?;
+            if !matches!(&layout, Layout::History(history) if history.scrolls_feedback()) {
+                next.restore_scroll(scroll, now)?;
+            }
+            crossfade(
+                &next.animator,
+                scene.content(),
+                view.visual(),
+                next.visual(),
+            )?;
+            *view = next;
             self.viewport = layout.viewport();
         } else {
-            view.refresh(host.scene().unwrap(), &layout, &models, self.policy, now)?;
+            view.refresh(scene, &layout, &models, self.policy, now)?;
         }
         self.update_pointer(now)?;
         self.schedule_frames(now);
         self.publish_and_decode(models, now)
     }
 
-    pub fn feedback(&mut self, page: &HistoryPage, action: HistoryAction) -> Result<()> {
-        if self.visible()
-            && let Some(scene) = self.host.as_ref().and_then(PopupHost::scene)
-            && let Some(view) = self.view.as_mut().and_then(PageView::history)
-        {
-            view.show_feedback(scene, page, action)?;
+    fn refresh_work_area(&mut self) -> Result<()> {
+        let host = self.host.as_mut().unwrap();
+        self.available_height = host.available_tray_height(None)?;
+        let displayed = host.scene().unwrap().content().Size()?.Y;
+        if displayed != self.height {
+            self.height = displayed;
+            self.resize = None;
+        }
+        Ok(())
+    }
+
+    fn resize_to(&mut self, bounds: PopupBounds, now: Instant) -> Result<()> {
+        if self.policy.allows_motion() {
+            if self
+                .resize
+                .is_some_and(|run| run.target.height == bounds.height)
+            {
+                return Ok(());
+            }
+            self.resize = (self.height != bounds.height).then_some(HeightTransition {
+                start: self.height,
+                target: bounds,
+                since: now,
+            });
+        } else {
+            self.resize = None;
+            if self.height != bounds.height {
+                self.host.as_mut().unwrap().resize_at_tray(bounds)?;
+                self.height = bounds.height;
+            }
         }
         Ok(())
     }
@@ -264,6 +312,7 @@ impl<'a> Popup<'a> {
         self.targets.clear();
         self.sample_until = None;
         self.next_frame = None;
+        self.resize = None;
         self.clear_pointer();
         if let Some(host) = &mut self.host {
             host.hide();
@@ -284,11 +333,23 @@ impl<'a> Popup<'a> {
                 self.hide();
             }
         } else if self.next_frame.is_some_and(|frame| now >= frame) {
+            if let Some(run) = self.resize {
+                let (bounds, finished) = run.sample(now);
+                self.host.as_mut().unwrap().resize_at_tray(bounds)?;
+                self.height = bounds.height;
+                if finished {
+                    self.resize = None;
+                }
+            }
             self.publish_and_decode(models, now)?;
-            self.next_frame = self
-                .sample_until
-                .filter(|end| now < *end)
-                .map(|end| (now + FRAME_INTERVAL).min(end));
+            self.next_frame = self.sample_until.filter(|end| now < *end).map(|end| {
+                (now + if self.resize.is_some() {
+                    Duration::from_millis(16)
+                } else {
+                    FRAME_INTERVAL
+                })
+                .min(end)
+            });
         }
         Ok(())
     }
@@ -319,8 +380,10 @@ impl<'a> Popup<'a> {
             time: message.time,
         };
         let view = &mut self.view;
+        let mut rebuilt = false;
         if host.handle_message(&message, |scene| {
-            let layout = Layout::new(self.screen, models.history)?;
+            rebuilt = true;
+            let layout = Layout::new(self.screen, &models, self.available_height)?;
             let scroll = view.as_ref().map_or(0.0, PageView::scroll_offset);
             let mut next = PageView::new(scene, self.screen, &layout, &models, self.policy, now)?;
             next.restore_scroll(scroll, now)?;
@@ -330,6 +393,9 @@ impl<'a> Popup<'a> {
         })? {
             if host.scene().is_none() {
                 self.hide();
+            } else if rebuilt {
+                self.refresh_work_area()?;
+                self.render(models, now)?;
             } else if host.closing_until().is_none() {
                 self.publish_and_decode(models, now)?;
             }
@@ -367,6 +433,7 @@ impl<'a> Popup<'a> {
         }
         match message.message {
             POPUP_SETTINGS_CHANGED => {
+                self.refresh_work_area()?;
                 self.policy = MotionPolicy::system();
                 self.render(models, now)?;
                 Ok(Input::Handled)
@@ -502,7 +569,14 @@ impl<'a> Popup<'a> {
     fn schedule_frames(&mut self, now: Instant) {
         if self.policy.allows_motion() {
             self.sample_until = Some(now + SCROLL_FRAMES);
-            self.next_frame = Some(now + FRAME_INTERVAL);
+            // A burst of progress events must not keep pushing the first resize frame back.
+            let interval = if self.resize.is_some() {
+                Duration::from_millis(16)
+            } else {
+                FRAME_INTERVAL
+            };
+            let due = now + interval;
+            self.next_frame = Some(self.next_frame.map_or(due, |pending| pending.min(due)));
         }
     }
 
@@ -662,31 +736,58 @@ fn thumbnail(
     })
 }
 
+#[derive(Clone, Copy)]
+struct HeightTransition {
+    start: f32,
+    target: PopupBounds,
+    since: Instant,
+}
+
+impl HeightTransition {
+    fn sample(self, now: Instant) -> (PopupBounds, bool) {
+        let t = (now.saturating_duration_since(self.since).as_secs_f32() / 0.24).min(1.0);
+        let height = self.target.height + (self.start - self.target.height) * (1.0 - t).powi(3);
+        (
+            PopupBounds {
+                height,
+                ..self.target
+            },
+            t >= 1.0,
+        )
+    }
+}
+
 enum Layout {
     History(Box<HistoryLayout>),
-    Settings,
+    Settings(SettingsLayout),
 }
 
 impl Layout {
-    fn new(screen: Screen, page: &HistoryPage) -> Result<Self> {
+    fn new(screen: Screen, models: &Models<'_>, available_height: f32) -> Result<Self> {
         Ok(if screen == Screen::History {
-            Self::History(Box::new(page.layout()?))
+            Self::History(Box::new(
+                models.history.layout_with_limit(available_height)?,
+            ))
         } else {
-            Self::Settings
+            Self::Settings(SettingsLayout::measure(
+                models.settings,
+                screen.settings(),
+                available_height,
+            )?)
         })
     }
 
     fn bounds(&self) -> PopupBounds {
         match self {
             Self::History(layout) => layout.bounds(),
-            Self::Settings => SettingsView::BOUNDS,
+            Self::Settings(layout) => layout.bounds(),
         }
     }
 
     fn viewport(&self) -> Option<Rect> {
         match self {
             Self::History(layout) => Some(layout.viewport()),
-            Self::Settings => None,
+            Self::Settings(_) => None,
         }
     }
 }
@@ -719,12 +820,13 @@ impl PageView {
                 policy,
                 now,
             )?)),
-            Layout::Settings => Body::Settings(Box::new(SettingsView::new(
+            Layout::Settings(geometry) => Body::Settings(Box::new(SettingsView::with_layout(
                 scene,
                 &animator,
                 models.settings,
                 screen.settings(),
                 now,
+                geometry,
             )?)),
         };
         Ok(Self { animator, body })
@@ -734,13 +836,6 @@ impl PageView {
         match &self.body {
             Body::History(view) => view.visual(),
             Body::Settings(view) => view.visual(),
-        }
-    }
-
-    fn history(&mut self) -> Option<&mut HistoryView> {
-        match &mut self.body {
-            Body::History(view) => Some(view),
-            _ => None,
         }
     }
 
@@ -758,8 +853,8 @@ impl PageView {
                 view.set_motion_policy(policy);
                 view.refresh(scene, models.history, layout, now)
             }
-            (Body::Settings(view), Layout::Settings) => {
-                view.update(scene, &self.animator, models.settings, now)
+            (Body::Settings(view), Layout::Settings(geometry)) => {
+                view.update_layout(scene, &self.animator, models.settings, now, geometry)
             }
             _ => unreachable!("layout belongs to the mounted page"),
         }
@@ -796,4 +891,36 @@ impl PageView {
 
 fn attach(scene: &PopupScene, view: &PageView) -> Result<()> {
     scene.content().Children()?.InsertAtTop(view.visual())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_panel_resize_starts_at_the_displayed_height() {
+        let now = Instant::now();
+        let target = PopupBounds::new(392.0, 650.0, 24.0);
+        let growing = HeightTransition {
+            start: 478.0,
+            target,
+            since: now,
+        };
+        let middle = now + Duration::from_millis(90);
+        let (visible, done) = growing.sample(middle);
+        assert!(!done && (478.0..650.0).contains(&visible.height));
+        let shorter = PopupBounds {
+            height: 440.0,
+            ..target
+        };
+        let shrinking = HeightTransition {
+            start: visible.height,
+            target: shorter,
+            since: middle,
+        };
+        assert_eq!(shrinking.sample(middle).0.height, visible.height);
+        let end = shrinking.sample(middle + Duration::from_millis(240));
+        assert!(end.1);
+        assert_eq!(end.0.height, shorter.height);
+    }
 }

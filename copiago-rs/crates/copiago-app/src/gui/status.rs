@@ -156,7 +156,7 @@ impl Host<'_> {
                         show_guide = self.popup.visible() && self.popup.screen() != Screen::Guide;
                     }
                     connection.driver = driver;
-                    self.settings.set_notice(notice);
+                    self.settings.set_diagnosis(notice);
                 }
             } else if notice.is_some() {
                 // A paired phone reconnecting in the background. The repair controls live
@@ -176,7 +176,7 @@ impl Host<'_> {
                 &mut connection.driver,
                 crate::service::apple_usb_presence(),
             );
-            self.settings.set_notice(Some(notice));
+            self.settings.set_diagnosis(Some(notice));
         }
         if self.connection.just_forgot && state == ConnState::Setup {
             connection.detail = Some(message!("已忘记 iPhone。请用数据线连接后重新配对"));
@@ -247,7 +247,12 @@ impl Host<'_> {
             diagnostic::event(format_args!("event=status state={state:?}"));
         }
 
+        let retry_hint = self
+            .settings
+            .retry_hint()
+            .filter(|_| phase == ConnectionPhase::Connecting);
         let tone = match phase {
+            ConnectionPhase::Connecting if retry_hint.is_some() => StatusTone::Warning,
             ConnectionPhase::Connected { .. } => StatusTone::Success,
             ConnectionPhase::Waiting
             | ConnectionPhase::DeveloperMode
@@ -258,14 +263,22 @@ impl Host<'_> {
             }
             _ => StatusTone::Muted,
         };
+        let status_detail = retry_hint.cloned().unwrap_or_else(|| detail.clone());
         let message = if matches!(
             state,
             ConnState::Connecting | ConnState::Waiting | ConnState::Error
         ) && let Some(time) = &self.connection.last_connected
         {
-            message!("{status}（上次连接 {time}）", status = detail, time = time)
+            message!(
+                "{status}（上次连接 {time}）",
+                status = status_detail,
+                time = time
+            )
         } else {
-            connection.detail.clone().unwrap_or(detail)
+            retry_hint
+                .cloned()
+                .or_else(|| connection.detail.clone())
+                .unwrap_or(detail)
         };
         self.set_status(message, tone);
         self.settings.set_connection(connection);
@@ -356,6 +369,8 @@ impl Host<'_> {
                     Some(ProgressState::Determinate(fraction))
                 })
                 .unwrap_or(ProgressState::Indeterminate)
+        } else if phase == ConnectionPhase::Waiting {
+            ProgressState::Waiting
         } else {
             ProgressState::Hidden
         };
@@ -368,6 +383,7 @@ impl Host<'_> {
                 _ => Status::Disconnected,
             },
             device_name: name.to_owned(),
+            retry_hint: self.settings.retry_hint().cloned(),
             detail,
             tone: self
                 .history_notice
@@ -375,6 +391,7 @@ impl Host<'_> {
                 .map_or(StatusTone::Muted, |(_, tone)| *tone),
             progress,
             can_retry: connection.can_retry(),
+            copied: self.copy_hide_at.is_some(),
         });
         self.history_page
             .set_offer(self.offer.presentation(language));

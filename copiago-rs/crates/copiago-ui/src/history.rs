@@ -64,9 +64,11 @@ pub struct HistoryStatus {
     pub connection: Status,
     pub device_name: String,
     pub detail: Option<Message>,
+    pub retry_hint: Option<Message>,
     pub tone: StatusTone,
     pub progress: ProgressState,
     pub can_retry: bool,
+    pub copied: bool,
 }
 
 impl Default for HistoryStatus {
@@ -75,9 +77,11 @@ impl Default for HistoryStatus {
             connection: Status::Connecting,
             device_name: String::new(),
             detail: None,
+            retry_hint: None,
             tone: StatusTone::Muted,
             progress: ProgressState::Hidden,
             can_retry: false,
+            copied: false,
         }
     }
 }

@@ -6,10 +6,7 @@ use copiago_core::{
     settings::SyncKind,
 };
 use windows::{
-    UI::{
-        Color,
-        Composition::{ContainerVisual, SpriteVisual},
-    },
+    UI::{Color, Composition::ContainerVisual},
     core::Result,
 };
 use windows_numerics::Vector2;
@@ -26,6 +23,8 @@ use crate::{
     composition::{Font, PopupBounds, PopupScene, RoundedRectangle, TextStyle, rounded_rectangle},
 };
 
+mod feedback;
+pub use feedback::SettingsLayout;
 mod form;
 mod guide;
 
@@ -33,10 +32,6 @@ const WIDTH: f32 = 392.0;
 const HEIGHT: f32 = 478.0;
 const PAD: f32 = 18.0;
 const INNER: f32 = WIDTH - 2.0 * PAD;
-const PANEL: Rect = Rect::new(0.0, 0.0, WIDTH, HEIGHT);
-const SETTINGS_VIEWPORT: Rect = Rect::new(0.0, 64.0, WIDTH, 352.0);
-const GUIDE_VIEWPORT: Rect = Rect::new(0.0, 64.0, WIDTH, 339.0);
-const DRIVER_VIEWPORT: Rect = Rect::new(0.0, 64.0, WIDTH, 179.0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsScreen {
@@ -72,6 +67,7 @@ pub struct SettingsView {
     was_busy: bool,
     progress_complete_until: Option<Instant>,
     policy: MotionPolicy,
+    geometry: SettingsLayout,
 }
 
 impl SettingsView {
@@ -84,20 +80,33 @@ impl SettingsView {
         screen: SettingsScreen,
         now: Instant,
     ) -> Result<Self> {
-        let visual = holder(scene, PANEL)?;
+        let geometry = SettingsLayout::measure(state, screen, scene.content().Size()?.Y)?;
+        Self::with_layout(scene, animator, state, screen, now, &geometry)
+    }
+
+    pub fn with_layout(
+        scene: &PopupScene,
+        animator: &Animator,
+        state: &SettingsState,
+        screen: SettingsScreen,
+        now: Instant,
+        geometry: &SettingsLayout,
+    ) -> Result<Self> {
+        let visual = holder(scene, Rect::new(0.0, 0.0, WIDTH, geometry.height))?;
         let layout = LayoutKey::new(state, screen, now);
-        let body = Body::new(scene, animator, state, &layout)?;
+        let body = Body::new(scene, animator, state, &layout, geometry)?;
         visual.Children()?.InsertAtTop(&body.visual)?;
         let mut view = Self {
             visual,
             screen,
             body,
             layout,
+            geometry: geometry.clone(),
             was_busy: false,
             progress_complete_until: None,
             policy: animator.policy(),
         };
-        view.update(scene, animator, state, now)?;
+        view.update_layout(scene, animator, state, now, geometry)?;
         Ok(view)
     }
 
@@ -114,17 +123,37 @@ impl SettingsView {
         state: &SettingsState,
         now: Instant,
     ) -> Result<()> {
+        let geometry = SettingsLayout::measure(state, self.screen, scene.content().Size()?.Y)?;
+        self.update_layout(scene, animator, state, now, &geometry)
+    }
+
+    pub fn update_layout(
+        &mut self,
+        scene: &PopupScene,
+        animator: &Animator,
+        state: &SettingsState,
+        now: Instant,
+        geometry: &SettingsLayout,
+    ) -> Result<()> {
         let next_layout = LayoutKey::new(state, self.screen, now);
-        if next_layout != self.layout {
-            let mut next = Body::new(scene, animator, state, &next_layout)?;
+        if next_layout != self.layout || geometry != &self.geometry {
+            let mut next = Body::new(scene, animator, state, &next_layout, geometry)?;
             let offset = self.body.scroll.offset_at(now);
-            if offset > 0.0 {
+            if offset > 0.0
+                && !(geometry.inline
+                    && (geometry.lines != self.geometry.lines || !self.geometry.inline))
+            {
                 let snap = Animator::new(scene.compositor(), MotionPolicy::Reduced)?;
                 next.scroll.scroll_to(&snap, offset, now)?;
             }
-            let children = self.visual.Children()?;
-            children.InsertAtTop(&next.visual)?;
-            children.Remove(&self.body.visual)?;
+            self.visual.SetSize(Vector2::new(WIDTH, geometry.height))?;
+            crate::page_transition::crossfade(
+                animator,
+                &self.visual,
+                &self.body.visual,
+                &next.visual,
+            )?;
+            self.geometry = geometry.clone();
             self.body = next;
             self.layout = next_layout;
         }
@@ -139,37 +168,6 @@ impl SettingsView {
         let language = self.layout.language;
         if let Some(pill) = self.body.pill.as_mut() {
             pill.set_status(scene, animator, status, &pill_label(language, status))?;
-        }
-        let notice = state.notice().map(|notice| notice.render(language));
-        if let Some(slot) = self.body.notice.as_mut() {
-            slot.set(
-                scene,
-                notice.as_deref().unwrap_or(""),
-                THEME.disconnected.text,
-            )?;
-        }
-        if let Some(slot) = self.body.detail.as_mut() {
-            let default = connection.default_detail();
-            let detail = connection.detail.as_ref().unwrap_or(&default);
-            let display = detail.render(language);
-            let color = status.colors(&THEME).text;
-            match self.screen {
-                SettingsScreen::Settings => slot.set(scene, &display, color)?,
-                SettingsScreen::PairingGuide => {
-                    if let Some(notice) = notice {
-                        slot.set(scene, &notice, THEME.disconnected.text)?;
-                    } else if !guide_detail_visible(state) {
-                        slot.set(scene, "", color)?;
-                    } else {
-                        let color = if connection.phase == ConnectionPhase::Setup {
-                            THEME.disconnected.text
-                        } else {
-                            color
-                        };
-                        slot.set(scene, &display, color)?;
-                    }
-                }
-            }
         }
         if !matches!(connection.phase, ConnectionPhase::Connected { .. }) {
             self.progress_complete_until = None;
@@ -284,14 +282,10 @@ enum ContentKey {
         push_types: Vec<SyncKind>,
         file_ask_mb: u8,
         update: Option<String>,
-        notice: bool,
     },
     Guide {
         phase: ConnectionPhase,
         complete: bool,
-        detail_visible: bool,
-        driver: DriverState,
-        help: bool,
     },
 }
 
@@ -311,14 +305,10 @@ impl LayoutKey {
                 push_types: settings.push_types.clone(),
                 file_ask_mb: settings.file_ask_mb,
                 update: state.available_version().map(str::to_owned),
-                notice: state.notice().is_some(),
             },
             SettingsScreen::PairingGuide => ContentKey::Guide {
                 phase: connection.phase,
                 complete: connection.pairing_complete(),
-                detail_visible: guide_detail_visible(state),
-                driver: connection.driver,
-                help: connection.needs_help(),
             },
         };
         Self {
@@ -332,8 +322,8 @@ struct Body {
     visual: ContainerVisual,
     scroll: ScrollView,
     controls: Vec<Control>,
-    detail: Option<TextSlot>,
-    notice: Option<TextSlot>,
+    height: f32,
+    scroll_all: bool,
     progress: Option<ProgressBar>,
     pill: Option<StatusPill>,
 }
@@ -344,42 +334,31 @@ impl Body {
         animator: &Animator,
         state: &SettingsState,
         key: &LayoutKey,
+        geometry: &SettingsLayout,
     ) -> Result<Self> {
-        let viewport = match key.content {
-            ContentKey::Settings { .. } => SETTINGS_VIEWPORT,
-            ContentKey::Guide {
-                complete: false,
-                driver:
-                    DriverState::Missing
-                    | DriverState::AppleDevicesApp
-                    | DriverState::ServiceUnavailable
-                    | DriverState::UsbDriver
-                    | DriverState::Installing
-                    | DriverState::Failed,
-                ..
-            } => DRIVER_VIEWPORT,
-            ContentKey::Guide { .. } => GUIDE_VIEWPORT,
-        };
+        let viewport = geometry.viewport;
         let mut body = Self {
-            visual: holder(scene, PANEL)?,
+            visual: holder(scene, Rect::new(0.0, 0.0, WIDTH, geometry.height))?,
             scroll: ScrollView::new(scene, ScrollLayout::new(viewport, 0.0)?, &THEME)?,
             controls: Vec::new(),
-            detail: None,
-            notice: None,
+            height: geometry.height,
+            scroll_all: geometry.scroll_all,
             progress: None,
             pill: None,
         };
         body.visual.Children()?.InsertAtTop(body.scroll.visual())?;
         let mut build = Builder {
+            measure: crate::composition::TextMeasurer::new()?,
             scene,
             animator,
             state,
             language: key.language,
             body: &mut body,
         };
+        let start = build.feedback(geometry)?;
         let bottom = match key.content {
-            ContentKey::Settings { confirming, .. } => build.settings(confirming)?,
-            ContentKey::Guide { complete, .. } => build.guide(complete)?,
+            ContentKey::Settings { confirming, .. } => build.settings(confirming, start)?,
+            ContentKey::Guide { complete, .. } => build.guide(complete, start)?,
         };
         body.scroll
             .set_content_height(bottom + 8.0, Instant::now())?;
@@ -388,6 +367,7 @@ impl Body {
 }
 
 struct Builder<'a> {
+    measure: crate::composition::TextMeasurer,
     scene: &'a PopupScene,
     animator: &'a Animator,
     state: &'a SettingsState,
@@ -397,7 +377,7 @@ struct Builder<'a> {
 
 impl Builder<'_> {
     fn target(&self, scrolled: bool) -> &ContainerVisual {
-        if scrolled {
+        if scrolled || self.body.scroll_all {
             self.body.scroll.content()
         } else {
             &self.body.visual
@@ -419,20 +399,22 @@ impl Builder<'_> {
         self.body.controls.push(Control {
             action,
             label,
-            scrolled,
+            scrolled: scrolled || self.body.scroll_all,
             input: Input::Button { button, role },
         });
         Ok(())
     }
 
-    fn add_progress(&mut self, y: f32) -> Result<()> {
+    fn add_progress(&mut self, y: f32, scrolled: bool) -> Result<()> {
         let bar = ProgressBar::new(
             self.scene,
             Vector2::new(PAD + 12.0, y),
             INNER - 24.0,
             &THEME,
         )?;
-        self.target(true).Children()?.InsertAtTop(bar.visual())?;
+        self.target(scrolled)
+            .Children()?
+            .InsertAtTop(bar.visual())?;
         self.body.progress = Some(bar);
         Ok(())
     }
@@ -520,55 +502,6 @@ impl Control {
     }
 }
 
-struct TextSlot {
-    visual: ContainerVisual,
-    bounds: Rect,
-    lines: u8,
-    value: String,
-    color: Color,
-    label: Option<SpriteVisual>,
-}
-
-impl TextSlot {
-    fn new(scene: &PopupScene, parent: &ContainerVisual, bounds: Rect, lines: u8) -> Result<Self> {
-        let visual = holder(scene, bounds)?;
-        parent.Children()?.InsertAtTop(&visual)?;
-        Ok(Self {
-            visual,
-            bounds,
-            lines,
-            value: String::new(),
-            color: THEME.muted,
-            label: None,
-        })
-    }
-
-    fn set(&mut self, scene: &PopupScene, content: &str, color: Color) -> Result<()> {
-        if self.value == content && self.color == color {
-            return Ok(());
-        }
-        let children = self.visual.Children()?;
-        if let Some(label) = self.label.take() {
-            children.Remove(&label)?;
-        }
-        if !content.is_empty() {
-            let style = TextStyle {
-                font: Font::Regular,
-                size: 12.0,
-                max_width: self.bounds.width,
-                color,
-            };
-            let surface = scene.wrapped_text(content, style, self.lines)?;
-            children.InsertAtTop(&surface.visual)?;
-            self.label = Some(surface.visual);
-        }
-        self.value.clear();
-        self.value.push_str(content);
-        self.color = color;
-        Ok(())
-    }
-}
-
 fn label(
     scene: &PopupScene,
     parent: &ContainerVisual,
@@ -653,10 +586,9 @@ fn pill_label(language: Language, status: Status) -> std::borrow::Cow<'static, s
 
 fn guide_detail_visible(state: &SettingsState) -> bool {
     let connection = state.connection();
-    state.notice().is_some()
-        || connection.pairing_complete()
+    connection.pairing_complete()
         || match connection.phase {
-            ConnectionPhase::DeveloperMode => false,
+            ConnectionPhase::DeveloperMode => true,
             ConnectionPhase::Setup => connection
                 .detail
                 .as_ref()
@@ -673,6 +605,8 @@ fn progress_state(state: &SettingsState, complete: bool) -> ProgressState {
             Some(progress.received_bytes.min(total) as f32 / total as f32)
         });
         fraction.map_or(ProgressState::Indeterminate, ProgressState::Determinate)
+    } else if connection.phase == ConnectionPhase::Waiting {
+        ProgressState::Waiting
     } else if complete {
         ProgressState::Complete
     } else {

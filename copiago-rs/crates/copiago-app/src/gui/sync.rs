@@ -9,7 +9,7 @@ use copiago_core::{
     settings::SyncKind,
 };
 use copiago_device::{DeviceCommand, FileProgress, FileTransferError, PasteboardError};
-use copiago_ui::history::{HistoryAction, HistoryList, HistoryOffer, HistoryRowId, StatusTone};
+use copiago_ui::history::{HistoryList, HistoryOffer, HistoryRowId, StatusTone};
 use copiago_win::{
     clipboard::ClipboardError,
     image::{ImageError, decode_scaled, encode_png, png_for_device},
@@ -281,7 +281,6 @@ impl Host<'_> {
                 let notice = message!("已发送{kind}到 iPhone", kind = kind_name(kind));
                 if let Some(id) = row {
                     self.history_page.sent(id);
-                    self.feedback(HistoryAction::Send(id));
                     if !self.popup.visible() {
                         self.notify(&notice, false, NotificationKind::Standard);
                     }

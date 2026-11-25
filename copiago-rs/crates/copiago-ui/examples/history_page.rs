@@ -280,9 +280,6 @@ mod example {
             {
                 view.reveal(id, now)?;
             }
-            if let Some(action) = action {
-                view.show_feedback(scene, &self.page, action)?;
-            }
             Ok(())
         }
 
@@ -494,6 +491,7 @@ mod example {
         );
         assert_probe_thumbnails(&host, &mut driver, probe)?;
         let started = Instant::now();
+        let mut stage_started = started;
         let mut stage = 0;
         let mut msg = MSG::default();
         loop {
@@ -516,12 +514,13 @@ mod example {
                     driver.input(scene, msg)?;
                 }
                 if msg.message == WM_TIMER
+                    && msg.wParam.0 == TIMER
                     && probe
                     && advance_probe(
                         &mut host,
                         &mut driver,
                         position,
-                        started.elapsed(),
+                        &mut stage_started,
                         &mut stage,
                     )?
                 {
@@ -560,7 +559,20 @@ mod example {
         let scene = host.scene().unwrap();
         let view = driver.view.as_mut().unwrap();
         let now = Instant::now();
-        let point = Vector2::new(344.0, driver.layout.viewport().y + 32.0);
+        let action_center = |view: &HistoryView, page: &HistoryPage, action| {
+            let bounds = view
+                .controls(page, now)
+                .into_iter()
+                .find(|control| control.target == HistoryTarget::Action(action))
+                .and_then(|control| control.bounds)
+                .expect("selected row action should be visible");
+            Vector2::new(
+                bounds.x + bounds.width / 2.0,
+                bounds.y + bounds.height / 2.0,
+            )
+        };
+        let previous = driver.page.selected().unwrap();
+        let point = action_center(view, &driver.page, HistoryAction::Copy(previous));
         assert_eq!(
             view.hit(point, now),
             driver
@@ -576,9 +588,11 @@ mod example {
         })?;
         assert!((1..=6).contains(&decoded));
         println!("decoded_on_jump={decoded}");
-        let previous = driver.page.selected().unwrap();
         view.restore_scroll(0.0, now)?;
-        let delete = view.hit(Vector2::new(306.0, point.Y), now);
+        let delete = view.hit(
+            action_center(view, &driver.page, HistoryAction::Delete(previous)),
+            now,
+        );
         assert_eq!(
             delete,
             Some(HistoryTarget::Action(HistoryAction::Delete(previous)))
@@ -598,30 +612,30 @@ mod example {
         host: &mut PopupHost<'_>,
         driver: &mut Driver,
         position: POINT,
-        elapsed: Duration,
+        stage_started: &mut Instant,
         stage: &mut u8,
     ) -> Result<bool> {
         let window: HWND = host.hwnd();
         let visible = host.scene().is_some();
-        match (*stage, elapsed.as_millis()) {
+        match (*stage, stage_started.elapsed().as_millis()) {
             (0, 80..) => send_focus(window, WM_KILLFOCUS),
-            (1, 140..) => {
+            (1, 60..) => {
                 assert!(visible, "dismissed before 150 ms");
                 send_focus(window, WM_SETFOCUS);
             }
-            (2, 400..) => {
+            (2, 260..) => {
                 assert!(visible, "renewed focus did not cancel dismissal");
                 send_focus(window, WM_KILLFOCUS);
             }
-            (3, 700..) => {
-                assert!(!visible, "focus loss did not dismiss");
+            (3, 1000..) if visible => panic!("focus loss did not dismiss"),
+            (3, 150..) if !visible => {
                 host.set_dismiss_on_focus_loss(false);
                 host.show(position, driver.layout.bounds(), false, |scene| {
                     driver.mount(scene)
                 })?;
                 send_focus(window, WM_KILLFOCUS);
             }
-            (4, 1000..) => {
+            (4, 300..) => {
                 assert!(visible, "focus-loss dismissal was disabled");
                 // SAFETY: Queue a synthetic Esc for this example's input window only.
                 unsafe {
@@ -633,16 +647,15 @@ mod example {
                     )?
                 };
             }
-            (5, 1200..) => {
-                if visible {
-                    return Err(Error::new(E_FAIL, "Esc did not dismiss"));
-                }
+            (5, 1000..) if visible => return Err(Error::new(E_FAIL, "Esc did not dismiss")),
+            (5, _) if !visible => {
                 println!("focus_delay=true refocus_cancel=true opt_out=true escape=true");
                 return Ok(true);
             }
             _ => return Ok(false),
         }
         *stage += 1;
+        *stage_started = Instant::now();
         Ok(false)
     }
 

@@ -26,7 +26,8 @@ mod preview {
         page_transition::{PageDirection, transition_pages},
         settings_page::{
             ConnectionPhase, ConnectionState, DriverState, SettingSwitch, SettingsAction,
-            SettingsEffect, SettingsScreen, SettingsState, SettingsView, StartupState,
+            SettingsEffect, SettingsLayout, SettingsScreen, SettingsState, SettingsView,
+            StartupState,
         },
     };
     use windows::{
@@ -67,10 +68,7 @@ mod preview {
         ) -> Result<Self> {
             let animator = Animator::new(scene.compositor(), policy)?;
             let layer = scene.compositor().CreateContainerVisual()?;
-            layer.SetSize(Vector2::new(
-                SettingsView::BOUNDS.width,
-                SettingsView::BOUNDS.height,
-            ))?;
+            layer.SetSize(scene.content().Size()?)?;
             layer.SetClip(&scene.compositor().CreateInsetClip()?)?;
             scene.content().Children()?.InsertAtTop(&layer)?;
             let view = SettingsView::new(scene, &animator, state, screen, Instant::now())?;
@@ -242,13 +240,22 @@ mod preview {
                 let (Some(scene), Some(preview)) = (popup.scene(), live.as_mut()) else {
                     break;
                 };
-                if step == 17 {
+                if step == 19 {
                     live = None;
                     popup.hide();
                     println!("phase=hidden");
                     arm(hwnd, 4000)?;
                 } else {
                     run_step(scene, preview, &mut state, &mut screen, step)?;
+                    if matches!(step, 17 | 18) {
+                        let available = popup.available_tray_height(None)?;
+                        let bounds = SettingsLayout::measure(&state, screen, available)?.bounds();
+                        popup.rebuild(position, bounds, |scene| {
+                            *preview = Preview::new(scene, policy(), &state, screen)?;
+                            verify_recovery_controls(preview)
+                        })?;
+                        println!("recovery_controls_pinned height={}", bounds.height);
+                    }
                     arm(hwnd, if step == 2 { 3200 } else { 1200 })?;
                 }
                 step += 1;
@@ -333,6 +340,33 @@ mod preview {
         }
         live.view.update(scene, &live.animator, state, now)?;
         Ok(true)
+    }
+
+    fn verify_recovery_controls(preview: &mut Preview) -> Result<()> {
+        let now = Instant::now();
+        let actions = [
+            SettingsAction::InstallDriver,
+            SettingsAction::OpenAppleDevicesStore,
+            SettingsAction::CopyDiagnostics,
+            SettingsAction::ReportIssue,
+        ];
+        let bounds = |view: &SettingsView, time| {
+            actions.map(|action| {
+                view.controls(time)
+                    .find(|control| control.action == action && control.enabled)
+                    .and_then(|control| control.bounds)
+                    .expect("recovery action should be visible above the steps")
+            })
+        };
+        let before = bounds(&preview.view, now);
+        preview.view.scroll_wheel(&preview.animator, -960, now)?;
+        let after_scroll = now + std::time::Duration::from_secs(1);
+        assert_eq!(bounds(&preview.view, after_scroll), before);
+        for (action, area) in actions.into_iter().zip(before) {
+            let point = Vector2::new(area.x + area.width / 2.0, area.y + area.height / 2.0);
+            assert_eq!(preview.view.hit_test(point, after_scroll), Some(action));
+        }
+        Ok(())
     }
 
     fn run_step(
@@ -483,6 +517,26 @@ mod preview {
                 *screen = SettingsScreen::PairingGuide;
                 live.navigate(scene, state, *screen, PageDirection::Back)?;
                 "back_transition"
+            }
+            17 | 18 => {
+                // Reproduce the two simultaneous notices without changing a Windows service.
+                state.set_connection(ConnectionState {
+                    driver: DriverState::ServiceUnavailable,
+                    ..Default::default()
+                });
+                state.set_diagnosis(Some(message!("端口 27015 被「{program}」占用，Apple 连接服务无法工作。请退出该程序（或在任务管理器中结束它），然后点「修复连接服务」。", program = "pwsh.exe")));
+                if step == 18 {
+                    state.activate(
+                        SettingsAction::ChooseLanguage(LanguagePreference::ZhCn),
+                        now,
+                    );
+                    state.complete_driver(DriverState::ServiceUnavailable, message!("Apple 连接服务仍不可用。请重启电脑后再试；仍不行请点「手动下载安装」重新安装 Apple 组件。"));
+                    state.activate(SettingsAction::CopyDiagnostics, now);
+                    state.set_notice(Some(message!(
+                        "诊断信息已复制。可以直接粘贴发给开发者，或点「反馈问题」提交到 GitHub。"
+                    )));
+                }
+                "pinned_repair_and_diagnostics"
             }
             _ => {
                 state.set_notice(None);

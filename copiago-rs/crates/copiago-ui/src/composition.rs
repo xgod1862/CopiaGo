@@ -134,7 +134,31 @@ impl<'ui> PopupHost<'ui> {
         self.present(placement, None, activate, build)
     }
 
-    /// Present a card next to the tray, with an entrance from the taskbar edge.
+    /// Refresh the visible tray anchor and fit its current card into the work area.
+    /// Return the DIP height available for laying out the next frame.
+    pub fn available_tray_height(&mut self, icon: Option<RECT>) -> Result<f32> {
+        if let Some(visible) = &mut self.visible {
+            let dpi = visible.placement.dpi;
+            if let Some(tray) = visible.tray {
+                let previous = visible.placement;
+                let tray = tray.refresh(previous.position)?;
+                let placement = tray.place(previous.bounds, dpi)?;
+                visible.tray = Some(tray);
+                if placement.position != previous.position
+                    || placement.bounds.height != previous.bounds.height
+                {
+                    self.resize_at_tray(placement.bounds)?;
+                }
+                return Ok(tray.available_height(dpi));
+            }
+            let tray = TrayPlacement::resolve(icon, Some(visible.placement.position))?;
+            return Ok(tray.available_height(dpi));
+        }
+        let tray = TrayPlacement::resolve(icon, None)?;
+        Ok(tray.available_height(self.windows.dpi_at(tray.dpi_sample())?))
+    }
+
+    /// Place a card in the work-area corner next to the tray monitor's taskbar.
     /// Pass the current shell icon rectangle in physical screen pixels when
     /// available. Otherwise use the monitor of the given screen point or cursor.
     pub fn show_at_tray(
@@ -145,10 +169,31 @@ impl<'ui> PopupHost<'ui> {
         activate: bool,
         build: impl FnOnce(&PopupScene) -> Result<()>,
     ) -> Result<()> {
+        self.show_at_tray_with_layout(
+            icon_rect,
+            fallback,
+            activate,
+            |_| Ok((bounds, ())),
+            |scene, ()| build(scene),
+        )
+    }
+
+    /// Measure and place against the same monitor snapshot, even if the cursor moves.
+    pub fn show_at_tray_with_layout<L>(
+        &mut self,
+        icon_rect: Option<RECT>,
+        fallback: Option<POINT>,
+        activate: bool,
+        measure: impl FnOnce(f32) -> Result<(PopupBounds, L)>,
+        build: impl FnOnce(&PopupScene, L) -> Result<()>,
+    ) -> Result<()> {
         self.hide();
         let tray = TrayPlacement::resolve(icon_rect, fallback)?;
         let dpi = self.windows.dpi_at(tray.dpi_sample())?;
-        self.present(tray.place(bounds, dpi)?, Some(tray), activate, build)
+        let (bounds, layout) = measure(tray.available_height(dpi))?;
+        self.present(tray.place(bounds, dpi)?, Some(tray), activate, |scene| {
+            build(scene, layout)
+        })
     }
 
     fn present(
@@ -251,8 +296,7 @@ impl<'ui> PopupHost<'ui> {
         };
         let tray = visible
             .tray
-            .ok_or_else(|| Error::new(E_INVALIDARG, "The popup has no tray anchor"))?
-            .refresh(visible.placement.position)?;
+            .ok_or_else(|| Error::new(E_INVALIDARG, "The popup has no tray anchor"))?;
         let placement = tray.place(bounds, visible.placement.dpi)?;
         visible.scene.resize(placement)?;
         self.windows.place(placement)?;

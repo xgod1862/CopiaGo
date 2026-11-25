@@ -24,7 +24,7 @@ const STEPS: [(&str, &str); 4] = [
 ];
 /// Shown after CopiaGo asked the phone to reveal the switch, which iOS hides until a
 /// developer tool requests it.
-const DEVELOPER_HELP: &str = concat!(
+pub(super) const DEVELOPER_HELP: &str = concat!(
     "打开 iPhone「设置 → 隐私与安全性」，在底部找到「开发者模式」并打开，按提示重启。",
     "重启后解锁，在弹窗中点「打开」，再点下方按钮。若仍没有该开关，可能是公司或学校管理的设备。"
 );
@@ -33,8 +33,18 @@ const SERVICE_HELP: &str = "Apple 连接服务不可用或无法读取设备。�
 const USB_DRIVER_HELP: &str = "电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。修复将请求管理员权限，为这台电脑重新安装 Apple 自带的驱动。";
 const APPLE_DEVICES_HELP: &str = "这台电脑使用 Microsoft Store 版 Apple Devices，它的设备连接进程没有运行。打开 Apple Devices 即可启动它，不需要管理员权限，也不需要另外安装组件。";
 
+pub(super) fn driver_help(driver: DriverState) -> &'static str {
+    match driver {
+        DriverState::ServiceUnavailable => SERVICE_HELP,
+        DriverState::UsbDriver => USB_DRIVER_HELP,
+        DriverState::AppleDevicesApp => APPLE_DEVICES_HELP,
+        DriverState::Installing => "正在处理…",
+        _ => DRIVER_HELP,
+    }
+}
+
 impl Builder<'_> {
-    pub(super) fn guide(&mut self, complete: bool) -> Result<f32> {
+    pub(super) fn guide(&mut self, complete: bool, start: f32) -> Result<f32> {
         let (scene, language) = (self.scene, self.language);
         let title = tr!(
             language,
@@ -87,14 +97,10 @@ impl Builder<'_> {
         let connection = self.state.connection();
         let phase = connection.phase;
         let bottom = if complete {
-            self.guide_done()?
+            self.guide_done(start)?
         } else {
-            self.guide_steps(phase)?
+            self.guide_steps(phase, start)?
         };
-        if !complete && connection.driver != DriverState::Ready {
-            self.driver_box(connection.driver)?;
-        }
-
         let (caption, action) = if complete {
             ("开始使用", SettingsAction::FinishPairing)
         } else if phase.busy() {
@@ -104,10 +110,15 @@ impl Builder<'_> {
         } else {
             ("连接 iPhone", SettingsAction::RequestPair)
         };
+        let footer_bottom = if self.body.scroll_all {
+            bottom + 75.0
+        } else {
+            self.body.height
+        };
         let title = tr!(language, caption).into_owned();
         let primary = Button::text(
             scene,
-            Rect::new(PAD, 411.0, INNER, 44.0),
+            Rect::new(PAD, footer_bottom - 67.0, INNER, 44.0),
             ButtonStyle::Primary,
             &title,
             &THEME,
@@ -122,14 +133,18 @@ impl Builder<'_> {
                 color: THEME.muted,
             },
         )?;
-        center(&version, Rect::new(PAD, 457.0, INNER, 19.0))?;
+        center(&version, Rect::new(PAD, footer_bottom - 21.0, INNER, 19.0))?;
         self.target(false)
             .Children()?
             .InsertAtTop(&version.visual)?;
-        Ok(bottom)
+        Ok(if self.body.scroll_all {
+            footer_bottom
+        } else {
+            bottom
+        })
     }
 
-    fn guide_steps(&mut self, phase: ConnectionPhase) -> Result<f32> {
+    fn guide_steps(&mut self, phase: ConnectionPhase, start: f32) -> Result<f32> {
         let (scene, language) = (self.scene, self.language);
         let current = match phase {
             ConnectionPhase::Pairing => 1,
@@ -138,33 +153,43 @@ impl Builder<'_> {
             | ConnectionPhase::RetryRequired => 2,
             _ => 0,
         };
-        let description = if phase == ConnectionPhase::DeveloperMode {
-            DEVELOPER_HELP
-        } else {
-            STEPS[current].1
-        };
-        let description = scene.wrapped_text(
-            &tr!(language, description),
-            TextStyle {
-                font: Font::Regular,
-                size: 12.0,
-                max_width: INNER - 70.0,
-                color: THEME.muted,
-            },
-            5,
+        let width = INNER - 66.0;
+        let description = self.measure.lines(
+            &tr!(language, STEPS[current].1),
+            width - 4.0,
+            Font::Regular,
+            12.0,
         )?;
-        let base_height = 46.0;
-        let expansion = description.size.Y + 6.0;
-        let card_height = base_height * STEPS.len() as f32 + expansion + 12.0;
+        let expansion = description.len() as f32 * 18.0 + 6.0;
+        let mut steps = Vec::new();
+        for (index, (title, _)) in STEPS.into_iter().enumerate() {
+            let active = index == current;
+            let font = if active {
+                Font::Semibold
+            } else {
+                Font::Regular
+            };
+            let source = if active && phase == ConnectionPhase::DeveloperMode {
+                "开启开发者模式并重启手机"
+            } else {
+                title
+            };
+            let lines = self
+                .measure
+                .lines(&tr!(language, source), width - 4.0, font, 13.5)?;
+            let title_height = (lines.len() as f32 * 20.0 + 12.0).max(46.0);
+            steps.push((lines, font, title_height));
+        }
+        let card_height = steps.iter().map(|(_, _, h)| h).sum::<f32>() + expansion + 12.0;
         background(
             scene,
             self.target(true),
-            Rect::new(PAD, 2.0, INNER, card_height),
+            Rect::new(PAD, start + 2.0, INNER, card_height),
             16.0,
             THEME.card,
         )?;
-        let mut y = 8.0;
-        for (index, (step_title, _)) in STEPS.into_iter().enumerate() {
+        let mut y = start + 8.0;
+        for (index, (titles, font, base_height)) in steps.into_iter().enumerate() {
             let active = index == current;
             let height = base_height + if active { expansion } else { 0.0 };
             if active {
@@ -177,59 +202,48 @@ impl Builder<'_> {
                 )?;
             }
             self.step_number(index, current, y)?;
-            let source = if active && phase == ConnectionPhase::DeveloperMode {
-                "开启开发者模式并重启手机"
-            } else {
-                step_title
-            };
-            label(
-                scene,
-                self.target(true),
-                &tr!(language, source),
-                Rect::new(PAD + 54.0, y, INNER - 66.0, base_height),
-                if active {
-                    Font::Semibold
-                } else {
-                    Font::Regular
-                },
-                13.5,
-                if index < current {
-                    THEME.muted
-                } else {
-                    THEME.ink
-                },
-            )?;
+            let title_y = y + (base_height - titles.len() as f32 * 20.0) / 2.0;
+            for (i, line) in titles.iter().enumerate() {
+                label(
+                    scene,
+                    self.target(true),
+                    line,
+                    Rect::new(PAD + 54.0, title_y + i as f32 * 20.0, width, 20.0),
+                    font,
+                    13.5,
+                    if index < current {
+                        THEME.muted
+                    } else {
+                        THEME.ink
+                    },
+                )?;
+            }
             if active {
-                description.visual.SetOffset(xy(PAD + 54.0, y + 39.0))?;
-                self.target(true)
-                    .Children()?
-                    .InsertAtTop(&description.visual)?;
+                for (i, line) in description.iter().enumerate() {
+                    label(
+                        scene,
+                        self.target(true),
+                        line,
+                        Rect::new(
+                            PAD + 54.0,
+                            y + base_height - 4.0 + i as f32 * 18.0,
+                            width,
+                            18.0,
+                        ),
+                        Font::Regular,
+                        12.0,
+                        THEME.muted,
+                    )?;
+                }
             }
             y += height;
         }
-        y += 18.0;
-        self.body.detail = Some(TextSlot::new(
-            scene,
-            self.target(true),
-            Rect::new(PAD + 4.0, y, INNER - 8.0, 56.0),
-            3,
-        )?);
-        if guide_detail_visible(self.state) {
-            y += 58.0;
-        }
-        if phase.busy() {
-            self.add_progress(y)?;
-            y += 17.0;
-        }
-        if self.state.connection().needs_help() {
-            y = self.help_row(y + 4.0)? + 4.0;
-        }
-        Ok(y)
+        Ok(y + 8.0)
     }
 
     /// Two equal buttons: copy a diagnostic report, or copy it and open a GitHub issue.
     /// Returns the bottom of the row.
-    pub(super) fn help_row(&mut self, y: f32) -> Result<f32> {
+    pub(super) fn help_row(&mut self, y: f32, scrolled: bool) -> Result<f32> {
         let (scene, language) = (self.scene, self.language);
         let width = (INNER - 8.0) / 2.0;
         let buttons = [
@@ -245,7 +259,7 @@ impl Builder<'_> {
                 &name,
                 &THEME,
             )?;
-            self.add_button(button, name, action, true, ControlRole::Button)?;
+            self.add_button(button, name, action, scrolled, ControlRole::Button)?;
         }
         Ok(y + 32.0)
     }
@@ -303,38 +317,13 @@ impl Builder<'_> {
         target.Children()?.InsertAtTop(&surface.visual)
     }
 
-    fn driver_box(&mut self, driver: DriverState) -> Result<()> {
+    pub(super) fn driver_buttons(
+        &mut self,
+        driver: DriverState,
+        buttons_y: f32,
+        scrolled: bool,
+    ) -> Result<()> {
         let (scene, language) = (self.scene, self.language);
-        let note = scene.wrapped_text(
-            &tr!(
-                language,
-                match driver {
-                    DriverState::ServiceUnavailable => SERVICE_HELP,
-                    DriverState::UsbDriver => USB_DRIVER_HELP,
-                    DriverState::AppleDevicesApp => APPLE_DEVICES_HELP,
-                    _ => DRIVER_HELP,
-                }
-            ),
-            TextStyle {
-                font: Font::Regular,
-                size: 12.0,
-                max_width: INNER - 28.0,
-                color: THEME.disconnected.text,
-            },
-            4,
-        )?;
-        let height = 70.0 + note.size.Y;
-        let y = GUIDE_VIEWPORT.bottom() - height;
-        let buttons_y = y + 24.0 + note.size.Y;
-        background(
-            scene,
-            self.target(false),
-            Rect::new(PAD, y, INNER, height),
-            16.0,
-            THEME.disconnected.background,
-        )?;
-        note.visual.SetOffset(xy(PAD + 14.0, y + 12.0))?;
-        self.target(false).Children()?.InsertAtTop(&note.visual)?;
         let name = tr!(
             language,
             match driver {
@@ -348,7 +337,7 @@ impl Builder<'_> {
         .into_owned();
         let install = Button::text(
             scene,
-            Rect::new(PAD + 14.0, buttons_y, 143.0, 32.0),
+            Rect::new(PAD, buttons_y, (INNER - 8.0) / 2.0, 32.0),
             ButtonStyle::Neutral,
             &name,
             &THEME,
@@ -357,7 +346,7 @@ impl Builder<'_> {
             install,
             name,
             SettingsAction::InstallDriver,
-            false,
+            scrolled,
             ControlRole::Button,
         )?;
         if matches!(
@@ -372,7 +361,12 @@ impl Builder<'_> {
             let name = tr!(language, "手动下载安装").into_owned();
             let store = Button::text(
                 scene,
-                Rect::new(PAD + 165.0, buttons_y, INNER - 179.0, 32.0),
+                Rect::new(
+                    PAD + (INNER + 8.0) / 2.0,
+                    buttons_y,
+                    (INNER - 8.0) / 2.0,
+                    32.0,
+                ),
                 ButtonStyle::Neutral,
                 &name,
                 &THEME,
@@ -381,16 +375,16 @@ impl Builder<'_> {
                 store,
                 name,
                 SettingsAction::OpenAppleDevicesStore,
-                false,
+                scrolled,
                 ControlRole::Button,
             )?;
         }
         Ok(())
     }
 
-    fn guide_done(&mut self) -> Result<f32> {
+    fn guide_done(&mut self, start: f32) -> Result<f32> {
         let (scene, language) = (self.scene, self.language);
-        let check = Rect::new((WIDTH - 72.0) / 2.0, 22.0, 72.0, 72.0);
+        let check = Rect::new((WIDTH - 72.0) / 2.0, start + 22.0, 72.0, 72.0);
         background(scene, self.target(true), check, 36.0, THEME.tint)?;
         icon(
             scene,
@@ -409,30 +403,33 @@ impl Builder<'_> {
                 color: THEME.ink,
             },
         )?;
-        center(&title, Rect::new(PAD, 111.0, INNER, 30.0))?;
+        center(&title, Rect::new(PAD, start + 111.0, INNER, 30.0))?;
         self.target(true).Children()?.InsertAtTop(&title.visual)?;
-        let hint = scene.wrapped_text(
+        let hint_width = INNER - 24.0;
+        let hint = self.measure.lines(
             &tr!(
                 language,
                 "之后 iPhone 和电脑在同一 Wi-Fi 下会自动连接，在手机上复制即可粘贴到电脑。"
             ),
-            TextStyle {
-                font: Font::Regular,
-                size: 12.0,
-                max_width: INNER - 24.0,
-                color: THEME.muted,
-            },
-            3,
+            hint_width - 4.0,
+            Font::Regular,
+            12.0,
         )?;
-        center(&hint, Rect::new(PAD + 12.0, 149.0, INNER - 24.0, 58.0))?;
-        self.target(true).Children()?.InsertAtTop(&hint.visual)?;
-        self.body.detail = Some(TextSlot::new(
-            scene,
-            self.target(true),
-            Rect::new(PAD + 12.0, 224.0, INNER - 24.0, 39.0),
-            2,
-        )?);
-        self.add_progress(270.0)?;
-        Ok(285.0)
+        let mut y = start + 158.0;
+        for line in hint {
+            let surface = scene.text(
+                &line,
+                TextStyle {
+                    font: Font::Regular,
+                    size: 12.0,
+                    max_width: hint_width,
+                    color: THEME.muted,
+                },
+            )?;
+            center(&surface, Rect::new(PAD + 12.0, y, hint_width, 18.0))?;
+            self.target(true).Children()?.InsertAtTop(&surface.visual)?;
+            y += 18.0;
+        }
+        Ok(y + 18.0)
     }
 }

@@ -67,7 +67,13 @@ impl Host<'_> {
         let _ = writeln!(text, "CopiaGo 诊断信息");
         let _ = writeln!(text, "version={VERSION} {}", driver::system_summary());
         write_connection(&mut text, connection, self.connection.vpn_adapter_active);
-        if let Some(notice) = self.settings.notice().and_then(Message::literal_text) {
+        if let Some(notice) = self
+            .settings
+            .repair_error()
+            .or_else(|| self.settings.notice())
+            .or_else(|| self.settings.diagnosis())
+            .and_then(Message::literal_text)
+        {
             let _ = writeln!(text, "notice={notice}");
         }
         let _ = writeln!(text, "service: {}", service.log_fields());

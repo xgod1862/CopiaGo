@@ -15,7 +15,7 @@ use copiago_core::{
 };
 
 mod view;
-pub use view::{ControlInfo, ControlRole, SettingsScreen, SettingsView};
+pub use view::{ControlInfo, ControlRole, SettingsLayout, SettingsScreen, SettingsView};
 
 const FORGET_WINDOW: Duration = Duration::from_secs(3);
 
@@ -246,6 +246,9 @@ pub struct SettingsState {
     available_version: Option<String>,
     connection: ConnectionState,
     startup: StartupState,
+    retry_hint: Option<Message>,
+    diagnosis: Option<Message>,
+    repair_error: Option<Message>,
     notice: Option<Message>,
     forget_until: Option<Instant>,
     forgetting: bool,
@@ -263,6 +266,9 @@ impl SettingsState {
             available_version: None,
             connection: ConnectionState::default(),
             startup: StartupState::default(),
+            retry_hint: None,
+            diagnosis: None,
+            repair_error: None,
             notice: None,
             forget_until: None,
             forgetting: false,
@@ -298,6 +304,17 @@ impl SettingsState {
         if self.connection.device != connection.device {
             self.cancel_confirmation();
         }
+        match connection.phase {
+            ConnectionPhase::Waiting if connection.device.is_some() => {
+                self.retry_hint = connection.detail.clone();
+            }
+            ConnectionPhase::Connecting if connection.device.is_some() => {}
+            _ => self.retry_hint = None,
+        }
+        if matches!(connection.phase, ConnectionPhase::Connected { .. }) {
+            self.diagnosis = None;
+            self.repair_error = None;
+        }
         self.connection = connection;
     }
 
@@ -318,6 +335,25 @@ impl SettingsState {
         self.notice.as_ref()
     }
 
+    pub fn retry_hint(&self) -> Option<&Message> {
+        self.retry_hint.as_ref()
+    }
+
+    pub fn diagnosis(&self) -> Option<&Message> {
+        self.diagnosis.as_ref()
+    }
+
+    pub fn set_diagnosis(&mut self, notice: Option<Message>) {
+        if self.diagnosis != notice {
+            self.repair_error = None;
+        }
+        self.diagnosis = notice;
+    }
+
+    pub fn repair_error(&self) -> Option<&Message> {
+        self.repair_error.as_ref()
+    }
+
     pub fn set_notice(&mut self, notice: Option<Message>) {
         self.notice = notice;
     }
@@ -329,7 +365,14 @@ impl SettingsState {
         notice: Message,
     ) -> Option<SettingsAction> {
         self.connection.driver = driver;
-        self.notice = Some(notice);
+        self.notice = None;
+        if driver == DriverState::Ready {
+            self.diagnosis = None;
+            self.repair_error = None;
+            self.notice = Some(notice);
+        } else {
+            self.repair_error = Some(notice);
+        }
         self.after_driver
             .take()
             .filter(|action| driver == DriverState::Ready && self.can_activate(*action))
@@ -361,6 +404,9 @@ impl SettingsState {
         self.cancel_confirmation();
         if success {
             self.after_driver = None;
+            self.retry_hint = None;
+            self.diagnosis = None;
+            self.repair_error = None;
             self.connection = ConnectionState {
                 detail: Some(message!("已忘记 iPhone。请用数据线连接后重新配对")),
                 driver: self.connection.driver,
@@ -526,6 +572,7 @@ impl SettingsState {
                 }
             }
             SettingsAction::InstallDriver => {
+                self.repair_error = None;
                 self.after_driver = Some(
                     if self.connection.device.is_some() || self.connection.phase.can_continue() {
                         SettingsAction::Retry
@@ -576,6 +623,8 @@ impl SettingsState {
     }
 
     fn start_connection(&mut self, phase: ConnectionPhase) {
+        self.diagnosis = None;
+        self.repair_error = None;
         self.connection.phase = phase;
         self.connection.detail = None;
         self.connection.progress = None;

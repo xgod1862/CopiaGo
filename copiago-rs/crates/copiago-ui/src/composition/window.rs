@@ -22,8 +22,8 @@ use windows::{
                 KillTimer, LWA_ALPHA, LoadCursorW, PostMessageW, RegisterClassW, SW_HIDE,
                 SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
                 SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW,
-                SetWindowPos, ShowWindow, WM_APP, WM_CLOSE, WM_DESTROY, WM_DPICHANGED,
-                WM_GETOBJECT, WM_KILLFOCUS, WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS,
+                SetWindowPos, ShowWindow, WM_APP, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE,
+                WM_DPICHANGED, WM_GETOBJECT, WM_KILLFOCUS, WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS,
                 WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
                 WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
                 WS_POPUP,
@@ -395,7 +395,7 @@ extern "system" fn window_proc(
                 }
                 return LRESULT(0);
             }
-            WM_SETTINGCHANGE => {
+            WM_SETTINGCHANGE | WM_DISPLAYCHANGE => {
                 if data.is_some() {
                     let _ = PostMessageW(Some(hwnd), POPUP_SETTINGS_CHANGED, WPARAM(0), LPARAM(0));
                 }

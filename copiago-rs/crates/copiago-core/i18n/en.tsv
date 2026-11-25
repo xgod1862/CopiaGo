@@ -246,3 +246,5 @@ Microsoft Store 版 Apple Devices 的设备连接进程没有响应。请在任�
 Apple Devices 已打开，但它的设备连接进程仍未就绪。请稍等片刻再点「连接 iPhone」；仍不行请在任务管理器中结束「AppleMobileDeviceProcess」后重新打开 Apple Devices，或重启电脑。	Apple Devices is open, but its device connection process is not ready yet. Wait a moment, then select Connect iPhone. If that does not help, end AppleMobileDeviceProcess in Task Manager and open Apple Devices again, or restart your PC.
 这台电脑使用 Microsoft Store 版 Apple Devices，没有可修复的系统服务。请点「打开 Apple Devices」，然后回到这里点「连接 iPhone」。	This PC uses the Microsoft Store edition of Apple Devices, which has no system service to repair. Select Open Apple Devices, then come back and select Connect iPhone.
 无法自动打开 Apple Devices。请从开始菜单打开「Apple Devices」，然后回到这里点「连接 iPhone」。	Could not open Apple Devices automatically. Open Apple Devices from the Start menu, then come back and select Connect iPhone.
+等待下一次自动重试	Waiting for the next automatic retry
+正在重新连接…	Reconnecting…

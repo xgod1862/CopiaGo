@@ -32,7 +32,6 @@ impl Host<'_> {
                 Ok(()) => {
                     self.history_page.copied(id);
                     self.copy_hide_at = Some(now + COPY_HIDE_DELAY);
-                    self.feedback(action);
                 }
                 Err(_) => self.set_status(message!("无法复制这条历史"), StatusTone::Warning),
             },
@@ -163,7 +162,7 @@ impl Host<'_> {
                 // Explain the cause and the repair button, but never raise an
                 // administrator prompt the user did not ask for: "Connect" is not
                 // consent to change a system service.
-                self.settings.set_notice(check.notice);
+                self.settings.set_diagnosis(check.notice);
                 return;
             }
         }

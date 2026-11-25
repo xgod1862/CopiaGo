@@ -195,7 +195,16 @@ impl ConnectionState {
     }
 
     pub fn show_guide(&self) -> bool {
-        self.device.is_none() || self.pairing_complete()
+        self.device.is_none() || self.pairing_complete() || self.repairing_paired()
+    }
+
+    /// A paired phone whose explicit retry stopped on the Apple service or driver. The
+    /// guide holds the repair controls, while the device card and its Forget action stay
+    /// available in Settings.
+    pub fn repairing_paired(&self) -> bool {
+        self.device.is_some()
+            && self.phase == ConnectionPhase::RetryRequired
+            && self.driver != DriverState::Ready
     }
 
     pub fn default_detail(&self) -> Message {

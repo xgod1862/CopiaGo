@@ -139,11 +139,10 @@ impl Host<'_> {
                 .clone();
             if connection.device.is_none() || state == ConnState::Hold {
                 if fresh {
-                    // An explicit retry of a saved phone can land here after upgrading.
-                    // Use the same repair controls; restore the device card on connection.
-                    if let Some(device) = connection.device.take() {
-                        self.connection.pending_device = Some(device);
-                        connection.first_connection = false;
+                    // An explicit retry of a saved phone can land here after upgrading. Keep
+                    // the device, so Settings still offers Forget, and open the guide with
+                    // the repair controls (see ConnectionState::repairing_paired).
+                    if connection.device.is_some() {
                         show_guide = self.popup.visible() && self.popup.screen() != Screen::Guide;
                     }
                     connection.driver = driver;

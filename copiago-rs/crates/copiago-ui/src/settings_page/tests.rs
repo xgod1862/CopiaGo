@@ -443,3 +443,32 @@ fn help_is_offered_only_while_stuck() {
         Some(SettingsEffect::ReportIssue)
     );
 }
+
+#[test]
+fn repairing_a_paired_phone_keeps_forget_available() {
+    let fixture = Fixture::new();
+    let mut state = SettingsState::load(fixture.path(), "");
+    let now = Instant::now();
+    state.set_connection(ConnectionState {
+        phase: ConnectionPhase::RetryRequired,
+        device: Some(DeviceInfo::default()),
+        driver: DriverState::ServiceUnavailable,
+        ..ConnectionState::default()
+    });
+    assert!(state.connection().show_guide());
+    assert!(state.can_activate(SettingsAction::ForgetDevice));
+    assert!(state.can_activate(SettingsAction::InstallDriver));
+    assert_eq!(state.activate(SettingsAction::ForgetDevice, now), None);
+    assert_eq!(
+        state.activate(SettingsAction::ForgetDevice, now),
+        Some(SettingsEffect::ForgetDevice)
+    );
+    state.complete_forget(false);
+    state.set_connection(ConnectionState {
+        phase: ConnectionPhase::RetryRequired,
+        device: Some(DeviceInfo::default()),
+        driver: DriverState::Ready,
+        ..ConnectionState::default()
+    });
+    assert!(!state.connection().show_guide());
+}

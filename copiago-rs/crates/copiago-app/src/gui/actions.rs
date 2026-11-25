@@ -262,7 +262,10 @@ impl Host<'_> {
         self.settings.set_notice(Some(notice));
         // A successful repair only proves service reachability. Continue through
         // the normal worker so trust, device enumeration and pairing are verified.
-        if state == DriverState::Ready && self.settings.connection().device.is_none() {
+        let connection = self.settings.connection();
+        if state == DriverState::Ready
+            && (connection.device.is_none() || connection.phase.can_continue())
+        {
             let previous = self.settings.connection().clone();
             let action = if previous.phase.can_continue() {
                 SettingsAction::Retry

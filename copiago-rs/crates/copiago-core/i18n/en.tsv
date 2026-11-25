@@ -226,7 +226,7 @@ iPhone 已锁定，解锁后会自动重新连接。	iPhone is locked. It reconn
 无法启动修复。请重启电脑后再试；仍不行请点「手动下载安装」重新安装 Apple 组件。	Could not start the repair. Restart your PC and try again. If that fails, select Download manually to reinstall Apple components.
 无法打开下载页面。请在浏览器中访问 apple.com/itunes/download/win64 下载并安装 iTunes，然后回到这里点「连接 iPhone」。	Could not open the download page. Visit apple.com/itunes/download/win64 in your browser, install iTunes, then come back and select Connect iPhone.
 无法连接电脑上的 Apple 设备连接服务（与手机和数据线无关）。	Cannot reach the Apple connection service on this PC (not a phone or cable problem).
-没有等到管理员授权。Windows 安全提示可能在其他窗口后面，请在任务栏找到它并点「是」，或再点一次修复。	No administrator approval was received. The Windows security prompt may be behind other windows. Find it in the taskbar and choose Yes, or start the repair again.
+Windows 尚未返回修复结果。如果看到管理员授权提示，请批准或取消。	Windows has not finished the repair. If an administrator prompt is open, approve or cancel it.
 没有获得管理员权限，无法修复。请用管理员账户登录 Windows 后再试；公司或学校的电脑请联系管理员。	Administrator rights were not granted, so nothing was repaired. Sign in to Windows with an administrator account and try again. On a work or school PC, contact the administrator.
 电脑上的 Apple 设备连接服务不可用，暂时无法通过数据线连接（不影响 Wi-Fi 连接）。需要修复时，请在设置的 iPhone 卡片上点「继续连接」，再按提示操作。	The Apple connection service on this PC is unavailable, so USB connections do not work for now (Wi-Fi is not affected). To repair it, select Continue on the iPhone card in Settings and follow the prompts.
 自动安装没有完成（可能是网络问题，或取消了管理员授权）。请点「手动下载安装」，装好后回到这里点「连接 iPhone」。	Automatic installation did not finish (a network problem, or administrator permission was cancelled). Select Download manually, install the components, then come back and select Connect iPhone.

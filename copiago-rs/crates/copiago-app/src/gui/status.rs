@@ -27,6 +27,8 @@ pub(super) struct ConnectionFeedback {
     notice_sent: bool,
     awaiting_wireless: bool,
     just_forgot: bool,
+    /// Whether the current waiting status displayed a VPN hint.
+    pub(super) vpn_adapter_active: bool,
     /// Diagnosis for the current run of "Apple service unavailable" statuses. Background
     /// reconnects repeat that status every few seconds; the check runs once per run.
     service_check: Option<(DriverState, Option<Message>)>,
@@ -162,10 +164,10 @@ impl Host<'_> {
         {
             // "No iPhone" covers a charge-only cable, a missing Apple driver and a locked
             // phone alike. What Windows sees on USB tells them apart.
-            let (driver, notice) = super::driver::explain_missing_iphone();
-            if driver != copiago_ui::settings_page::DriverState::Ready {
-                connection.driver = driver;
-            }
+            let notice = super::driver::explain_missing_iphone(
+                &mut connection.driver,
+                crate::service::apple_usb_presence(),
+            );
             self.settings.set_notice(Some(notice));
         }
         if self.connection.just_forgot && state == ConnState::Setup {
@@ -176,7 +178,9 @@ impl Host<'_> {
         }
 
         if let ConnectionPhase::Connected { wireless } = phase {
-            connection.driver = copiago_ui::settings_page::DriverState::Ready;
+            if self.driver_install.is_none() {
+                connection.driver = DriverState::Ready;
+            }
             self.clipboard_sync.connected(true);
             let transport = if wireless { "wifi" } else { "usb" };
             diagnostic::event(format_args!("event=connected transport={transport}"));
@@ -370,11 +374,14 @@ impl Host<'_> {
 
     /// While a paired phone is unreachable, names an active VPN or proxy adapter, the most
     /// common PC-side reason for a phone that never reappears on Wi-Fi.
-    fn network_hint(&self, detail: Message) -> Message {
-        if detail != Message::new(copiago_device::WAITING_FOR_IPHONE) {
-            return detail;
-        }
-        let Some(adapter) = super::network::vpn_adapter() else {
+    fn network_hint(&mut self, detail: Message) -> Message {
+        let adapter = if detail == Message::new(copiago_device::WAITING_FOR_IPHONE) {
+            super::network::vpn_adapter()
+        } else {
+            None
+        };
+        self.connection.vpn_adapter_active = adapter.is_some();
+        let Some(adapter) = adapter else {
             return detail;
         };
         let hint = message!(

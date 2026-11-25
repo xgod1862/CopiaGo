@@ -33,32 +33,36 @@ struct Log {
 
 static DIAGNOSTIC: OnceLock<Log> = OnceLock::new();
 
-/// Starts the log for this process. Events before this call are dropped.
-///
-/// A nonempty `ICB_DIAGNOSTIC_FILE` keeps its earlier meaning and redirects the log,
-/// which development scripts rely on. Calling this more than once keeps the first log.
-pub fn init(data_dir: &Path, version: &str) {
-    let path = env::var_os("ICB_DIAGNOSTIC_FILE")
+fn redirected_path() -> Option<PathBuf> {
+    env::var_os("ICB_DIAGNOSTIC_FILE")
         .filter(|path| !path.is_empty())
-        .map_or_else(|| data_dir.join(LOG_FILE), PathBuf::from);
-    let log = DIAGNOSTIC.get_or_init(|| {
+        .map(PathBuf::from)
+}
+
+fn open_log(path: PathBuf) -> &'static Log {
+    DIAGNOSTIC.get_or_init(|| {
         let size = fs::metadata(&path).map_or(0, |metadata| metadata.len());
         Log {
             path,
             start: Instant::now(),
             write: Mutex::new(size),
         }
-    });
+    })
+}
+
+/// Starts the host log. An explicit `ICB_DIAGNOSTIC_FILE` also enables events
+/// from standalone probes before host initialization.
+pub fn init(data_dir: &Path, version: &str) {
+    let log = open_log(redirected_path().unwrap_or_else(|| data_dir.join(LOG_FILE)));
     if let Ok(mut size) = log.write.lock() {
         let line = format!("{} event=log_opened version={version}", utc_now());
         write_line(&log.path, &mut size, MAX_LOG_BYTES, &line);
     }
 }
 
-/// Appends one line when the log is open. Never fails visibly: diagnostics must not
-/// change application behavior.
+/// Appends one line to the host log or the explicitly requested probe log.
 pub fn event(details: fmt::Arguments<'_>) {
-    let Some(log) = DIAGNOSTIC.get() else {
+    let Some(log) = DIAGNOSTIC.get().or_else(|| redirected_path().map(open_log)) else {
         return;
     };
     if let Ok(mut size) = log.write.lock() {
@@ -86,7 +90,7 @@ fn write_line(path: &Path, size: &mut u64, limit: u64, line: &str) {
     }
 }
 
-/// The open log file, if [`init`] ran.
+/// The current log path after initialization or the first redirected event.
 pub fn log_path() -> Option<&'static Path> {
     DIAGNOSTIC.get().map(|log| log.path.as_path())
 }
@@ -100,9 +104,13 @@ pub fn recent_lines(max_lines: usize, max_bytes: u64) -> Vec<String> {
         return Vec::new();
     };
     let _write = log.write.lock();
+    read_recent(&log.path, max_lines, max_bytes)
+}
+
+fn read_recent(path: &Path, max_lines: usize, max_bytes: u64) -> Vec<String> {
     let mut lines = Vec::new();
-    for path in [old_path(&log.path), log.path.clone()] {
-        lines.extend(read_tail(&path, max_bytes));
+    for file in [old_path(path).as_path(), path] {
+        lines.extend(read_tail(file, max_bytes));
     }
     let skip = lines.len().saturating_sub(max_lines);
     lines.split_off(skip)
@@ -137,7 +145,14 @@ pub fn install_crash_hook(data_dir: &Path, version: &'static str) {
 }
 
 fn old_path(path: &Path) -> PathBuf {
-    path.with_file_name(OLD_LOG_FILE)
+    if path
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(LOG_FILE))
+    {
+        path.with_file_name(OLD_LOG_FILE)
+    } else {
+        path.with_added_extension("old")
+    }
 }
 
 fn read_tail(path: &Path, max_bytes: u64) -> Vec<String> {
@@ -230,6 +245,54 @@ mod tests {
         );
         assert_eq!(size, fs::metadata(&path).unwrap().len());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn probe_can_log_before_host_initialization() {
+        const CHILD: &str = "COPIAGO_TEST_PROBE_LOG_CHILD";
+        if env::var_os(CHILD).is_some() {
+            event(format_args!("event=probe_started"));
+            return;
+        }
+        let dir = crate::test_support::TestDir::new();
+        let path = dir.path().join("probe.log");
+        // A fresh process isolates the logger singleton and the environment override.
+        let child = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "diagnostic::tests::probe_can_log_before_host_initialization",
+            ])
+            .env(CHILD, "1")
+            .env("ICB_DIAGNOSTIC_FILE", &path)
+            .output()
+            .unwrap();
+        assert!(child.status.success());
+        assert!(
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("event=probe_started")
+        );
+        assert!(!dir.path().join(LOG_FILE).exists());
+    }
+
+    #[test]
+    fn custom_rotation_and_reports_use_only_the_custom_archive() {
+        let fixture = crate::test_support::TestDir::new();
+        let dir = fixture.path();
+        let default_archive = dir.join(OLD_LOG_FILE);
+        fs::write(&default_archive, "other session\n").unwrap();
+        for file in ["run", "run.log", "run.txt"] {
+            let path = dir.join(file);
+            let mut size = 0;
+            write_line(&path, &mut size, 1, file);
+            assert_eq!(read_recent(&path, 10, 100), [file]);
+            write_line(&path, &mut size, 1, "next");
+            assert_eq!(read_recent(&path, 10, 100), [file, "next"]);
+        }
+        assert_eq!(
+            fs::read_to_string(default_archive).unwrap(),
+            "other session\n"
+        );
     }
 
     #[test]

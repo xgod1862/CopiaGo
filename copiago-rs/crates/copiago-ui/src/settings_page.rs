@@ -249,6 +249,7 @@ pub struct SettingsState {
     notice: Option<Message>,
     forget_until: Option<Instant>,
     forgetting: bool,
+    after_driver: Option<SettingsAction>,
 }
 
 impl SettingsState {
@@ -265,6 +266,7 @@ impl SettingsState {
             notice: None,
             forget_until: None,
             forgetting: false,
+            after_driver: None,
         }
     }
 
@@ -320,6 +322,19 @@ impl SettingsState {
         self.notice = notice;
     }
 
+    /// Consume the connection action requested with this job. Forgetting a phone revokes it.
+    pub fn complete_driver(
+        &mut self,
+        driver: DriverState,
+        notice: Message,
+    ) -> Option<SettingsAction> {
+        self.connection.driver = driver;
+        self.notice = Some(notice);
+        self.after_driver
+            .take()
+            .filter(|action| driver == DriverState::Ready && self.can_activate(*action))
+    }
+
     pub fn startup(&self) -> StartupState {
         self.startup
     }
@@ -345,6 +360,7 @@ impl SettingsState {
         }
         self.cancel_confirmation();
         if success {
+            self.after_driver = None;
             self.connection = ConnectionState {
                 detail: Some(message!("已忘记 iPhone。请用数据线连接后重新配对")),
                 driver: self.connection.driver,
@@ -510,6 +526,13 @@ impl SettingsState {
                 }
             }
             SettingsAction::InstallDriver => {
+                self.after_driver = Some(
+                    if self.connection.device.is_some() || self.connection.phase.can_continue() {
+                        SettingsAction::Retry
+                    } else {
+                        SettingsAction::RequestPair
+                    },
+                );
                 let notice = match self.connection.driver {
                     DriverState::ServiceUnavailable => {
                         message!("正在修复 Apple 连接服务，请完成 Windows 管理员授权。")

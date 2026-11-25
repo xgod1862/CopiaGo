@@ -384,6 +384,8 @@ struct DeviceState {
     serial: Option<String>,
     clipboard: PasteboardState,
     first_setup: bool,
+    /// Permits interactive USB recovery for the current user-requested attempt.
+    user_retry: bool,
     /// Consecutive reconnect waits since the last ready session.
     misses: u32,
 }
@@ -411,11 +413,10 @@ async fn run(
 ) {
     let mut state = DeviceState::default();
     loop {
-        match connect_or_wait(backend, inputs, emit, &mut state).await {
-            Ok(()) | Err(Interrupted::Reconnect) => {}
-            // Legacy records do not distinguish a completed first connection.
-            // An explicit retry opts into USB recovery even after restarting the app.
-            Err(Interrupted::UserRetry) => state.first_setup = true,
+        let result = connect_or_wait(backend, inputs, emit, &mut state).await;
+        state.user_retry = matches!(result, Err(Interrupted::UserRetry));
+        match result {
+            Ok(()) | Err(Interrupted::Reconnect | Interrupted::UserRetry) => {}
             Err(Interrupted::Forget) => {
                 let success = backend.forget().is_ok();
                 if success {
@@ -452,7 +453,19 @@ async fn connect_or_wait(
             state.select(&device);
             let error = connect_cycle(backend, inputs, emit, state, &device).await?;
             paired = Some(device);
-            error.wait(state.first_setup)
+            // An explicit retry can expose repair controls or trust prompts. Ordinary
+            // connectivity failures on an already paired phone still retry automatically.
+            let needs_intervention = state.user_retry
+                && matches!(
+                    error,
+                    Failure::Trust(_)
+                        | Failure::Usb(
+                            UsbProbeError::Usbmuxd
+                                | UsbProbeError::TrustRequired
+                                | UsbProbeError::PairingRecordUnavailable
+                        )
+                );
+            error.wait(state.first_setup || needs_intervention)
         }
         Err(WifiProbeError::NoPairingRecord) => {
             state.forget();
@@ -602,7 +615,7 @@ async fn attempt_usb(
     let failure = attempt(backend, inputs, emit, state, device, Transport::Usb(*id)).await?;
     // A background reconnect must never create a trust prompt. A session that
     // already became ready cleared first_setup, even if it has since disconnected.
-    if !state.first_setup {
+    if !state.first_setup && !state.user_retry {
         return Ok(failure);
     }
     match failure {
@@ -706,6 +719,7 @@ async fn attempt(
     let result = inputs.drive(session, Phase::Session(&active), emit).await;
     if active.ready.get() {
         state.first_setup = false;
+        state.user_retry = false;
         state.misses = 0;
     }
     let ended = match result {

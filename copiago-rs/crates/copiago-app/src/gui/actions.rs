@@ -210,7 +210,9 @@ impl Host<'_> {
         if success {
             self.reset_connection_feedback();
             let mut connection = self.settings.connection().clone();
-            connection.driver = driver::detect();
+            if self.driver_install.is_none() {
+                connection.driver = driver::detect();
+            }
             self.settings.set_connection(connection);
             self.set_status(
                 message!("已忘记 iPhone。请用数据线连接后重新配对"),
@@ -280,22 +282,8 @@ impl Host<'_> {
         state: DriverState,
         notice: copiago_core::i18n::Message,
     ) {
-        let mut connection = self.settings.connection().clone();
-        connection.driver = state;
-        self.settings.set_connection(connection);
-        self.settings.set_notice(Some(notice));
-        // A successful repair only proves service reachability. Continue through
-        // the normal worker so trust, device enumeration and pairing are verified.
-        let connection = self.settings.connection();
-        if state == DriverState::Ready
-            && (connection.device.is_none() || connection.phase.can_continue())
-        {
+        if let Some(action) = self.settings.complete_driver(state, notice) {
             let previous = self.settings.connection().clone();
-            let action = if previous.phase.can_continue() {
-                SettingsAction::Retry
-            } else {
-                SettingsAction::RequestPair
-            };
             let command = match self.settings.activate(action, Instant::now()) {
                 Some(SettingsEffect::Retry) => Some(DeviceCommand::Retry),
                 Some(SettingsEffect::RequestPair) => Some(DeviceCommand::RequestPair),

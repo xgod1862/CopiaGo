@@ -666,6 +666,42 @@ fn first_setup_keeps_actionable_causes() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn explicit_retry_of_an_offline_paired_phone_resumes_wireless_discovery() {
+    let phone = FakePhone::new(
+        None,
+        [
+            Session::Failure(OFFLINE),
+            Session::Failure(OFFLINE),
+            Session::Connected,
+        ],
+    );
+    let (send, mut commands) = mpsc::channel(4);
+    let mut inputs = rig(&mut commands, (), None);
+    let waits = Cell::new(0);
+    let emit = |event| {
+        if let DeviceEvent::Status(state, _) = event {
+            match state {
+                ConnState::Waiting => {
+                    if waits.get() == 0 {
+                        send.try_send(DeviceCommand::Retry).unwrap();
+                    }
+                    waits.set(waits.get() + 1);
+                }
+                ConnState::Connected { wireless: true } => return ControlFlow::Break(()),
+                ConnState::Hold => panic!("ordinary offline retry requested intervention"),
+                _ => {}
+            }
+        }
+        ControlFlow::Continue(())
+    };
+    timeout(RETRY_DELAY * 3, run(&phone, &mut inputs, &emit))
+        .await
+        .unwrap();
+    assert_eq!(waits.get(), 2);
+    assert_eq!(phone.attempts(), [Transport::Wifi; 3]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn explicit_retry_recovers_an_unfinished_pairing_after_restart() {
     let stale = Session::Failure(Failure::Usb(UsbProbeError::TrustRequired));
     let phone = FakePhone::new(

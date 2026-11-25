@@ -409,8 +409,12 @@ impl Host<'_> {
             | self.history_page.expire_confirmation(now)
             | self.connection_tick(now);
         if let Some((state, notice)) = self.driver_install.as_mut().and_then(|job| job.poll(now)) {
-            self.driver_install = None;
-            self.set_driver_result(state, notice);
+            if state == copiago_ui::settings_page::DriverState::Installing {
+                self.settings.set_notice(Some(notice));
+            } else {
+                self.driver_install = None;
+                self.set_driver_result(state, notice);
+            }
             changed = true;
         }
         if self.copy_hide_at.is_some_and(|deadline| now >= deadline) {

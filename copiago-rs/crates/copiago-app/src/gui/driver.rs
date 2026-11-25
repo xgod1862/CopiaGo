@@ -36,8 +36,8 @@ use crate::service::{self, Diagnosis, REPAIR_ACCESS_DENIED, REPAIR_NOT_INSTALLED
 /// Raw OS error when the user answers "No" in the UAC prompt.
 const ERROR_CANCELLED: i32 = 1223;
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
-/// Covers the UAC prompt, stopping and starting the service, and the port coming up.
-const REPAIR_TIMEOUT: Duration = Duration::from_secs(120);
+/// Remind the user if Windows has not returned a repair result yet.
+const REPAIR_REMINDER: Duration = Duration::from_secs(120);
 /// Apple Devices starts its device process within seconds of opening.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -286,6 +286,7 @@ pub(super) struct DriverInstall {
     next_poll: Instant,
     timeout: Instant,
     exited: bool,
+    reminder_shown: bool,
 }
 
 impl DriverInstall {
@@ -296,11 +297,11 @@ impl DriverInstall {
         let (process, timeout) = match job {
             Job::RepairService => (
                 Process::Repair(Some(service::spawn_repair(service::REPAIR_FLAG))),
-                REPAIR_TIMEOUT,
+                REPAIR_REMINDER,
             ),
             Job::RepairDriver => (
                 Process::Repair(Some(service::spawn_repair(service::DRIVER_REPAIR_FLAG))),
-                REPAIR_TIMEOUT,
+                REPAIR_REMINDER,
             ),
             Job::OpenAppleDevices => {
                 let app = service::apple_devices_app().ok_or(io::ErrorKind::NotFound)?;
@@ -335,6 +336,7 @@ impl DriverInstall {
             next_poll: now + Duration::from_millis(300),
             timeout: now + timeout,
             exited: false,
+            reminder_shown: false,
         })
     }
 
@@ -350,12 +352,29 @@ impl DriverInstall {
         if !self.exited {
             match self.process.finish(self.job) {
                 Finish::Running if now < self.timeout => return None,
-                // A repair thread that never returned is still waiting at the UAC prompt.
-                Finish::Running if matches!(self.job, Job::RepairService | Job::RepairDriver) => {
-                    return Some(self.no_consent());
+                Finish::Running if matches!(self.process, Process::Repair(_)) => {
+                    if self.reminder_shown {
+                        return None;
+                    }
+                    self.reminder_shown = true;
+                    diagnostic::event(format_args!(
+                        "event=driver_job_still_pending job={:?}",
+                        self.job
+                    ));
+                    return Some((
+                        DriverState::Installing,
+                        message!(
+                            "Windows 尚未返回修复结果。如果看到管理员授权提示，请批准或取消。"
+                        ),
+                    ));
                 }
                 Finish::Running => return Some(self.failed()),
-                Finish::Succeeded => self.exited = true,
+                Finish::Succeeded => {
+                    self.exited = true;
+                    if matches!(self.process, Process::Repair(_)) {
+                        self.timeout = now + Duration::from_secs(30);
+                    }
+                }
                 Finish::Failed(result) => return Some(result),
                 // winget also exits with an error when the package is already installed.
                 Finish::Unsuccessful
@@ -388,23 +407,6 @@ impl DriverInstall {
         } else {
             Some(self.failed())
         }
-    }
-
-    fn no_consent(&self) -> (DriverState, Message) {
-        diagnostic::event(format_args!(
-            "event=driver_job_no_consent job={:?}",
-            self.job
-        ));
-        (
-            if self.job == Job::RepairDriver {
-                DriverState::UsbDriver
-            } else {
-                DriverState::ServiceUnavailable
-            },
-            message!(
-                "没有等到管理员授权。Windows 安全提示可能在其他窗口后面，请在任务栏找到它并点「是」，或再点一次修复。"
-            ),
-        )
     }
 
     fn failed(&self) -> (DriverState, Message) {
@@ -553,42 +555,31 @@ impl Drop for Process {
 }
 
 /// Explains why "find a USB iPhone" failed from what Windows itself sees on USB.
-/// Returns the driver state to show and a precise next step.
-pub(super) fn explain_missing_iphone() -> (DriverState, Message) {
-    let presence = service::apple_usb_presence();
+/// Replaces the previous repair action and returns the matching next step.
+pub(super) fn explain_missing_iphone(driver: &mut DriverState, presence: UsbPresence) -> Message {
     diagnostic::event(format_args!("event=usb_presence state={presence:?}"));
+    *driver = if presence == UsbPresence::DriverProblem {
+        DriverState::UsbDriver
+    } else {
+        DriverState::Ready
+    };
     match presence {
-        UsbPresence::Absent => (
-            DriverState::Ready,
-            message!(
-                "电脑没有检测到 iPhone。请确认数据线能传输数据（有些线只能充电），把手机直接插在电脑机身的 USB 口并解锁，然后点「连接 iPhone」。"
-            ),
+        UsbPresence::Absent => message!(
+            "电脑没有检测到 iPhone。请确认数据线能传输数据（有些线只能充电），把手机直接插在电脑机身的 USB 口并解锁，然后点「连接 iPhone」。"
         ),
-        UsbPresence::DriverProblem => (
-            DriverState::UsbDriver,
-            message!(
-                "电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。点「修复 Apple 驱动」并在 Windows 弹窗中点「是」即可自动修复。"
-            ),
+        UsbPresence::DriverProblem => message!(
+            "电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。点「修复 Apple 驱动」并在 Windows 弹窗中点「是」即可自动修复。"
         ),
-        UsbPresence::Working => (
-            DriverState::Ready,
-            message!(
-                "电脑检测到了 iPhone，但还不能和它通信。请解锁 iPhone 并停留在主屏幕，手机上出现「要信任此电脑吗」时点「信任」，然后点「连接 iPhone」。"
-            ),
+        UsbPresence::Working => message!(
+            "电脑检测到了 iPhone，但还不能和它通信。请解锁 iPhone 并停留在主屏幕，手机上出现「要信任此电脑吗」时点「信任」，然后点「连接 iPhone」。"
         ),
         // Reinstalling a driver never re-enables a device, so no repair button here.
-        UsbPresence::Disabled => (
-            DriverState::Ready,
-            message!(
-                "电脑检测到了 iPhone，但它在 Windows 中被禁用了。请打开「设备管理器」，在「通用串行总线设备」或「便携设备」下找到 Apple 设备，右键选「启用设备」，然后点「连接 iPhone」。"
-            ),
+        UsbPresence::Disabled => message!(
+            "电脑检测到了 iPhone，但它在 Windows 中被禁用了。请打开「设备管理器」，在「通用串行总线设备」或「便携设备」下找到 Apple 设备，右键选「启用设备」，然后点「连接 iPhone」。"
         ),
         // Windows could not list USB devices: do not blame the cable without evidence.
-        UsbPresence::Unknown => (
-            DriverState::Ready,
-            message!(
-                "未找到 USB 连接的 iPhone。请确认手机已用数据线连接并解锁，然后点「连接 iPhone」；仍不行请重新插拔数据线或重启电脑。"
-            ),
+        UsbPresence::Unknown => message!(
+            "未找到 USB 连接的 iPhone。请确认手机已用数据线连接并解锁，然后点「连接 iPhone」；仍不行请重新插拔数据线或重启电脑。"
         ),
     }
 }
@@ -605,6 +596,52 @@ pub(super) fn failed_to_run() -> (DriverState, Message) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fresh_usb_diagnosis_replaces_the_previous_driver_action() {
+        for presence in [
+            UsbPresence::Disabled,
+            UsbPresence::Absent,
+            UsbPresence::Working,
+            UsbPresence::Unknown,
+        ] {
+            let mut driver = DriverState::Ready;
+            explain_missing_iphone(&mut driver, UsbPresence::DriverProblem);
+            assert_eq!(driver, DriverState::UsbDriver);
+            explain_missing_iphone(&mut driver, presence);
+            assert_eq!(driver, DriverState::Ready);
+        }
+    }
+
+    #[test]
+    fn overdue_repair_stays_active_until_windows_returns_its_result() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            wait.recv().unwrap();
+            Err(io::Error::from_raw_os_error(ERROR_CANCELLED))
+        });
+        let now = Instant::now();
+        let mut install = DriverInstall {
+            job: Job::RepairService,
+            process: Process::Repair(Some(worker)),
+            next_poll: now,
+            timeout: now,
+            exited: false,
+            reminder_shown: false,
+        };
+        assert_eq!(install.poll(now).unwrap().0, DriverState::Installing);
+        assert!(install.poll(now + Duration::from_secs(1)).is_none());
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matches!(&install.process, Process::Repair(Some(thread)) if !thread.is_finished()) {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            install.poll(now + Duration::from_secs(2)).unwrap().0,
+            DriverState::ServiceUnavailable
+        );
+    }
 
     #[test]
     fn only_a_listener_counts_as_ready() {

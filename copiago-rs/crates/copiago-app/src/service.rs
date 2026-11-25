@@ -45,7 +45,7 @@ use windows_sys::{
                 SERVICE_STATUS, SERVICE_STOP, SERVICE_STOP_PENDING, SERVICE_STOPPED, StartServiceW,
             },
             Threading::{
-                CREATE_NO_WINDOW, GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32,
+                CREATE_NO_WINDOW, GetExitCodeProcess, INFINITE, OpenProcess, PROCESS_NAME_WIN32,
                 PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, WaitForSingleObject,
             },
         },
@@ -92,7 +92,6 @@ const SERVICE_KEY: PCWSTR = w!("SYSTEM\\CurrentControlSet\\Services\\Apple Mobil
 const USBMUXD_PORT: u16 = 27015;
 const AF_INET: u32 = 2;
 const STATE_TIMEOUT: Duration = Duration::from_secs(20);
-const REPAIR_TIMEOUT_MS: u32 = 90_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunState {
@@ -472,20 +471,19 @@ fn run_elevated_repair(flag: &str) -> io::Result<u32> {
         return Err(io::Error::other("repair returned no process handle"));
     }
     // SAFETY: ShellExecuteExW transferred ownership of hProcess, which is closed once below.
-    let waited = unsafe { WaitForSingleObject(info.hProcess, REPAIR_TIMEOUT_MS) };
+    let waited = unsafe { WaitForSingleObject(info.hProcess, INFINITE) };
     let mut code = 1u32;
-    let mut read = false;
-    if waited == WAIT_OBJECT_0 {
-        // SAFETY: The handle is valid and the output points to initialized storage.
-        read = unsafe { GetExitCodeProcess(info.hProcess, &mut code) } != 0;
-    }
-    // SAFETY: See above.
-    unsafe { CloseHandle(info.hProcess) };
-    if read {
+    // SAFETY: The handle is valid and the output points to initialized storage.
+    let result = if waited == WAIT_OBJECT_0
+        && unsafe { GetExitCodeProcess(info.hProcess, &mut code) } != 0
+    {
         Ok(code)
     } else {
-        Err(io::ErrorKind::TimedOut.into())
-    }
+        Err(io::Error::last_os_error())
+    };
+    // SAFETY: See above.
+    unsafe { CloseHandle(info.hProcess) };
+    result
 }
 
 /// Body of the elevated process. Re-enables automatic start, then starts the service, or
@@ -618,25 +616,22 @@ pub fn apple_usb_presence() -> UsbPresence {
 }
 
 fn classify_usb(nodes: &[UsbNode]) -> UsbPresence {
-    let apple: Vec<&UsbNode> = nodes
+    let mut apple: Vec<&UsbNode> = nodes
         .iter()
         .filter(|node| is_apple_mobile(&node.hardware_ids))
         .collect();
     if apple.is_empty() {
         return UsbPresence::Absent;
     }
+    // A photo node establishes presence, but only connection nodes determine the repair.
+    apple.retain(|node| !is_still_image(&node.compatible_ids));
     if apple
         .iter()
         .any(|node| node.problem == Some(CM_PROB_DISABLED))
     {
         return UsbPresence::Disabled;
     }
-    // The photo import interface (USB still image class) uses Windows' own MTP driver,
-    // not Apple's, and does not carry the connection CopiaGo uses.
-    if apple
-        .iter()
-        .any(|node| node.problem.is_some() && !is_still_image(&node.compatible_ids))
-    {
+    if apple.iter().any(|node| node.problem.is_some()) {
         UsbPresence::DriverProblem
     } else {
         UsbPresence::Working
@@ -969,6 +964,16 @@ mod tests {
         // A broken photo import interface is Windows' MTP driver, not Apple's.
         let photos = [node(PHOTOS, STILL, Some(10)), node(MUX, VENDOR, None)];
         assert_eq!(classify_usb(&photos), UsbPresence::Working);
+        for (mux_problem, expected) in [
+            (None, UsbPresence::Working),
+            (Some(28), UsbPresence::DriverProblem),
+        ] {
+            let nodes = [
+                node(PHOTOS, STILL, Some(CM_PROB_DISABLED)),
+                node(MUX, VENDOR, mux_problem),
+            ];
+            assert_eq!(classify_usb(&nodes), expected);
+        }
         let missing = [node(PHOTOS, STILL, None), node(MUX, VENDOR, Some(28))];
         assert_eq!(classify_usb(&missing), UsbPresence::DriverProblem);
         let disabled = [

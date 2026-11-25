@@ -239,10 +239,9 @@ pub(crate) async fn paired_usb_id(
     device: &PairedDevice,
 ) -> Result<Option<u32>, UsbProbeError> {
     // A fresh snapshot includes any USB attaches since the Wi-Fi attempt began.
-    let attached = timeout(PROBE_TIMEOUT, list_usb_devices(addr))
+    let attached = list_usb_devices(addr)
         .with_subscriber(Dispatch::none())
-        .await
-        .map_err(|_| UsbProbeError::Timeout)??;
+        .await?;
     Ok(attached
         .into_iter()
         .find(|usb| usb.udid == device.serial)
@@ -362,11 +361,17 @@ async fn listen_once(
 }
 
 async fn list_usb_devices(addr: &UsbmuxdAddr) -> Result<Vec<UsbmuxdDevice>, UsbProbeError> {
-    let mut mux = addr.connect(0).await.map_err(|_| UsbProbeError::Usbmuxd)?;
-    Ok(mux
-        .get_devices()
-        .await
-        .map_err(|_| UsbProbeError::Usbmuxd)?
+    let devices = timeout(PROBE_TIMEOUT, async {
+        let mut mux = addr.connect(0).await?;
+        mux.get_devices().await
+    })
+    .await
+    .map_err(|_| {
+        diagnostic::event(format_args!("event=usbmux_list_timeout"));
+        UsbProbeError::Usbmuxd
+    })?
+    .map_err(|_| UsbProbeError::Usbmuxd)?;
+    Ok(devices
         .into_iter()
         .filter(|device| device.connection_type == Connection::Usb)
         .collect())

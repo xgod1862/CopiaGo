@@ -43,12 +43,15 @@ const LISTEN_RETRY: Duration = Duration::from_secs(4);
 /// devices. The host recognizes it to show the service diagnosis and repair controls.
 pub const APPLE_SERVICE_UNAVAILABLE: &str =
     "无法连接电脑上的 Apple 设备连接服务（与手机和数据线无关）。";
-/// Developer Mode is off and the Settings switch could not be revealed, usually because
-/// the phone is not on USB. Revealing needs the trusted USB connection.
 /// Pairing found no iPhone among the Apple service's USB devices. The host recognizes it
 /// to explain the cause from what Windows itself sees on USB.
 pub const NO_USB_IPHONE: &str = "未找到 USB 连接的 iPhone。请用数据线连接并解锁后重试";
-pub(crate) const DEVELOPER_MENU_RETRY: &str = "iPhone 需要开启开发者模式，但「设置」里还没有这个开关。请用数据线连接并解锁 iPhone，再点「继续连接」，CopiaGo 会让这个开关出现。";
+/// Developer Mode is off and the phone is not on USB, so CopiaGo could not ask it to show
+/// the Settings switch. The switch may already be visible: once revealed, iOS keeps it.
+pub(crate) const DEVELOPER_MODE_OFF_NO_USB: &str = "iPhone 的开发者模式没有开启。请在 iPhone「设置 → 隐私与安全性 → 开发者模式」中打开并按提示重启，解锁后点「继续连接」。如果「设置」里找不到这个开关，请用数据线连接并解锁 iPhone，再点「继续连接」，CopiaGo 会让它出现。";
+/// Developer Mode is off and the request to show the switch failed although the phone is
+/// on USB, so asking for a cable would not help.
+pub(crate) const DEVELOPER_MENU_RETRY: &str = "iPhone 的开发者模式没有开启，CopiaGo 也没能让「设置」里出现这个开关。请在 iPhone「设置 → 隐私与安全性」底部查找「开发者模式」并打开；如果没有，请保持手机解锁，重新插拔数据线后点「继续连接」。";
 
 mod pairing;
 pub(crate) use pairing::{PairingError, pair_over_usb, renew_usb_trust};
@@ -383,12 +386,25 @@ async fn pairing_record(
     provider: &UsbmuxdProvider,
     data_dir: &Path,
 ) -> Result<(LockdownRecord, PairingRecordSource), UsbProbeError> {
-    if let Ok(Ok(record)) = timeout(USBMUX_PAIR_RECORD_TIMEOUT, provider.get_pairing_file()).await {
-        return Ok((LockdownRecord(record), PairingRecordSource::Usbmuxd));
+    let timed_out = match timeout(USBMUX_PAIR_RECORD_TIMEOUT, provider.get_pairing_file()).await {
+        Ok(Ok(record)) => return Ok((LockdownRecord(record), PairingRecordSource::Usbmuxd)),
+        Ok(Err(_)) => false,
+        Err(_) => true,
+    };
+    if let Ok(record) = local_pairing_record(data_dir, &provider.udid) {
+        return Ok((record, PairingRecordSource::LocalFile));
     }
-
-    let record = local_pairing_record(data_dir, &provider.udid)?;
-    Ok((record, PairingRecordSource::LocalFile))
+    if !timed_out {
+        return Err(UsbProbeError::PairingRecordUnavailable);
+    }
+    // A slow service is not lost trust. Treating it as such would create a new pairing,
+    // show a trust prompt and overwrite the record other Apple software shares.
+    diagnostic::event(format_args!("event=usbmux_pair_record_slow"));
+    match timeout(PROBE_TIMEOUT, provider.get_pairing_file()).await {
+        Ok(Ok(record)) => Ok((LockdownRecord(record), PairingRecordSource::Usbmuxd)),
+        Ok(Err(_)) => Err(UsbProbeError::PairingRecordUnavailable),
+        Err(_) => Err(UsbProbeError::Timeout),
+    }
 }
 
 fn local_pairing_record(data_dir: &Path, udid: &str) -> Result<LockdownRecord, UsbProbeError> {

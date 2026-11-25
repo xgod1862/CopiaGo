@@ -351,6 +351,7 @@ impl Body {
                 complete: false,
                 driver:
                     DriverState::Missing
+                    | DriverState::AppleDevicesApp
                     | DriverState::ServiceUnavailable
                     | DriverState::UsbDriver
                     | DriverState::Installing

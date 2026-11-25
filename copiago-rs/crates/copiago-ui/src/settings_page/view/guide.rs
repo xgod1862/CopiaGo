@@ -31,6 +31,7 @@ const DEVELOPER_HELP: &str = concat!(
 const DRIVER_HELP: &str = "需要先安装 Apple 设备连接组件。将通过 Windows 包管理器安装 Apple Mobile Device Support，并代表你接受其许可协议。";
 const SERVICE_HELP: &str = "Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务并恢复为自动启动，可能暂时中断其他 Apple 软件的设备连接。";
 const USB_DRIVER_HELP: &str = "电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。修复将请求管理员权限，为这台电脑重新安装 Apple 自带的驱动。";
+const APPLE_DEVICES_HELP: &str = "这台电脑使用 Microsoft Store 版 Apple Devices，它的设备连接进程没有运行。打开 Apple Devices 即可启动它，不需要管理员权限，也不需要另外安装组件。";
 
 impl Builder<'_> {
     pub(super) fn guide(&mut self, complete: bool) -> Result<f32> {
@@ -310,6 +311,7 @@ impl Builder<'_> {
                 match driver {
                     DriverState::ServiceUnavailable => SERVICE_HELP,
                     DriverState::UsbDriver => USB_DRIVER_HELP,
+                    DriverState::AppleDevicesApp => APPLE_DEVICES_HELP,
                     _ => DRIVER_HELP,
                 }
             ),
@@ -339,6 +341,7 @@ impl Builder<'_> {
                 DriverState::Installing => "正在处理…",
                 DriverState::ServiceUnavailable => "修复连接服务",
                 DriverState::UsbDriver => "修复 Apple 驱动",
+                DriverState::AppleDevicesApp => "打开 Apple Devices",
                 _ => "安装连接组件",
             },
         )

@@ -44,7 +44,9 @@
 每个步骤失败时，CopiaGo 都会显示原因和下一步该做什么。下面这些问题可以在应用内直接处理：
 
 - **Apple 设备连接服务没有运行、被禁用或没有响应**：点「修复连接服务」。CopiaGo 会请求管理员授权，启动或重启 Apple Mobile Device Service，并把它恢复为随 Windows 自动启动（Apple 的默认设置）。如果端口 27015 被其他程序占用，会提示是哪个程序。
-- **电脑检测到了 iPhone，但 Apple USB 驱动没有工作**：点「修复 Apple 驱动」。CopiaGo 会请求管理员授权，用系统自带的 `pnputil` 重新安装 Apple 组件自带的 USB 驱动。
+- **电脑检测到了 iPhone，但 Apple USB 驱动没有工作**：点「修复 Apple 驱动」。CopiaGo 会请求管理员授权，用系统自带的 `pnputil` 重新安装 Apple 组件放在 Windows 驱动库里的 USB 驱动（`appleusb.inf`；旧版组件为 `usbaapl64.inf`）。
+- **使用 Microsoft Store 版 Apple Devices，但它的设备连接进程没有运行**（刚安装、还没打开过时常见）：点「打开 Apple Devices」即可，不需要管理员授权。Store 版没有 Apple Mobile Device Service，CopiaGo 不会再让你另装一套组件。
+- **iPhone 在设备管理器中被禁用**：CopiaGo 会提示在「设备管理器」中重新启用它。
 - **电脑没有检测到 iPhone**：多半是只能充电的数据线或接口问题，请换线或直接插在电脑机身的 USB 口。
 
 仍然连不上时，点引导页或设置页里的「复制诊断信息」，把内容发给开发者；或点「反馈问题」，CopiaGo 会复制诊断信息并打开预填模板的 GitHub Issue（需要 GitHub 账号），在问题描述中粘贴即可。

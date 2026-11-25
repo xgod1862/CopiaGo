@@ -317,7 +317,7 @@ async fn connection_policy_by_failure_stage() {
             F(Failure::DeveloperModeRequired),
             None,
             ConnState::Hold,
-            Some(Failure::DeveloperMenuUnavailable),
+            Some(Failure::DeveloperModeOffline),
         ),
         (
             "USB setup error wins",
@@ -1202,4 +1202,23 @@ async fn an_advertisement_ends_the_slow_wait_early() {
     phone.advertises_after.set(Some(Duration::from_secs(10)));
     let gaps = waiting_gaps(&phone, misses).await;
     assert_eq!(gaps.last(), Some(&(RETRY_DELAY.as_secs() + 10)));
+}
+
+#[test]
+fn developer_mode_hints_match_whether_the_phone_is_on_usb() {
+    // Without USB the switch may already be visible, so the hint leads with Settings.
+    let offline = Failure::DeveloperModeOffline.wait(false);
+    assert_eq!(offline.state, ConnState::Hold);
+    assert_eq!(
+        offline.message,
+        Message::new(crate::usb::DEVELOPER_MODE_OFF_NO_USB)
+    );
+    assert!(crate::usb::DEVELOPER_MODE_OFF_NO_USB.starts_with("iPhone 的开发者模式没有开启。请在"));
+    // On USB a failed reveal must not ask for the cable that is already attached.
+    let on_usb = Failure::DeveloperMenuUnavailable.wait(false);
+    assert_eq!(
+        on_usb.message,
+        Message::new(crate::usb::DEVELOPER_MENU_RETRY)
+    );
+    assert!(!crate::usb::DEVELOPER_MENU_RETRY.contains("请用数据线连接"));
 }

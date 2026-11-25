@@ -224,7 +224,10 @@ impl Host<'_> {
     }
 
     fn install_driver(&mut self, now: Instant, job: driver::Job) {
-        let install = if self.isolated {
+        // Opening Apple Devices changes nothing on the system, so isolated test instances
+        // may do it too.
+        let blocked = self.isolated && job != driver::Job::OpenAppleDevices;
+        let install = if blocked {
             Err(std::io::ErrorKind::PermissionDenied.into())
         } else {
             driver::DriverInstall::start(now, job)
@@ -232,7 +235,28 @@ impl Host<'_> {
         match install {
             Ok(install) => self.driver_install = Some(install),
             Err(_) => {
-                let (state, message) = if job != driver::Job::Install {
+                let (state, message) = if blocked {
+                    // An isolated test instance must never change system components; the
+                    // generic "restart your PC" advice would send testers the wrong way.
+                    (
+                        match job {
+                            driver::Job::RepairDriver => DriverState::UsbDriver,
+                            driver::Job::RepairService => DriverState::ServiceUnavailable,
+                            driver::Job::Install => DriverState::Missing,
+                            driver::Job::OpenAppleDevices => DriverState::AppleDevicesApp,
+                        },
+                        message!(
+                            "这是隔离测试实例（设置了 ICB_INSTANCE_NAMESPACE），不会安装或修复 Apple 组件。请用正常启动的 CopiaGo 操作。"
+                        ),
+                    )
+                } else if job == driver::Job::OpenAppleDevices {
+                    (
+                        DriverState::AppleDevicesApp,
+                        message!(
+                            "无法自动打开 Apple Devices。请从开始菜单打开「Apple Devices」，然后回到这里点「连接 iPhone」。"
+                        ),
+                    )
+                } else if job != driver::Job::Install {
                     (
                         if job == driver::Job::RepairDriver {
                             DriverState::UsbDriver

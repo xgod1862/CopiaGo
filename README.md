@@ -44,7 +44,9 @@ The installer and CopiaGo use your Windows display language to choose English or
 When a step fails, CopiaGo shows the reason and what to do next. These problems can be fixed from inside the app:
 
 - **The Apple connection service is stopped, disabled, or not responding**: select **Repair connection service**. After administrator approval, CopiaGo starts or restarts Apple Mobile Device Service and sets it back to start with Windows (Apple's default). If another program uses port 27015, CopiaGo names it.
-- **Windows sees the iPhone, but the Apple USB driver is not working**: select **Repair Apple driver**. After administrator approval, CopiaGo uses the built-in `pnputil` to reinstall the USB driver that comes with Apple's components.
+- **Windows sees the iPhone, but the Apple USB driver is not working**: select **Repair Apple driver**. After administrator approval, CopiaGo uses the built-in `pnputil` to reinstall the USB driver that Apple's components placed in the Windows driver store (`appleusb.inf`, or `usbaapl64.inf` with older components).
+- **You use the Microsoft Store edition of Apple Devices, but its device connection process is not running** (common right after installing it): select **Open Apple Devices**. No administrator approval is needed. The Store edition has no Apple Mobile Device Service, and CopiaGo no longer asks you to install a second copy of the components.
+- **The iPhone is disabled in Device Manager**: CopiaGo tells you to enable it again in Device Manager.
 - **Windows does not see the iPhone**: usually a charge-only cable or a port problem. Try another cable, or plug directly into the PC.
 
 If it still does not connect, select **Copy diagnostics** in the guide or Settings and send the text to the developer. Or select **Report a problem**: CopiaGo copies the diagnostics and opens a prefilled GitHub issue (a GitHub account is required), where you paste them into the description.

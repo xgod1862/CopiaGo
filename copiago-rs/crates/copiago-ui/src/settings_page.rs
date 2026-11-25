@@ -116,6 +116,9 @@ pub enum DriverState {
     ServiceUnavailable,
     /// Windows sees the phone on USB, but Apple's USB driver is not working for it.
     UsbDriver,
+    /// Only the Microsoft Store edition of Apple Devices is installed and its device
+    /// process is not running or not answering. Opening the app starts it again.
+    AppleDevicesApp,
     Installing,
     Failed,
 }
@@ -426,6 +429,7 @@ impl SettingsState {
                     && matches!(
                         self.connection.driver,
                         DriverState::Missing
+                            | DriverState::AppleDevicesApp
                             | DriverState::ServiceUnavailable
                             | DriverState::UsbDriver
                             | DriverState::Failed
@@ -513,6 +517,7 @@ impl SettingsState {
                     DriverState::UsbDriver => {
                         message!("正在修复 Apple USB 驱动，请完成 Windows 管理员授权。")
                     }
+                    DriverState::AppleDevicesApp => message!("正在打开 Apple Devices…"),
                     _ => message!("正在安装 Apple 连接组件，请完成 Windows 提示。"),
                 };
                 self.connection.driver = DriverState::Installing;

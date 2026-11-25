@@ -179,8 +179,15 @@ enum Failure {
     Session,
     Trust(PairingError),
     DeveloperModeRequired,
+    /// Developer Mode is off and the phone is not on USB, so the switch could not be
+    /// revealed. It may already be visible in Settings.
+    DeveloperModeOffline,
+    /// Developer Mode is off and revealing the switch over USB failed.
     DeveloperMenuUnavailable,
-    Setup { stage: DdiStage, timed_out: bool },
+    Setup {
+        stage: DdiStage,
+        timed_out: bool,
+    },
 }
 
 impl Failure {
@@ -276,6 +283,11 @@ impl Failure {
 
     fn wait(self, first_setup: bool) -> Wait {
         let (mode, state, message) = match self {
+            Self::DeveloperModeOffline => (
+                WaitMode::User,
+                ConnState::Hold,
+                Message::new(crate::usb::DEVELOPER_MODE_OFF_NO_USB),
+            ),
             Self::DeveloperMenuUnavailable => (
                 WaitMode::User,
                 ConnState::Hold,
@@ -556,7 +568,7 @@ async fn connect_cycle(
     };
     let mut id = match cable {
         Ok(Some(id)) => id,
-        _ if wifi.requires_developer_mode() => return Ok(Failure::DeveloperMenuUnavailable),
+        _ if wifi.requires_developer_mode() => return Ok(Failure::DeveloperModeOffline),
         Ok(None) => return Ok(wifi),
         Err(error) => return Ok(wifi.after_usb(Failure::Usb(error))),
     };

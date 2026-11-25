@@ -38,6 +38,8 @@ const ERROR_CANCELLED: i32 = 1223;
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// Covers the UAC prompt, stopping and starting the service, and the port coming up.
 const REPAIR_TIMEOUT: Duration = Duration::from_secs(120);
+/// Apple Devices starts its device process within seconds of opening.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Quick state for the pairing guide. Prefer [`diagnose`] when a precise reason is shown.
 pub(super) fn detect() -> DriverState {
@@ -83,11 +85,28 @@ pub(super) fn diagnose(enumeration_failed: bool) -> ServiceCheck {
         Diagnosis::Unresponsive => Some(message!(
             "Apple Mobile Device Service 没有响应。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会重启它；仍不行请重启电脑。"
         )),
+        Diagnosis::StoreAppStopped => Some(message!(
+            "已安装 Microsoft Store 版 Apple Devices，但它的设备连接进程没有运行（刚安装、还没打开过时常见）。点「打开 Apple Devices」启动它，看到 Apple Devices 窗口后回到这里点「连接 iPhone」。"
+        )),
+        Diagnosis::StoreAppUnresponsive => Some(message!(
+            "Microsoft Store 版 Apple Devices 的设备连接进程没有响应。请在任务管理器中结束「AppleMobileDeviceProcess」，再点「打开 Apple Devices」；仍不行请重启电脑。"
+        )),
     };
-    ServiceCheck {
-        state: driver_state(diagnosis),
-        notice,
-    }
+    // A port conflict on a PC with only the Store edition: after quitting the other
+    // program, Apple Devices must be opened again, and there is no service to repair.
+    let store_only = report.installed == Some(false) && report.store_app;
+    let (state, notice) = if diagnosis == Diagnosis::PortTaken && store_only {
+        (
+            DriverState::AppleDevicesApp,
+            Some(message!(
+                "端口 27015 被「{program}」占用，Apple Devices 无法工作。请退出该程序（或在任务管理器中结束它），然后点「打开 Apple Devices」。",
+                program = report.foreign_owner().unwrap_or_default().to_owned(),
+            )),
+        )
+    } else {
+        (driver_state(diagnosis), notice)
+    };
+    ServiceCheck { state, notice }
 }
 
 fn driver_state(diagnosis: Diagnosis) -> DriverState {
@@ -98,6 +117,9 @@ fn driver_state(diagnosis: Diagnosis) -> DriverState {
         | Diagnosis::Stopped
         | Diagnosis::PortTaken
         | Diagnosis::Unresponsive => DriverState::ServiceUnavailable,
+        Diagnosis::StoreAppStopped | Diagnosis::StoreAppUnresponsive => {
+            DriverState::AppleDevicesApp
+        }
     }
 }
 
@@ -241,6 +263,9 @@ pub(super) enum Job {
     RepairService,
     /// Reinstall Apple's bundled USB driver in an elevated copy of CopiaGo.
     RepairDriver,
+    /// Open the Store edition of Apple Devices, which starts its device process. Needs
+    /// no administrator rights.
+    OpenAppleDevices,
 }
 
 impl Job {
@@ -249,6 +274,7 @@ impl Job {
         match state {
             DriverState::ServiceUnavailable => Self::RepairService,
             DriverState::UsbDriver => Self::RepairDriver,
+            DriverState::AppleDevicesApp => Self::OpenAppleDevices,
             _ => Self::Install,
         }
     }
@@ -276,6 +302,11 @@ impl DriverInstall {
                 Process::Repair(Some(service::spawn_repair(service::DRIVER_REPAIR_FLAG))),
                 REPAIR_TIMEOUT,
             ),
+            Job::OpenAppleDevices => {
+                let app = service::apple_devices_app().ok_or(io::ErrorKind::NotFound)?;
+                open_url(&format!("shell:AppsFolder\\{app}"))?;
+                (Process::Launched, LAUNCH_TIMEOUT)
+            }
             Job::Install => {
                 let child = Command::new("winget.exe")
                     .args([
@@ -320,7 +351,9 @@ impl DriverInstall {
             match self.process.finish(self.job) {
                 Finish::Running if now < self.timeout => return None,
                 // A repair thread that never returned is still waiting at the UAC prompt.
-                Finish::Running if self.job != Job::Install => return Some(self.no_consent()),
+                Finish::Running if matches!(self.job, Job::RepairService | Job::RepairDriver) => {
+                    return Some(self.no_consent());
+                }
                 Finish::Running => return Some(self.failed()),
                 Finish::Succeeded => self.exited = true,
                 Finish::Failed(result) => return Some(result),
@@ -336,8 +369,13 @@ impl DriverInstall {
         // A successful process does not prove the fix took effect: the port may still be
         // coming up, and Windows may still be binding the driver.
         let fixed = match self.job {
-            Job::RepairDriver => service::apple_usb_presence() != UsbPresence::DriverProblem,
-            Job::Install | Job::RepairService => detect() == DriverState::Ready,
+            Job::RepairDriver => !matches!(
+                service::apple_usb_presence(),
+                UsbPresence::DriverProblem | UsbPresence::Disabled | UsbPresence::Unknown
+            ),
+            Job::Install | Job::RepairService | Job::OpenAppleDevices => {
+                detect() == DriverState::Ready
+            }
         };
         if fixed {
             diagnostic::event(format_args!("event=driver_ready job={:?}", self.job));
@@ -388,6 +426,12 @@ impl DriverInstall {
                     "Apple 连接服务仍不可用。请重启电脑后再试；仍不行请点「手动下载安装」重新安装 Apple 组件。"
                 ),
             ),
+            Job::OpenAppleDevices => (
+                DriverState::AppleDevicesApp,
+                message!(
+                    "Apple Devices 已打开，但它的设备连接进程仍未就绪。请稍等片刻再点「连接 iPhone」；仍不行请在任务管理器中结束「AppleMobileDeviceProcess」后重新打开 Apple Devices，或重启电脑。"
+                ),
+            ),
             Job::Install if state == DriverState::ServiceUnavailable => (
                 DriverState::ServiceUnavailable,
                 message!(
@@ -416,6 +460,8 @@ enum Process {
     /// Taken when joined. Dropping an unjoined handle detaches the thread, so closing
     /// the app never interrupts a service or driver operation in progress.
     Repair(Option<JoinHandle<io::Result<u32>>>),
+    /// A packaged app was opened; there is no process of ours to wait for.
+    Launched,
 }
 
 impl Process {
@@ -426,6 +472,7 @@ impl Process {
                 Ok(Some(status)) if status.success() => Finish::Succeeded,
                 Ok(Some(_)) | Err(_) => Finish::Unsuccessful,
             },
+            Self::Launched => Finish::Succeeded,
             Self::Repair(handle) => {
                 if handle.as_ref().is_some_and(|thread| !thread.is_finished()) {
                     return Finish::Running;
@@ -436,6 +483,18 @@ impl Process {
                 ));
                 match result {
                     Some(Ok(Ok(0))) => Finish::Succeeded,
+                    // No classic service, but the Store edition is there: opening it is
+                    // the fix, not installing a second copy of the Apple components.
+                    Some(Ok(Ok(REPAIR_NOT_INSTALLED)))
+                        if job == Job::RepairService && service::apple_devices_app().is_some() =>
+                    {
+                        Finish::Failed((
+                            DriverState::AppleDevicesApp,
+                            message!(
+                                "这台电脑使用 Microsoft Store 版 Apple Devices，没有可修复的系统服务。请点「打开 Apple Devices」，然后回到这里点「连接 iPhone」。"
+                            ),
+                        ))
+                    }
                     Some(Ok(Ok(REPAIR_NOT_INSTALLED))) => Finish::Failed((
                         DriverState::Missing,
                         if job == Job::RepairDriver {
@@ -517,6 +576,20 @@ pub(super) fn explain_missing_iphone() -> (DriverState, Message) {
                 "电脑检测到了 iPhone，但还不能和它通信。请解锁 iPhone 并停留在主屏幕，手机上出现「要信任此电脑吗」时点「信任」，然后点「连接 iPhone」。"
             ),
         ),
+        // Reinstalling a driver never re-enables a device, so no repair button here.
+        UsbPresence::Disabled => (
+            DriverState::Ready,
+            message!(
+                "电脑检测到了 iPhone，但它在 Windows 中被禁用了。请打开「设备管理器」，在「通用串行总线设备」或「便携设备」下找到 Apple 设备，右键选「启用设备」，然后点「连接 iPhone」。"
+            ),
+        ),
+        // Windows could not list USB devices: do not blame the cable without evidence.
+        UsbPresence::Unknown => (
+            DriverState::Ready,
+            message!(
+                "未找到 USB 连接的 iPhone。请确认手机已用数据线连接并解锁，然后点「连接 iPhone」；仍不行请重新插拔数据线或重启电脑。"
+            ),
+        ),
     }
 }
 
@@ -545,5 +618,12 @@ mod tests {
         ] {
             assert_eq!(driver_state(diagnosis), DriverState::ServiceUnavailable);
         }
+        for diagnosis in [Diagnosis::StoreAppStopped, Diagnosis::StoreAppUnresponsive] {
+            assert_eq!(driver_state(diagnosis), DriverState::AppleDevicesApp);
+        }
+        assert_eq!(
+            Job::for_state(DriverState::AppleDevicesApp),
+            Job::OpenAppleDevices
+        );
     }
 }

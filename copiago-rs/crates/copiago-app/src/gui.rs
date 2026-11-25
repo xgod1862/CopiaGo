@@ -285,6 +285,7 @@ impl Host<'_> {
                 copiago_ui::settings_page::DriverState::Failed
                     | copiago_ui::settings_page::DriverState::ServiceUnavailable
                     | copiago_ui::settings_page::DriverState::UsbDriver
+                    | copiago_ui::settings_page::DriverState::AppleDevicesApp
             ) {
                 connection.driver = driver;
                 self.settings.set_connection(connection);

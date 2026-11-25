@@ -147,12 +147,23 @@ impl SettingsView {
                 next.scroll.scroll_to(&snap, offset, now)?;
             }
             self.visual.SetSize(Vector2::new(WIDTH, geometry.height))?;
-            crate::page_transition::crossfade(
-                animator,
-                &self.visual,
-                &self.body.visual,
-                &next.visual,
-            )?;
+            // Crossfade only when the status and feedback area changes in place. A click on
+            // a choice (language, synced types, size limit) rebuilds the same page with one
+            // control changed; fading the whole page for that reads as a flicker. A language
+            // change replaces every label at once, so it swaps instantly as well.
+            let feedback_changed = geometry != &self.geometry;
+            if feedback_changed && next_layout.language == self.layout.language {
+                crate::page_transition::crossfade(
+                    animator,
+                    &self.visual,
+                    &self.body.visual,
+                    &next.visual,
+                )?;
+            } else {
+                let children = self.visual.Children()?;
+                children.InsertAtTop(&next.visual)?;
+                children.Remove(&self.body.visual)?;
+            }
             self.geometry = geometry.clone();
             self.body = next;
             self.layout = next_layout;

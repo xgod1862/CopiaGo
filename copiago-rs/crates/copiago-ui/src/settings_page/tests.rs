@@ -315,6 +315,22 @@ fn startup_and_update_feed_back_through_host_without_changing_actual_registry() 
 }
 
 #[test]
+fn waiting_with_an_existing_pairing_offers_interactive_recovery() {
+    let fixture = Fixture::new();
+    let mut state = SettingsState::load(fixture.path(), "");
+    state.set_connection(ConnectionState {
+        phase: ConnectionPhase::Waiting,
+        device: Some(DeviceInfo::default()),
+        ..ConnectionState::default()
+    });
+    assert_eq!(
+        state.activate(SettingsAction::Retry, Instant::now()),
+        Some(SettingsEffect::Retry)
+    );
+    assert_eq!(state.connection().phase, ConnectionPhase::Connecting);
+}
+
+#[test]
 fn issues_only_available_pair_retry_and_driver_actions() {
     let fixture = Fixture::new();
     let mut state = SettingsState::load(fixture.path(), "");
@@ -339,6 +355,10 @@ fn issues_only_available_pair_retry_and_driver_actions() {
         Some(SettingsEffect::InstallDriver)
     );
     assert_eq!(state.activate(SettingsAction::InstallDriver, now), None);
+    assert_eq!(state.activate(SettingsAction::Retry, now), None);
+    let mut connection = state.connection().clone();
+    connection.driver = DriverState::Ready;
+    state.set_connection(connection);
     assert_eq!(
         state.activate(SettingsAction::Retry, now),
         Some(SettingsEffect::Retry)
@@ -356,4 +376,99 @@ fn issues_only_available_pair_retry_and_driver_actions() {
     );
     assert!(!state.connection().show_guide());
     assert_eq!(state.activate(SettingsAction::FinishPairing, now), None);
+}
+
+#[test]
+fn unavailable_service_offers_repair_and_store_without_parallel_pairing() {
+    let fixture = Fixture::new();
+    let mut state = SettingsState::load(fixture.path(), "");
+    let now = Instant::now();
+    state.set_connection(ConnectionState {
+        driver: DriverState::ServiceUnavailable,
+        ..ConnectionState::default()
+    });
+    assert_eq!(
+        state.activate(SettingsAction::OpenAppleDevicesStore, now),
+        Some(SettingsEffect::OpenAppleDevicesStore)
+    );
+    assert_eq!(
+        state.activate(SettingsAction::InstallDriver, now),
+        Some(SettingsEffect::InstallDriver)
+    );
+    assert_eq!(state.connection().driver, DriverState::Installing);
+    assert_eq!(state.activate(SettingsAction::RequestPair, now), None);
+    assert_eq!(state.activate(SettingsAction::InstallDriver, now), None);
+}
+
+#[test]
+fn help_is_offered_only_while_stuck() {
+    let fixture = Fixture::new();
+    let mut state = SettingsState::load(fixture.path(), "");
+    let now = Instant::now();
+    assert!(!state.connection().needs_help());
+    for phase in [
+        ConnectionPhase::Waiting,
+        ConnectionPhase::DeveloperMode,
+        ConnectionPhase::RetryRequired,
+        ConnectionPhase::Error,
+    ] {
+        state.set_connection(ConnectionState {
+            phase,
+            ..ConnectionState::default()
+        });
+        assert!(state.connection().needs_help(), "{phase:?}");
+    }
+    state.set_connection(ConnectionState {
+        phase: ConnectionPhase::Connecting,
+        driver: DriverState::ServiceUnavailable,
+        ..ConnectionState::default()
+    });
+    assert!(!state.connection().needs_help());
+    state.set_connection(ConnectionState {
+        driver: DriverState::ServiceUnavailable,
+        ..ConnectionState::default()
+    });
+    assert!(state.connection().needs_help());
+    state.set_connection(ConnectionState {
+        detail: Some(message!("请先解锁 iPhone，再点「连接 iPhone」")),
+        ..ConnectionState::default()
+    });
+    assert!(state.connection().needs_help());
+    assert_eq!(
+        state.activate(SettingsAction::CopyDiagnostics, now),
+        Some(SettingsEffect::CopyDiagnostics)
+    );
+    assert_eq!(
+        state.activate(SettingsAction::ReportIssue, now),
+        Some(SettingsEffect::ReportIssue)
+    );
+}
+
+#[test]
+fn repairing_a_paired_phone_keeps_forget_available() {
+    let fixture = Fixture::new();
+    let mut state = SettingsState::load(fixture.path(), "");
+    let now = Instant::now();
+    state.set_connection(ConnectionState {
+        phase: ConnectionPhase::RetryRequired,
+        device: Some(DeviceInfo::default()),
+        driver: DriverState::ServiceUnavailable,
+        ..ConnectionState::default()
+    });
+    assert!(state.connection().show_guide());
+    assert!(state.can_activate(SettingsAction::ForgetDevice));
+    assert!(state.can_activate(SettingsAction::InstallDriver));
+    assert_eq!(state.activate(SettingsAction::ForgetDevice, now), None);
+    assert_eq!(
+        state.activate(SettingsAction::ForgetDevice, now),
+        Some(SettingsEffect::ForgetDevice)
+    );
+    state.complete_forget(false);
+    state.set_connection(ConnectionState {
+        phase: ConnectionPhase::RetryRequired,
+        device: Some(DeviceInfo::default()),
+        driver: DriverState::Ready,
+        ..ConnectionState::default()
+    });
+    assert!(!state.connection().show_guide());
 }

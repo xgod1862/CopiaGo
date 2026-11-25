@@ -66,6 +66,10 @@ pub enum SettingsAction {
     OpenAppleDevicesStore,
     FinishPairing,
     OpenUpdate,
+    /// Copy a diagnostic report to the clipboard without syncing it to the iPhone.
+    CopyDiagnostics,
+    /// Copy the report and open a prefilled GitHub issue form.
+    ReportIssue,
     OpenSettings,
     Back,
     Close,
@@ -88,6 +92,8 @@ pub enum SettingsEffect {
     ShowHistory,
     ShowPairingGuide,
     OpenUpdate,
+    CopyDiagnostics,
+    ReportIssue,
     ShowSettings,
     Close,
 }
@@ -106,6 +112,10 @@ pub enum DriverState {
     #[default]
     Ready,
     Missing,
+    /// Installed support is unreachable or failed to enumerate devices.
+    ServiceUnavailable,
+    /// Windows sees the phone on USB, but Apple's USB driver is not working for it.
+    UsbDriver,
     Installing,
     Failed,
 }
@@ -151,12 +161,50 @@ pub struct ConnectionState {
 }
 
 impl ConnectionState {
+    /// A saved pairing can have an unfinished first connection after an upgrade.
+    /// Let the user start interactive recovery while ordinary reconnects continue.
+    pub fn can_retry(&self) -> bool {
+        self.phase.can_continue()
+            || (self.device.is_some() && self.phase == ConnectionPhase::Waiting)
+    }
+
+    /// Stuck states in which the guide offers to copy diagnostics or report an issue.
+    /// The first prompt to connect a phone is not stuck; a changed Setup detail is.
+    pub fn needs_help(&self) -> bool {
+        if self.phase.busy() || self.driver == DriverState::Installing {
+            return false;
+        }
+        let failed_setup = self.phase == ConnectionPhase::Setup
+            && self
+                .detail
+                .as_ref()
+                .is_some_and(|detail| *detail != self.default_detail());
+        failed_setup
+            || self.driver != DriverState::Ready
+            || matches!(
+                self.phase,
+                ConnectionPhase::Waiting
+                    | ConnectionPhase::DeveloperMode
+                    | ConnectionPhase::RetryRequired
+                    | ConnectionPhase::Error
+            )
+    }
+
     pub fn pairing_complete(&self) -> bool {
         self.first_connection && self.device.is_some()
     }
 
     pub fn show_guide(&self) -> bool {
-        self.device.is_none() || self.pairing_complete()
+        self.device.is_none() || self.pairing_complete() || self.repairing_paired()
+    }
+
+    /// A paired phone whose explicit retry stopped on the Apple service or driver. The
+    /// guide holds the repair controls, while the device card and its Forget action stay
+    /// available in Settings.
+    pub fn repairing_paired(&self) -> bool {
+        self.device.is_some()
+            && self.phase == ConnectionPhase::RetryRequired
+            && self.driver != DriverState::Ready
     }
 
     pub fn default_detail(&self) -> Message {
@@ -361,19 +409,35 @@ impl SettingsState {
             }
             SettingsAction::RequestPair => {
                 !self.forgetting
+                    && self.connection.driver != DriverState::Installing
                     && self.connection.device.is_none()
                     && !self.connection.phase.busy()
                     && !self.connection.phase.can_continue()
             }
-            SettingsAction::Retry => !self.forgetting && self.connection.phase.can_continue(),
+            SettingsAction::Retry => {
+                !self.forgetting
+                    && self.connection.driver != DriverState::Installing
+                    && self.connection.can_retry()
+            }
             SettingsAction::ForgetDevice => self.connection.device.is_some() && !self.forgetting,
             SettingsAction::InstallDriver => {
-                matches!(
-                    self.connection.driver,
-                    DriverState::Missing | DriverState::Failed
-                )
+                !self.forgetting
+                    && !self.connection.phase.busy()
+                    && matches!(
+                        self.connection.driver,
+                        DriverState::Missing
+                            | DriverState::ServiceUnavailable
+                            | DriverState::UsbDriver
+                            | DriverState::Failed
+                    )
             }
-            SettingsAction::OpenAppleDevicesStore => self.connection.driver == DriverState::Failed,
+            SettingsAction::OpenAppleDevicesStore => matches!(
+                self.connection.driver,
+                DriverState::Missing
+                    | DriverState::Failed
+                    | DriverState::ServiceUnavailable
+                    | DriverState::UsbDriver
+            ),
             SettingsAction::FinishPairing => self.connection.pairing_complete(),
             SettingsAction::OpenUpdate => self.available_version.is_some(),
             _ => true,
@@ -442,8 +506,17 @@ impl SettingsState {
                 }
             }
             SettingsAction::InstallDriver => {
+                let notice = match self.connection.driver {
+                    DriverState::ServiceUnavailable => {
+                        message!("正在修复 Apple 连接服务，请完成 Windows 管理员授权。")
+                    }
+                    DriverState::UsbDriver => {
+                        message!("正在修复 Apple USB 驱动，请完成 Windows 管理员授权。")
+                    }
+                    _ => message!("正在安装 Apple 连接组件，请完成 Windows 提示。"),
+                };
                 self.connection.driver = DriverState::Installing;
-                self.notice = Some(message!("正在安装 Apple 连接组件，请完成 Windows 提示。"));
+                self.notice = Some(notice);
                 SettingsEffect::InstallDriver
             }
             SettingsAction::OpenAppleDevicesStore => SettingsEffect::OpenAppleDevicesStore,
@@ -453,6 +526,8 @@ impl SettingsState {
                 SettingsEffect::ShowHistory
             }
             SettingsAction::OpenUpdate => SettingsEffect::OpenUpdate,
+            SettingsAction::CopyDiagnostics => SettingsEffect::CopyDiagnostics,
+            SettingsAction::ReportIssue => SettingsEffect::ReportIssue,
             SettingsAction::OpenSettings => {
                 self.cancel_confirmation();
                 SettingsEffect::ShowSettings

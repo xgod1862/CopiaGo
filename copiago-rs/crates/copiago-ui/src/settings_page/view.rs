@@ -291,6 +291,7 @@ enum ContentKey {
         complete: bool,
         detail_visible: bool,
         driver: DriverState,
+        help: bool,
     },
 }
 
@@ -301,7 +302,7 @@ impl LayoutKey {
         let content = match screen {
             SettingsScreen::Settings => ContentKey::Settings {
                 device: connection.device.clone(),
-                retry: connection.phase.can_continue().then_some(connection.phase),
+                retry: connection.can_retry().then_some(connection.phase),
                 confirming: state.confirming_forget(now),
                 forget_enabled: state.can_activate(SettingsAction::ForgetDevice),
                 startup_available: state.startup() != StartupState::Unavailable,
@@ -317,6 +318,7 @@ impl LayoutKey {
                 complete: connection.pairing_complete(),
                 detail_visible: guide_detail_visible(state),
                 driver: connection.driver,
+                help: connection.needs_help(),
             },
         };
         Self {
@@ -347,7 +349,12 @@ impl Body {
             ContentKey::Settings { .. } => SETTINGS_VIEWPORT,
             ContentKey::Guide {
                 complete: false,
-                driver: DriverState::Missing | DriverState::Installing | DriverState::Failed,
+                driver:
+                    DriverState::Missing
+                    | DriverState::ServiceUnavailable
+                    | DriverState::UsbDriver
+                    | DriverState::Installing
+                    | DriverState::Failed,
                 ..
             } => DRIVER_VIEWPORT,
             ContentKey::Guide { .. } => GUIDE_VIEWPORT,

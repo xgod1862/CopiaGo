@@ -18,14 +18,15 @@ mod usb;
 mod wifi;
 
 #[cfg(windows)]
-pub use connection::{DeviceRunOptions, HostSignal, HostSignals, run_device};
+pub use connection::{DeviceRunOptions, HostSignal, HostSignals, WAITING_FOR_IPHONE, run_device};
 #[cfg(windows)]
 pub use contract::{ConnState, DeviceCommand, DeviceEvent, FileProgress};
 #[cfg(windows)]
 pub use pasteboard::{FileTransferError, PasteboardError};
 #[cfg(windows)]
 pub use usb::{
-    PairingRecordSource, UsbProbe, UsbProbeError, UsbWatchError, probe_usb, sync_usb, watch_usb,
+    APPLE_SERVICE_UNAVAILABLE, NO_USB_IPHONE, PairingRecordSource, UsbProbe, UsbProbeError,
+    UsbWatchError, probe_usb, sync_usb, watch_usb,
 };
 #[cfg(windows)]
 pub use wifi::{

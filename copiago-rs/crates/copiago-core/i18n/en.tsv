@@ -40,11 +40,10 @@ iPhone 剪贴板历史未开启	iPhone clipboard history is off
 使用 USB 数据线连接这台电脑，并保持手机解锁。	Connect your iPhone to this PC with a USB cable and keep it unlocked.
 点「连接 iPhone」并信任此电脑	Connect and trust this PC
 手机弹出提示时点「信任」，并输入锁屏密码。	Tap Trust on your iPhone when prompted and enter your passcode.
-准备开发者服务	Prepare developer services
+连接并检查 iPhone 服务	Connect and check iPhone services
 请保持电脑联网、iPhone 解锁和数据线连接。	Keep your PC online and your iPhone connected and unlocked.
 拔掉数据线，开始使用	Unplug the cable
 之后 iPhone 和电脑在同一 Wi-Fi 下会自动连接。	Your iPhone and PC will connect automatically on the same local network.
-开发者模式未开启。在 iPhone「设置 → 隐私与安全性 → 开发者模式」中打开开关，按提示重启手机；重启后解锁，在弹窗中点「打开」，然后点下方按钮。	On your iPhone, open Settings → Privacy & Security → Developer Mode. Turn it on and restart the phone. Unlock it, tap Turn On when prompted, then continue below.
 我已开启，继续连接	Developer Mode is on. Continue
 继续连接	Continue
 连接并信任你的 iPhone	Connect and trust your iPhone
@@ -70,9 +69,7 @@ iPhone 剪贴板历史未开启	iPhone clipboard history is off
 开始使用	Get started
 开启开发者模式并重启手机	Enable Developer Mode and restart
 需要先安装 Apple 设备连接组件。将通过 Windows 包管理器安装 Apple Mobile Device Support，并代表你接受其许可协议。	Apple Mobile Device Support is required. Windows Package Manager will install it and accept its license agreement on your behalf.
-正在安装…	Installing…
 安装连接组件	Install Apple support
-在 Microsoft Store 中查找	Open Microsoft Store
 正在连接…	Connecting…
 正在连接 iPhone…	Connecting to iPhone…
 剪贴板历史	Clipboard history
@@ -84,9 +81,6 @@ iPhone 剪贴板历史未开启	iPhone clipboard history is off
 已忘记 iPhone。请用数据线连接后重新配对	iPhone forgotten. Reconnect the USB cable to pair again.
 正在安装 Apple 连接组件，请完成 Windows 提示。	Installing Apple device support. Follow the Windows prompts.
 连接组件已就绪，可以连接 iPhone。	Apple device support is ready. You can connect your iPhone.
-安装未完成。可以在 Microsoft Store 安装「Apple Devices」后重试。	Installation did not finish. Install Apple Devices from Microsoft Store and try again.
-无法运行 Windows 包管理器。可以在 Microsoft Store 安装「Apple Devices」后重试。	Could not run Windows Package Manager. Install Apple Devices from Microsoft Store and try again.
-无法打开 Microsoft Store	Could not open Microsoft Store.
 无法打开浏览器	Could not open the browser.
 无法读取历史	Could not read clipboard history.
 无法复制这条历史	Could not copy this history item.
@@ -140,7 +134,6 @@ iPhone 已连接成功。现在可以拔掉数据线，之后在同一 Wi-Fi 下
 请暂时只连接一台 iPhone	Connect only one iPhone to continue.
 视频	Video
 文件或其他内容	File or other content
-等待 Apple 设备连接服务或 iPhone…	Waiting for the Apple device service or your iPhone…
 需要开启开发者模式：在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启并重启手机，解锁后点「继续连接」	Enable Developer Mode in Settings → Privacy & Security on your iPhone. Restart and unlock the phone, then select Continue.
 iPhone 上选择了「不信任」。请重新插拔数据线，在提示时点「信任」，再点「连接 iPhone」	Trust was declined on the iPhone. Reconnect the USB cable, tap Trust when asked, then select Connect iPhone.
 请先解锁 iPhone，再点「连接 iPhone」	Unlock your iPhone, then select Connect iPhone.
@@ -152,6 +145,18 @@ iPhone 上选择了「不信任」。请重新插拔数据线，在提示时点�
 已确认 iPhone 信任，正在准备无线配对…	iPhone trust confirmed. Preparing Wi-Fi pairing…
 已配对多台 iPhone。请在设置中点「忘记此 iPhone」后重新配对	More than one iPhone is paired. Select Forget this iPhone in Settings, then pair again.
 连接未完成：请保持 iPhone 解锁并连着数据线，然后点「继续连接」	Connection did not finish. Keep your iPhone connected and unlocked, then select Continue.
+iPhone 已锁定。请解锁并停留在主屏幕，然后点「继续连接」。	Unlock your iPhone, stay on its Home Screen, then select Continue.
+已找到 iPhone，但开发者通道未能打开。请解锁手机，重新插拔数据线后重试。	iPhone found. The developer connection could not open. Unlock your iPhone, reconnect the cable, and retry.
+已连到 iPhone，但未能确认手机提供的服务。请保持解锁，重新插拔数据线后重试。	Connected to iPhone, but its services could not be verified. Keep it unlocked, reconnect the cable, and retry.
+已找到 iPhone，但 USB 会话未能建立。请重新插拔数据线并保持手机解锁。	iPhone found. The USB session could not open. Reconnect the cable and keep your iPhone unlocked.
+USB 已检测不到这台 iPhone。请重新接好数据线，再点「继续连接」。	This iPhone is no longer visible over USB. Reconnect the cable, then select Continue.
+iPhone 拒绝了信任请求。请重新插拔数据线，点「继续连接」，在手机上点「信任」。	Trust was declined. Reconnect the cable, select Continue, then tap Trust on your iPhone.
+手机尚未确认信任。请在 iPhone 上点「信任」并输入密码，然后点「继续连接」。	Trust is pending. Tap Trust on your iPhone, enter its passcode, then select Continue.
+USB 信任未能恢复。请解锁 iPhone，重新插拔数据线，再点「继续连接」。	USB trust could not be restored. Unlock your iPhone, reconnect the cable, then select Continue.
+无线未找到这台 iPhone，USB 也未检测到它。请重新插紧数据线或换一个电脑 USB 口。	This iPhone was not found on Wi-Fi or USB. Reconnect the cable or try another USB port on the PC.
+无线连接失败，USB 也未检测到这台 iPhone。请将手机直接接到电脑后重试。	Wi-Fi failed and this iPhone was not found over USB. Plug it directly into the PC and retry.
+正在通过 USB 自动重试一次…	Retrying the USB connection once…
+正在重新请求 USB 信任。请在这台 iPhone 上点「信任」并输入锁屏密码。	Requesting USB trust again. Tap Trust on this iPhone and enter its passcode.
 正在建立无线连接…	Connecting over Wi-Fi…
 正在建立USB连接…	Connecting over USB…
 正在检查 iPhone 开发者服务…	Checking iPhone developer services…
@@ -179,3 +184,52 @@ iPhone 文件 {timestamp}.{extension}	iPhone file {timestamp}.{extension}
 删除	Delete
 发送到 iPhone	Send to iPhone
 {count} 字	{count} chars
+Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务并恢复为自动启动，可能暂时中断其他 Apple 软件的设备连接。	The Apple connection service is unavailable or cannot list devices. Repair requires administrator permission. It starts or restarts the service and sets it to start automatically, which may briefly interrupt other Apple apps connected to your device.
+正在处理…	Working…
+修复连接服务	Repair connection service
+正在修复 Apple 连接服务，请完成 Windows 管理员授权。	Repairing the Apple connection service. Approve the Windows administrator prompt.
+复制诊断信息	Copy diagnostics
+反馈问题	Report a problem
+遇到问题	Need help?
+诊断信息已复制。可以直接粘贴发给开发者，或点「反馈问题」提交到 GitHub。	Diagnostics copied. Paste them to the developer, or select Report a problem to open a GitHub issue.
+无法复制诊断信息，请稍后重试。	Could not copy diagnostics. Try again later.
+已复制诊断信息并打开 GitHub。登录后在问题描述里按 Ctrl+V 粘贴即可提交。	Diagnostics copied and GitHub opened. Sign in, then press Ctrl+V in the description to paste them.
+已打开 GitHub，但诊断信息复制失败。请先点「复制诊断信息」，再粘贴到问题描述里。	GitHub opened, but diagnostics could not be copied. Select Copy diagnostics, then paste them into the description.
+无法打开浏览器。诊断信息已复制，可以直接粘贴发给开发者。	Could not open the browser. Diagnostics are copied; paste them to the developer.
+无法打开浏览器，也无法复制诊断信息，请稍后重试。	Could not open the browser or copy diagnostics. Try again later.
+未找到 Apple 设备连接组件。点「安装连接组件」即可自动安装。	Apple connection components were not found. Select Install Apple support to install them.
+Apple Mobile Device Service 已被禁用，常见于系统优化软件。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会把它改回自动启动并启动它。	Apple Mobile Device Service is disabled, often by a system optimizer. Select Repair connection service and choose Yes in the Windows prompt. CopiaGo sets it back to automatic and starts it.
+Apple Mobile Device Service 没有运行。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会启动它并恢复为随 Windows 自动启动（Apple 的默认设置）。	Apple Mobile Device Service is not running. Select Repair connection service and choose Yes in the Windows prompt. CopiaGo starts it and sets it back to start with Windows (Apple's default).
+端口 27015 被「{program}」占用，Apple 连接服务无法工作。请退出该程序（或在任务管理器中结束它），然后点「修复连接服务」。	Port 27015 is used by {program}, so the Apple connection service cannot work. Quit that program (or end it in Task Manager), then select Repair connection service.
+Apple Mobile Device Service 没有响应。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会重启它；仍不行请重启电脑。	Apple Mobile Device Service is not responding. Select Repair connection service and choose Yes in the Windows prompt to restart it. If that fails, restart your PC.
+未找到 Apple Mobile Device Service。请点「安装连接组件」重新安装。	Apple Mobile Device Service was not found. Select Install Apple support to reinstall it.
+USB 连接超时。请把 iPhone 直接插在电脑机身的 USB 口（不要经过扩展坞或延长线），保持解锁，再点「继续连接」。	USB timed out. Plug your iPhone directly into a USB port on the PC (no hub or extension), keep it unlocked, then select Continue.
+与 iPhone 的连接中断。请插紧数据线并保持手机解锁，再点「继续连接」；反复断开时请换一个 USB 口或数据线。	The iPhone connection ended. Seat the cable firmly, keep the phone unlocked, then select Continue. If it keeps dropping, try another USB port or cable.
+iPhone 需要开启开发者模式，但「设置」里还没有这个开关。请用数据线连接并解锁 iPhone，再点「继续连接」，CopiaGo 会让这个开关出现。	Your iPhone needs Developer Mode, but the switch is not in Settings yet. Connect it by USB, unlock it, and select Continue. CopiaGo will make the switch appear.
+打开 iPhone「设置 → 隐私与安全性」，在底部找到「开发者模式」并打开，按提示重启。重启后解锁，在弹窗中点「打开」，再点下方按钮。若仍没有该开关，可能是公司或学校管理的设备。	Open Settings → Privacy & Security on your iPhone, turn on Developer Mode near the bottom, and restart when prompted. Unlock it, tap Turn On, then continue below. If the switch is missing, the phone may be managed by a company or school.
+CopiaGo 需要 iOS 17 或更高版本，这台 iPhone 的系统版本过低。请在 iPhone「设置 → 通用 → 软件更新」升级后，再点「连接 iPhone」。	CopiaGo needs iOS 17 or later, and this iPhone runs an older version. Update it in Settings → General → Software Update, then select Connect iPhone.
+正在修复 Apple USB 驱动，请完成 Windows 管理员授权。	Repairing the Apple USB driver. Approve the Windows administrator prompt.
+修复 Apple 驱动	Repair Apple driver
+电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。修复将请求管理员权限，为这台电脑重新安装 Apple 自带的驱动。	Windows sees your iPhone, but the Apple USB driver is not working. Repair requires administrator permission and reinstalls the driver that came with Apple Mobile Device Support.
+没有找到 Apple 自带的 USB 驱动文件。请点「安装连接组件」重新安装 Apple Mobile Device Support。	The Apple USB driver files were not found. Select Install Apple support to reinstall Apple Mobile Device Support.
+电脑没有检测到 iPhone。请确认数据线能传输数据（有些线只能充电），把手机直接插在电脑机身的 USB 口并解锁，然后点「连接 iPhone」。	Windows does not see an iPhone. Use a cable that carries data (some only charge), plug the phone directly into the PC, unlock it, then select Connect iPhone.
+电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。点「修复 Apple 驱动」并在 Windows 弹窗中点「是」即可自动修复。	Windows sees your iPhone, but the Apple USB driver is not working. Select Repair Apple driver and choose Yes in the Windows prompt to fix it.
+电脑检测到了 iPhone，但还不能和它通信。请解锁 iPhone 并停留在主屏幕，手机上出现「要信任此电脑吗」时点「信任」，然后点「连接 iPhone」。	Windows sees your iPhone but cannot talk to it yet. Unlock it and stay on the Home Screen, tap Trust if asked, then select Connect iPhone.
+等待 iPhone 连接。电脑正在使用 VPN 或代理虚拟网卡「{adapter}」，它可能拦截局域网连接；如果一直连不上，请暂时关闭它或开启局域网直连，并确认手机和电脑在同一 Wi-Fi。	Waiting for iPhone. This PC is using the VPN or proxy adapter {adapter}, which can block local network connections. If it never connects, turn it off or allow direct LAN access, and make sure the phone and PC share the same Wi-Fi.
+Apple USB 驱动仍未正常工作。请重新插拔数据线后再点「修复 Apple 驱动」；仍不行请重启电脑，或点「手动下载安装」重新安装 Apple 组件。	The Apple USB driver still is not working. Reconnect the cable and select Repair Apple driver again. If that fails, restart your PC, or select Download manually to reinstall Apple components.
+Apple 连接服务仍不可用。请重启电脑后再试；仍不行请点「手动下载安装」重新安装 Apple 组件。	The Apple connection service is still unavailable. Restart your PC and try again. If that fails, select Download manually to reinstall Apple components.
+iPhone 已锁定，解锁后会自动重新连接。	iPhone is locked. It reconnects automatically once unlocked.
+已取消管理员授权，未修复 Apple USB 驱动。需要时请再点「修复 Apple 驱动」并在 Windows 弹窗中点「是」；不知道管理员密码请联系电脑管理员。	Administrator permission was cancelled, so the driver was not repaired. Select Repair Apple driver again and choose Yes. If you do not know the administrator password, contact the PC administrator.
+已取消管理员授权，未修复 Apple 连接服务。需要时请再点「修复连接服务」并在 Windows 弹窗中点「是」；不知道管理员密码请联系电脑管理员。	Administrator permission was cancelled, so the service was not repaired. Select Repair connection service again and choose Yes. If you do not know the administrator password, contact the PC administrator.
+已在浏览器中从 apple.com 下载 iTunes（约 200 MB，内含 Apple 设备连接组件）。安装完成后回到这里点「连接 iPhone」。	Downloading iTunes from apple.com in your browser (about 200 MB; it includes Apple device connection components). After installing it, come back and select Connect iPhone.
+已打开 Microsoft Store。请安装「Apple Devices」，装好后回到这里点「连接 iPhone」。	Microsoft Store is open. Install Apple Devices, then come back and select Connect iPhone.
+手动下载安装	Download manually
+无法启动修复。请重启电脑后再试；仍不行请点「手动下载安装」重新安装 Apple 组件。	Could not start the repair. Restart your PC and try again. If that fails, select Download manually to reinstall Apple components.
+无法打开下载页面。请在浏览器中访问 apple.com/itunes/download/win64 下载并安装 iTunes，然后回到这里点「连接 iPhone」。	Could not open the download page. Visit apple.com/itunes/download/win64 in your browser, install iTunes, then come back and select Connect iPhone.
+无法连接电脑上的 Apple 设备连接服务（与手机和数据线无关）。	Cannot reach the Apple connection service on this PC (not a phone or cable problem).
+没有等到管理员授权。Windows 安全提示可能在其他窗口后面，请在任务栏找到它并点「是」，或再点一次修复。	No administrator approval was received. The Windows security prompt may be behind other windows. Find it in the taskbar and choose Yes, or start the repair again.
+没有获得管理员权限，无法修复。请用管理员账户登录 Windows 后再试；公司或学校的电脑请联系管理员。	Administrator rights were not granted, so nothing was repaired. Sign in to Windows with an administrator account and try again. On a work or school PC, contact the administrator.
+电脑上的 Apple 设备连接服务不可用，暂时无法通过数据线连接（不影响 Wi-Fi 连接）。需要修复时，请在设置的 iPhone 卡片上点「继续连接」，再按提示操作。	The Apple connection service on this PC is unavailable, so USB connections do not work for now (Wi-Fi is not affected). To repair it, select Continue on the iPhone card in Settings and follow the prompts.
+自动安装没有完成（可能是网络问题，或取消了管理员授权）。请点「手动下载安装」，装好后回到这里点「连接 iPhone」。	Automatic installation did not finish (a network problem, or administrator permission was cancelled). Select Download manually, install the components, then come back and select Connect iPhone.
+这台电脑没有可用的 Windows 包管理器（winget），无法自动安装。请点「手动下载安装」，装好后回到这里点「连接 iPhone」。	This PC has no working Windows Package Manager (winget), so automatic installation is not possible. Select Download manually, install the components, then come back and select Connect iPhone.
+未找到 Apple 设备连接组件，而且这台电脑没有 Windows 包管理器（winget），无法自动安装。请点「手动下载安装」，装好后回到这里点「连接 iPhone」。	Apple connection components were not found, and this PC has no Windows Package Manager (winget) to install them automatically. Select Download manually, install the components, then come back and select Connect iPhone.

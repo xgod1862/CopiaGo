@@ -8,7 +8,7 @@ use copiago_device::{ConnState, DeviceEvent};
 use copiago_ui::{
     components::{ProgressState, Status},
     history::{HistoryStatus, StatusTone},
-    settings_page::ConnectionPhase,
+    settings_page::{ConnectionPhase, DriverState},
 };
 use copiago_win::tray::{NotificationKind, TrayIconState};
 use windows_sys::Win32::{Foundation::SYSTEMTIME, System::SystemInformation::GetLocalTime};
@@ -27,6 +27,9 @@ pub(super) struct ConnectionFeedback {
     notice_sent: bool,
     awaiting_wireless: bool,
     just_forgot: bool,
+    /// Diagnosis for the current run of "Apple service unavailable" statuses. Background
+    /// reconnects repeat that status every few seconds; the check runs once per run.
+    service_check: Option<(DriverState, Option<Message>)>,
     complete_until: Option<Instant>,
     icon_due: Option<Instant>,
 }
@@ -108,11 +111,63 @@ impl Host<'_> {
     }
 
     fn connection_status(&mut self, state: ConnState, detail: Message, now: Instant) {
+        let detail = self.network_hint(detail);
         let mut connection = self.settings.connection().clone();
         let previous = connection.phase;
         let phase = connection_phase(state);
         connection.phase = phase;
         connection.progress = None;
+        let mut show_guide = false;
+        let repeated = connection.detail.as_ref() == Some(&detail);
+        let mut detail = detail;
+        let service_failed = detail == Message::new(copiago_device::APPLE_SERVICE_UNAVAILABLE);
+        // A user-started attempt deserves a fresh check; background repeats reuse it.
+        if !service_failed || previous.busy() {
+            self.connection.service_check = None;
+        }
+        if service_failed && self.driver_install.is_none() {
+            let fresh = self.connection.service_check.is_none();
+            // The worker reached this state because the device list could not be read,
+            // so a listening port alone is not a pass. The check can take 300 ms.
+            let (driver, notice) = self
+                .connection
+                .service_check
+                .get_or_insert_with(|| {
+                    let check = super::driver::diagnose(true);
+                    (check.state, check.notice)
+                })
+                .clone();
+            if connection.device.is_none() || state == ConnState::Hold {
+                if fresh {
+                    // An explicit retry of a saved phone can land here after upgrading. Keep
+                    // the device, so Settings still offers Forget, and open the guide with
+                    // the repair controls (see ConnectionState::repairing_paired).
+                    if connection.device.is_some() {
+                        show_guide = self.popup.visible() && self.popup.screen() != Screen::Guide;
+                    }
+                    connection.driver = driver;
+                    self.settings.set_notice(notice);
+                }
+            } else if notice.is_some() {
+                // A paired phone reconnecting in the background. The repair controls live
+                // in the guide, which "Continue" opens through the same Hold path.
+                detail = message!(
+                    "电脑上的 Apple 设备连接服务不可用，暂时无法通过数据线连接（不影响 Wi-Fi 连接）。需要修复时，请在设置的 iPhone 卡片上点「继续连接」，再按提示操作。"
+                );
+            }
+        }
+        if self.driver_install.is_none()
+            && detail == Message::new(copiago_device::NO_USB_IPHONE)
+            && !repeated
+        {
+            // "No iPhone" covers a charge-only cable, a missing Apple driver and a locked
+            // phone alike. What Windows sees on USB tells them apart.
+            let (driver, notice) = super::driver::explain_missing_iphone();
+            if driver != copiago_ui::settings_page::DriverState::Ready {
+                connection.driver = driver;
+            }
+            self.settings.set_notice(Some(notice));
+        }
         if self.connection.just_forgot && state == ConnState::Setup {
             connection.detail = Some(message!("已忘记 iPhone。请用数据线连接后重新配对"));
         } else {
@@ -120,8 +175,8 @@ impl Host<'_> {
             connection.detail = Some(detail.clone());
         }
 
-        let mut show_guide = false;
         if let ConnectionPhase::Connected { wireless } = phase {
+            connection.driver = copiago_ui::settings_page::DriverState::Ready;
             self.clipboard_sync.connected(true);
             let transport = if wireless { "wifi" } else { "usb" };
             diagnostic::event(format_args!("event=connected transport={transport}"));
@@ -307,10 +362,30 @@ impl Host<'_> {
                 .as_ref()
                 .map_or(StatusTone::Muted, |(_, tone)| *tone),
             progress,
-            can_retry: phase.can_continue(),
+            can_retry: connection.can_retry(),
         });
         self.history_page
             .set_offer(self.offer.presentation(language));
+    }
+
+    /// While a paired phone is unreachable, names an active VPN or proxy adapter, the most
+    /// common PC-side reason for a phone that never reappears on Wi-Fi.
+    fn network_hint(&self, detail: Message) -> Message {
+        if detail != Message::new(copiago_device::WAITING_FOR_IPHONE) {
+            return detail;
+        }
+        let Some(adapter) = super::network::vpn_adapter() else {
+            return detail;
+        };
+        let hint = message!(
+            "等待 iPhone 连接。电脑正在使用 VPN 或代理虚拟网卡「{adapter}」，它可能拦截局域网连接；如果一直连不上，请暂时关闭它或开启局域网直连，并确认手机和电脑在同一 Wi-Fi。",
+            adapter = adapter,
+        );
+        if self.settings.connection().detail.as_ref() != Some(&hint) {
+            // The adapter name is user-chosen, so only record that one was found.
+            diagnostic::event(format_args!("event=vpn_adapter_active"));
+        }
+        hint
     }
 
     pub(super) fn reset_connection_feedback(&mut self) {

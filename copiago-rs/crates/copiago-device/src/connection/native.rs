@@ -11,7 +11,10 @@ use idevice::{rsd::RsdHandshake, tcp::handle::AdapterHandle, usbmuxd::UsbmuxdAdd
 use crate::{
     ConnState, DeviceEvent, PasteboardError, UsbProbeError, WifiProbeError, device_info,
     pasteboard::{PASTEBOARD_SERVICE, PasteboardState, WatchOptions, watch_rsd},
-    usb::{PairingError, RsdTunnel, open_paired_usb_tunnel, pair_over_usb, paired_usb_id},
+    usb::{
+        PairingError, RsdTunnel, open_paired_usb_tunnel, pair_over_usb, paired_usb_id,
+        paired_usb_provider, reveal_developer_menu,
+    },
     wifi::{
         PairedDevice, WifiProbeOptions, WifiTunnel, find_paired_device, forget_remote_records,
         open_wifi_tunnel, wait_for_advertisement,
@@ -43,7 +46,20 @@ impl Backend for NativeDevice<'_> {
         if !self.options.persist_device_data {
             return Err(PairingError::ReadOnly);
         }
-        pair_over_usb(self.addr, self.data_dir, prompt).await
+        let result = pair_over_usb(
+            self.addr,
+            self.data_dir,
+            self.options.allow_developer_setup,
+            prompt,
+        )
+        .await;
+        match &result {
+            Ok(_) => copiago_core::diagnostic::event(format_args!("event=pair_ok")),
+            Err(error) => {
+                copiago_core::diagnostic::event(format_args!("event=pair_failed error={error:?}"))
+            }
+        }
+        result
     }
 
     fn forget(&self) -> std::io::Result<()> {
@@ -56,6 +72,13 @@ impl Backend for NativeDevice<'_> {
         forget_remote_records(self.data_dir)
     }
 
+    async fn renew_usb_trust(&self, device: &PairedDevice) -> Result<(), PairingError> {
+        if !self.options.persist_device_data {
+            return Err(PairingError::ReadOnly);
+        }
+        crate::usb::renew_usb_trust(self.addr, self.data_dir, &device.serial).await
+    }
+
     async fn usb_id(&self, device: &PairedDevice) -> Result<Option<u32>, UsbProbeError> {
         paired_usb_id(self.addr, device).await
     }
@@ -66,6 +89,18 @@ impl Backend for NativeDevice<'_> {
 
     async fn advertisement(&self, device: &PairedDevice) {
         wait_for_advertisement(device).await;
+    }
+
+    async fn reveal_developer_menu(
+        &self,
+        device: &PairedDevice,
+        id: u32,
+    ) -> Result<(), UsbProbeError> {
+        if self.options.persist_device_data && self.options.allow_developer_setup {
+            let provider = paired_usb_provider(self.addr, device, id);
+            reveal_developer_menu(&provider, self.data_dir).await?;
+        }
+        Ok(())
     }
 
     async fn session(

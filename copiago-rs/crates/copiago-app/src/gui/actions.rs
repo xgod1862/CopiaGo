@@ -83,12 +83,23 @@ impl Host<'_> {
                 }
                 SettingsEffect::Retry => self.request_connection(DeviceCommand::Retry, connection),
                 SettingsEffect::ForgetDevice => self.begin_forget(),
-                SettingsEffect::InstallDriver => self.install_driver(now),
+                SettingsEffect::InstallDriver => {
+                    self.install_driver(now, driver::Job::for_state(connection.driver))
+                }
                 SettingsEffect::OpenAppleDevicesStore => {
-                    if driver::open_store().is_err() {
-                        self.settings
-                            .set_notice(Some(message!("无法打开 Microsoft Store")));
-                    }
+                    let notice = match driver::open_manual_download() {
+                        Ok(driver::ManualSource::Store) => message!(
+                            "已打开 Microsoft Store。请安装「Apple Devices」，装好后回到这里点「连接 iPhone」。"
+                        ),
+                        Ok(driver::ManualSource::AppleWebsite) => message!(
+                            "已在浏览器中从 apple.com 下载 iTunes（约 200 MB，内含 Apple 设备连接组件）。安装完成后回到这里点「连接 iPhone」。"
+                        ),
+                        Err(_) => message!(
+                            "无法打开下载页面。请在浏览器中访问 apple.com/itunes/download/win64 下载并安装 iTunes，然后回到这里点「连接 iPhone」。"
+                        ),
+                    };
+                    diagnostic::event(format_args!("event=manual_download_opened"));
+                    self.settings.set_notice(Some(notice));
                 }
                 SettingsEffect::ShowHistory => {
                     self.navigate(Screen::History, now);
@@ -103,6 +114,8 @@ impl Host<'_> {
                     return;
                 }
                 SettingsEffect::OpenUpdate => self.open_update(),
+                SettingsEffect::CopyDiagnostics => self.copy_diagnostics(),
+                SettingsEffect::ReportIssue => self.report_issue(),
                 SettingsEffect::Close => {
                     self.close_popup(now);
                     return;
@@ -139,6 +152,21 @@ impl Host<'_> {
     }
 
     fn request_connection(&mut self, command: DeviceCommand, previous: ConnectionState) {
+        // Saved RemotePairing records can connect over Wi-Fi without the USB
+        // service. Only gate a fresh USB pairing on the local service check.
+        if previous.device.is_none() && !copiago_device::has_pairing_records(&self.data_dir) {
+            let check = driver::diagnose(false);
+            if check.state != DriverState::Ready {
+                let mut connection = previous;
+                connection.driver = check.state;
+                self.settings.set_connection(connection);
+                // Explain the cause and the repair button, but never raise an
+                // administrator prompt the user did not ask for: "Connect" is not
+                // consent to change a system service.
+                self.settings.set_notice(check.notice);
+                return;
+            }
+        }
         if self.worker.commands.try_send(command).is_ok() {
             let connection = self.settings.connection();
             self.set_status(connection.default_detail(), StatusTone::Muted);
@@ -195,16 +223,29 @@ impl Host<'_> {
         }
     }
 
-    fn install_driver(&mut self, now: Instant) {
+    fn install_driver(&mut self, now: Instant, job: driver::Job) {
         let install = if self.isolated {
             Err(std::io::ErrorKind::PermissionDenied.into())
         } else {
-            driver::DriverInstall::start(now)
+            driver::DriverInstall::start(now, job)
         };
         match install {
             Ok(install) => self.driver_install = Some(install),
             Err(_) => {
-                let (state, message) = driver::failed_to_run();
+                let (state, message) = if job != driver::Job::Install {
+                    (
+                        if job == driver::Job::RepairDriver {
+                            DriverState::UsbDriver
+                        } else {
+                            DriverState::ServiceUnavailable
+                        },
+                        message!(
+                            "无法启动修复。请重启电脑后再试；仍不行请点「手动下载安装」重新安装 Apple 组件。"
+                        ),
+                    )
+                } else {
+                    driver::failed_to_run()
+                };
                 self.set_driver_result(state, message);
             }
         }
@@ -219,6 +260,27 @@ impl Host<'_> {
         connection.driver = state;
         self.settings.set_connection(connection);
         self.settings.set_notice(Some(notice));
+        // A successful repair only proves service reachability. Continue through
+        // the normal worker so trust, device enumeration and pairing are verified.
+        let connection = self.settings.connection();
+        if state == DriverState::Ready
+            && (connection.device.is_none() || connection.phase.can_continue())
+        {
+            let previous = self.settings.connection().clone();
+            let action = if previous.phase.can_continue() {
+                SettingsAction::Retry
+            } else {
+                SettingsAction::RequestPair
+            };
+            let command = match self.settings.activate(action, Instant::now()) {
+                Some(SettingsEffect::Retry) => Some(DeviceCommand::Retry),
+                Some(SettingsEffect::RequestPair) => Some(DeviceCommand::RequestPair),
+                _ => None,
+            };
+            if let Some(command) = command {
+                self.request_connection(command, previous);
+            }
+        }
     }
 
     fn open_update(&mut self) {

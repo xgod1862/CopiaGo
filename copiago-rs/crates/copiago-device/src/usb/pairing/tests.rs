@@ -1,8 +1,29 @@
 use copiago_core::i18n::Language;
 use idevice::Idevice;
+use plist::{Dictionary, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
 
 use super::*;
+
+#[tokio::test]
+async fn developer_menu_only_requests_visibility_and_checks_the_device_reply() {
+    for (response, accepted) in [
+        (Dictionary::from_iter([("success", true)]), true),
+        (Dictionary::from_iter([("success", false)]), false),
+        (Dictionary::from_iter([("Error", "DeviceLocked")]), false),
+        (Dictionary::new(), false),
+    ] {
+        let (host, mut phone) = duplex(4096);
+        let fixture = async move {
+            let request = receive(&mut phone).await;
+            assert_eq!(request, Dictionary::from_iter([("action", 0_u64)]));
+            reply(&mut phone, response).await;
+            assert_eq!(phone.read(&mut [0; 1]).await.unwrap(), 0);
+        };
+        let (result, ()) = tokio::join!(crate::usb::request_developer_menu(host), fixture);
+        assert_eq!(result.is_ok(), accepted);
+    }
+}
 
 #[tokio::test]
 async fn wifi_connections_are_enabled_when_false_or_unset() {
@@ -102,3 +123,12 @@ Lbw7YY/nGfdRJUXlDdOpS0WlrrJD0uUXUzLNsKPzCVkmzS1uOYv17QHlI5R5vTDO
 3/DrecnhBP4ipAZaXJWDzr97pYq+giVCuYAvMKNFyYN2TZca1qT7gd3JuLApTdUM
 W+cejKYQuCNDRHvypMLzFCHODwW5vGmbOQIDAQAB
 -----END RSA PUBLIC KEY-----\n";
+
+#[test]
+fn reads_the_major_ios_version() {
+    assert_eq!(ios_major("17.0.1"), Some(17));
+    assert_eq!(ios_major("16.7"), Some(16));
+    assert_eq!(ios_major("27"), Some(27));
+    assert_eq!(ios_major(""), None);
+    assert_eq!(ios_major("unknown"), None);
+}

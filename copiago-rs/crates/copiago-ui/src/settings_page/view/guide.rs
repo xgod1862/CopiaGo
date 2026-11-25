@@ -14,7 +14,7 @@ const STEPS: [(&str, &str); 4] = [
         "手机弹出提示时点「信任」，并输入锁屏密码。",
     ),
     (
-        "准备开发者服务",
+        "连接并检查 iPhone 服务",
         "请保持电脑联网、iPhone 解锁和数据线连接。",
     ),
     (
@@ -22,11 +22,15 @@ const STEPS: [(&str, &str); 4] = [
         "之后 iPhone 和电脑在同一 Wi-Fi 下会自动连接。",
     ),
 ];
+/// Shown after CopiaGo asked the phone to reveal the switch, which iOS hides until a
+/// developer tool requests it.
 const DEVELOPER_HELP: &str = concat!(
-    "开发者模式未开启。在 iPhone「设置 → 隐私与安全性 → 开发者模式」中打开开关，",
-    "按提示重启手机；重启后解锁，在弹窗中点「打开」，然后点下方按钮。"
+    "打开 iPhone「设置 → 隐私与安全性」，在底部找到「开发者模式」并打开，按提示重启。",
+    "重启后解锁，在弹窗中点「打开」，再点下方按钮。若仍没有该开关，可能是公司或学校管理的设备。"
 );
 const DRIVER_HELP: &str = "需要先安装 Apple 设备连接组件。将通过 Windows 包管理器安装 Apple Mobile Device Support，并代表你接受其许可协议。";
+const SERVICE_HELP: &str = "Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务并恢复为自动启动，可能暂时中断其他 Apple 软件的设备连接。";
+const USB_DRIVER_HELP: &str = "电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。修复将请求管理员权限，为这台电脑重新安装 Apple 自带的驱动。";
 
 impl Builder<'_> {
     pub(super) fn guide(&mut self, complete: bool) -> Result<f32> {
@@ -216,7 +220,33 @@ impl Builder<'_> {
             self.add_progress(y)?;
             y += 17.0;
         }
+        if self.state.connection().needs_help() {
+            y = self.help_row(y + 4.0)? + 4.0;
+        }
         Ok(y)
+    }
+
+    /// Two equal buttons: copy a diagnostic report, or copy it and open a GitHub issue.
+    /// Returns the bottom of the row.
+    pub(super) fn help_row(&mut self, y: f32) -> Result<f32> {
+        let (scene, language) = (self.scene, self.language);
+        let width = (INNER - 8.0) / 2.0;
+        let buttons = [
+            ("复制诊断信息", SettingsAction::CopyDiagnostics),
+            ("反馈问题", SettingsAction::ReportIssue),
+        ];
+        for (index, (source, action)) in buttons.into_iter().enumerate() {
+            let name = tr!(language, source).into_owned();
+            let button = Button::text(
+                scene,
+                Rect::new(PAD + index as f32 * (width + 8.0), y, width, 32.0),
+                ButtonStyle::Neutral,
+                &name,
+                &THEME,
+            )?;
+            self.add_button(button, name, action, true, ControlRole::Button)?;
+        }
+        Ok(y + 32.0)
     }
 
     fn step_number(&self, index: usize, current: usize, y: f32) -> Result<()> {
@@ -275,7 +305,14 @@ impl Builder<'_> {
     fn driver_box(&mut self, driver: DriverState) -> Result<()> {
         let (scene, language) = (self.scene, self.language);
         let note = scene.wrapped_text(
-            &tr!(language, DRIVER_HELP),
+            &tr!(
+                language,
+                match driver {
+                    DriverState::ServiceUnavailable => SERVICE_HELP,
+                    DriverState::UsbDriver => USB_DRIVER_HELP,
+                    _ => DRIVER_HELP,
+                }
+            ),
             TextStyle {
                 font: Font::Regular,
                 size: 12.0,
@@ -298,10 +335,11 @@ impl Builder<'_> {
         self.target(false).Children()?.InsertAtTop(&note.visual)?;
         let name = tr!(
             language,
-            if driver == DriverState::Installing {
-                "正在安装…"
-            } else {
-                "安装连接组件"
+            match driver {
+                DriverState::Installing => "正在处理…",
+                DriverState::ServiceUnavailable => "修复连接服务",
+                DriverState::UsbDriver => "修复 Apple 驱动",
+                _ => "安装连接组件",
             },
         )
         .into_owned();
@@ -319,8 +357,16 @@ impl Builder<'_> {
             false,
             ControlRole::Button,
         )?;
-        if driver == DriverState::Failed {
-            let name = tr!(language, "在 Microsoft Store 中查找").into_owned();
+        if matches!(
+            driver,
+            DriverState::Missing
+                | DriverState::Failed
+                | DriverState::ServiceUnavailable
+                | DriverState::UsbDriver
+        ) {
+            // Microsoft Store when present, otherwise Apple's own installer: works on
+            // systems without winget or the Store.
+            let name = tr!(language, "手动下载安装").into_owned();
             let store = Button::text(
                 scene,
                 Rect::new(PAD + 165.0, buttons_y, INNER - 179.0, 32.0),

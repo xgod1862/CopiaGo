@@ -129,6 +129,16 @@ impl Builder<'_> {
             }
             y += height + 14.0;
         }
+        label(
+            scene,
+            self.target(true),
+            &tr!(language, "遇到问题"),
+            Rect::new(PAD + 6.0, y, INNER - 12.0, 18.0),
+            Font::Semibold,
+            12.0,
+            THEME.muted,
+        )?;
+        y = self.help_row(y + 24.0)? + 14.0;
         self.settings_footer()?;
         Ok(y - 14.0)
     }
@@ -137,7 +147,7 @@ impl Builder<'_> {
         let (scene, language) = (self.scene, self.language);
         let (title, summary) = device_strings(device);
         let phase = self.state.connection().phase;
-        let retry = phase.can_continue();
+        let retry = self.state.connection().can_retry();
         let detail_y = y + if retry { 54.0 } else { 38.0 };
         let detail_height = if retry { 74.0 } else { 38.0 };
         let summary_y = detail_y + detail_height;

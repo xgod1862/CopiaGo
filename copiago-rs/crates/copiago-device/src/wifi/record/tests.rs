@@ -82,7 +82,7 @@ fn new_usb_record_is_sealed_in_the_format_used_for_automatic_wifi() {
         identifier: "USBTestHost".into(),
         alt_irk: Some(vec![3; 16]),
     };
-    save_remote_record(&fixture.path, pairing, "fixture-key".into()).unwrap();
+    save_remote_record(&fixture.path, pairing).unwrap();
     let sealed = fs::read(&fixture.path).unwrap();
     assert!(sealed.starts_with(dpapi::MAGIC));
     let mut record = RemoteRecord::read(&fixture.path).unwrap();
@@ -93,10 +93,7 @@ fn new_usb_record_is_sealed_in_the_format_used_for_automatic_wifi() {
         IdentifierMigration::AlreadyPresent
     );
     let fields = record.fields.0.as_dictionary().unwrap();
-    assert_eq!(
-        fields["remote_unlock_host_key"].as_string(),
-        Some("fixture-key")
-    );
+    assert!(fields.get("remote_unlock_host_key").is_none());
     assert!(fields.get("alt_irk").is_none());
 }
 

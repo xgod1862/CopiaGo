@@ -19,7 +19,10 @@ use windows_sys::{
     Win32::{
         Foundation::ERROR_SUCCESS,
         System::{
-            Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW},
+            Registry::{
+                HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+                RegCloseKey, RegGetValueW, RegOpenKeyExW,
+            },
             Threading::CREATE_NO_WINDOW,
         },
         UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
@@ -28,7 +31,7 @@ use windows_sys::{
     w,
 };
 
-use crate::service::{self, Diagnosis, REPAIR_NOT_INSTALLED, UsbPresence};
+use crate::service::{self, Diagnosis, REPAIR_ACCESS_DENIED, REPAIR_NOT_INSTALLED, UsbPresence};
 
 /// Raw OS error when the user answers "No" in the UAC prompt.
 const ERROR_CANCELLED: i32 = 1223;
@@ -58,11 +61,15 @@ pub(super) fn diagnose(enumeration_failed: bool) -> ServiceCheck {
     let report = service::inspect();
     let diagnosis = report.diagnose(enumeration_failed);
     diagnostic::event(format_args!(
-        "event=service_check enumeration_failed={enumeration_failed} diagnosis={diagnosis:?} {}",
+        "event=service_check enumeration_failed={enumeration_failed} diagnosis={diagnosis:?} winget={} {}",
+        winget_available(),
         report.log_fields()
     ));
     let notice = match diagnosis {
         Diagnosis::Listening => None,
+        Diagnosis::NotInstalled if !winget_available() => Some(message!(
+            "未找到 Apple 设备连接组件，而且这台电脑没有 Windows 包管理器（winget），无法自动安装。请点「手动下载安装」，装好后回到这里点「连接 iPhone」。"
+        )),
         Diagnosis::NotInstalled => Some(message!(
             "未找到 Apple 设备连接组件。点「安装连接组件」即可自动安装。"
         )),
@@ -99,6 +106,21 @@ fn driver_state(diagnosis: Diagnosis) -> DriverState {
         | Diagnosis::PortTaken
         | Diagnosis::Unresponsive => DriverState::ServiceUnavailable,
     }
+}
+
+/// Whether `winget.exe` can be started. LTSC and trimmed systems often lack App Installer,
+/// which provides it as an app execution alias in the WindowsApps folder.
+fn winget_available() -> bool {
+    let alias = std::env::var_os("LOCALAPPDATA").map(|local| {
+        std::path::PathBuf::from(local)
+            .join("Microsoft")
+            .join("WindowsApps")
+            .join("winget.exe")
+    });
+    let on_path = std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| dir.join("winget.exe").exists())
+    });
+    alias.is_some_and(|alias| alias.exists()) || on_path
 }
 
 /// Fixed-format Windows version fields for the diagnostic log and reports.
@@ -152,8 +174,47 @@ fn read_dword(key: PCWSTR, value: PCWSTR) -> Option<u32> {
     (status == ERROR_SUCCESS).then_some(data)
 }
 
-pub(super) fn open_store() -> io::Result<()> {
-    open_url("ms-windows-store://search/?query=Apple%20Devices")
+/// Apple's own 64-bit iTunes installer, which includes Apple Mobile Device Support and
+/// its USB driver. Works without winget or the Microsoft Store (LTSC and trimmed systems).
+const ITUNES_DOWNLOAD: &str = "https://www.apple.com/itunes/download/win64";
+
+/// Where [`open_manual_download`] sent the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ManualSource {
+    Store,
+    AppleWebsite,
+}
+
+/// Opens Apple Devices in the Microsoft Store when the Store is present, otherwise starts
+/// the iTunes download from apple.com in the browser.
+pub(super) fn open_manual_download() -> io::Result<ManualSource> {
+    if store_available() && open_url("ms-windows-store://search/?query=Apple%20Devices").is_ok() {
+        return Ok(ManualSource::Store);
+    }
+    open_url(ITUNES_DOWNLOAD).map(|()| ManualSource::AppleWebsite)
+}
+
+/// Whether the Store link handler exists. Trimmed and LTSC editions remove it, and a
+/// missing handler would otherwise show a "find an app" dialog that leads nowhere.
+fn store_available() -> bool {
+    let mut key = null_mut();
+    // SAFETY: The subkey is a static NUL-terminated string and the output is writable.
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CLASSES_ROOT,
+            w!("ms-windows-store"),
+            0,
+            KEY_READ,
+            &mut key,
+        )
+    };
+    if status == ERROR_SUCCESS {
+        // SAFETY: RegOpenKeyExW returned an open key, closed exactly once.
+        unsafe { RegCloseKey(key) };
+        true
+    } else {
+        false
+    }
 }
 
 /// Opens a fixed or percent-encoded URL with the default handler.
@@ -265,9 +326,17 @@ impl DriverInstall {
         if !self.exited {
             match self.process.finish(self.job) {
                 Finish::Running if now < self.timeout => return None,
+                // A repair thread that never returned is still waiting at the UAC prompt.
+                Finish::Running if self.job != Job::Install => return Some(self.no_consent()),
                 Finish::Running => return Some(self.failed()),
                 Finish::Succeeded => self.exited = true,
                 Finish::Failed(result) => return Some(result),
+                // winget also exits with an error when the package is already installed.
+                Finish::Unsuccessful
+                    if self.job == Job::Install && detect() == DriverState::Ready =>
+                {
+                    self.exited = true;
+                }
                 Finish::Unsuccessful => return Some(self.failed()),
             }
         }
@@ -290,6 +359,23 @@ impl DriverInstall {
         }
     }
 
+    fn no_consent(&self) -> (DriverState, Message) {
+        diagnostic::event(format_args!(
+            "event=driver_job_no_consent job={:?}",
+            self.job
+        ));
+        (
+            if self.job == Job::RepairDriver {
+                DriverState::UsbDriver
+            } else {
+                DriverState::ServiceUnavailable
+            },
+            message!(
+                "没有等到管理员授权。Windows 安全提示可能在其他窗口后面，请在任务栏找到它并点「是」，或再点一次修复。"
+            ),
+        )
+    }
+
     fn failed(&self) -> (DriverState, Message) {
         let state = diagnose(false).state;
         diagnostic::event(format_args!(
@@ -300,24 +386,26 @@ impl DriverInstall {
             Job::RepairDriver => (
                 DriverState::UsbDriver,
                 message!(
-                    "Apple USB 驱动仍未正常工作。请重新插拔数据线后再点「修复 Apple 驱动」；仍不行请重启电脑，或点「在 Microsoft Store 中查找」重新安装 Apple Devices。"
+                    "Apple USB 驱动仍未正常工作。请重新插拔数据线后再点「修复 Apple 驱动」；仍不行请重启电脑，或点「手动下载安装」重新安装 Apple 组件。"
                 ),
             ),
             Job::RepairService => (
                 DriverState::ServiceUnavailable,
                 message!(
-                    "Apple 连接服务仍不可用。请重启电脑后再试；仍不行请在 Microsoft Store 中修复或重新安装 Apple Devices。"
+                    "Apple 连接服务仍不可用。请重启电脑后再试；仍不行请点「手动下载安装」重新安装 Apple 组件。"
                 ),
             ),
             Job::Install if state == DriverState::ServiceUnavailable => (
                 DriverState::ServiceUnavailable,
                 message!(
-                    "Apple 连接服务仍不可用。请重启电脑后再试；仍不行请在 Microsoft Store 中修复或重新安装 Apple Devices。"
+                    "Apple 连接服务仍不可用。请重启电脑后再试；仍不行请点「手动下载安装」重新安装 Apple 组件。"
                 ),
             ),
             Job::Install => (
                 DriverState::Failed,
-                message!("安装未完成。可以在 Microsoft Store 安装「Apple Devices」后重试。"),
+                message!(
+                    "自动安装没有完成（可能是网络问题，或取消了管理员授权）。请点「手动下载安装」，装好后回到这里点「连接 iPhone」。"
+                ),
             ),
         }
     }
@@ -367,19 +455,29 @@ impl Process {
                             )
                         },
                     )),
+                    Some(Ok(Ok(REPAIR_ACCESS_DENIED))) => Finish::Failed((
+                        if job == Job::RepairDriver {
+                            DriverState::UsbDriver
+                        } else {
+                            DriverState::ServiceUnavailable
+                        },
+                        message!(
+                            "没有获得管理员权限，无法修复。请用管理员账户登录 Windows 后再试；公司或学校的电脑请联系管理员。"
+                        ),
+                    )),
                     Some(Ok(Err(error))) if error.raw_os_error() == Some(ERROR_CANCELLED) => {
                         Finish::Failed(if job == Job::RepairDriver {
                             (
                                 DriverState::UsbDriver,
                                 message!(
-                                    "已取消管理员授权，未修复 Apple USB 驱动。需要时请再点「修复 Apple 驱动」，并在 Windows 弹窗中点「是」。"
+                                    "已取消管理员授权，未修复 Apple USB 驱动。需要时请再点「修复 Apple 驱动」并在 Windows 弹窗中点「是」；不知道管理员密码请联系电脑管理员。"
                                 ),
                             )
                         } else {
                             (
                                 DriverState::ServiceUnavailable,
                                 message!(
-                                    "已取消管理员授权，未修复 Apple 连接服务。需要时请再点「修复连接服务」，并在 Windows 弹窗中点「是」。"
+                                    "已取消管理员授权，未修复 Apple 连接服务。需要时请再点「修复连接服务」并在 Windows 弹窗中点「是」；不知道管理员密码请联系电脑管理员。"
                                 ),
                             )
                         })
@@ -432,7 +530,9 @@ pub(super) fn explain_missing_iphone() -> (DriverState, Message) {
 pub(super) fn failed_to_run() -> (DriverState, Message) {
     (
         DriverState::Failed,
-        message!("无法运行 Windows 包管理器。可以在 Microsoft Store 安装「Apple Devices」后重试。"),
+        message!(
+            "这台电脑没有可用的 Windows 包管理器（winget），无法自动安装。请点「手动下载安装」，装好后回到这里点「连接 iPhone」。"
+        ),
     )
 }
 

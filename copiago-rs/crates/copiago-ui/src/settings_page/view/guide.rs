@@ -359,9 +359,14 @@ impl Builder<'_> {
         )?;
         if matches!(
             driver,
-            DriverState::Failed | DriverState::ServiceUnavailable | DriverState::UsbDriver
+            DriverState::Missing
+                | DriverState::Failed
+                | DriverState::ServiceUnavailable
+                | DriverState::UsbDriver
         ) {
-            let name = tr!(language, "在 Microsoft Store 中查找").into_owned();
+            // Microsoft Store when present, otherwise Apple's own installer: works on
+            // systems without winget or the Store.
+            let name = tr!(language, "手动下载安装").into_owned();
             let store = Button::text(
                 scene,
                 Rect::new(PAD + 165.0, buttons_y, INNER - 179.0, 32.0),

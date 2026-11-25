@@ -89,10 +89,19 @@ impl Host<'_> {
                     self.install_driver(now, driver::Job::for_state(connection.driver))
                 }
                 SettingsEffect::OpenAppleDevicesStore => {
-                    if driver::open_store().is_err() {
-                        self.settings
-                            .set_notice(Some(message!("无法打开 Microsoft Store")));
-                    }
+                    let notice = match driver::open_manual_download() {
+                        Ok(driver::ManualSource::Store) => message!(
+                            "已打开 Microsoft Store。请安装「Apple Devices」，装好后回到这里点「连接 iPhone」。"
+                        ),
+                        Ok(driver::ManualSource::AppleWebsite) => message!(
+                            "已在浏览器中从 apple.com 下载 iTunes（约 200 MB，内含 Apple 设备连接组件）。安装完成后回到这里点「连接 iPhone」。"
+                        ),
+                        Err(_) => message!(
+                            "无法打开下载页面。请在浏览器中访问 apple.com/itunes/download/win64 下载并安装 iTunes，然后回到这里点「连接 iPhone」。"
+                        ),
+                    };
+                    diagnostic::event(format_args!("event=manual_download_opened"));
+                    self.settings.set_notice(Some(notice));
                 }
                 SettingsEffect::ShowHistory => {
                     self.navigate(Screen::History, now);
@@ -253,7 +262,7 @@ impl Host<'_> {
                             DriverState::ServiceUnavailable
                         },
                         message!(
-                            "无法启动服务修复。请重启电脑；仍不行请在 Microsoft Store 中修复 Apple Devices。"
+                            "无法启动修复。请重启电脑后再试；仍不行请点「手动下载安装」重新安装 Apple 组件。"
                         ),
                     )
                 } else {

@@ -47,8 +47,8 @@ use windows_sys::{
         },
         UI::{
             Shell::{
-                SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-                ShellExecuteExW,
+                IsUserAnAdmin, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
+                SHELLEXECUTEINFOW, ShellExecuteExW,
             },
             WindowsAndMessaging::SW_HIDE,
         },
@@ -63,6 +63,9 @@ pub const REPAIR_FLAG: &str = "--repair-apple-service";
 pub const DRIVER_REPAIR_FLAG: &str = "--repair-apple-driver";
 /// Exit code of a repair process when the Apple component it needs is not installed.
 pub const REPAIR_NOT_INSTALLED: u32 = 3;
+/// Exit code of a repair process that started without administrator rights, which
+/// happens for standard users when UAC is turned off.
+pub const REPAIR_ACCESS_DENIED: u32 = 5;
 /// Apple's USB driver, installed with Apple Mobile Device Support.
 const DRIVER_INF: &str = "Apple\\Mobile Device Support\\Drivers\\usbaapl64.inf";
 
@@ -362,6 +365,9 @@ fn run_elevated_repair(flag: &str) -> io::Result<u32> {
 /// restarts it when it runs but does not answer. Returns the process exit code:
 /// 0 running, [`REPAIR_NOT_INSTALLED`] missing, 1 any other failure.
 pub fn repair() -> u32 {
+    if !is_admin() {
+        return REPAIR_ACCESS_DENIED;
+    }
     // SAFETY: Handles are checked for null, used only while open, and closed exactly once.
     unsafe {
         let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);
@@ -384,6 +390,11 @@ pub fn repair() -> u32 {
         CloseServiceHandle(manager);
         code
     }
+}
+
+fn is_admin() -> bool {
+    // SAFETY: IsUserAnAdmin has no parameters or preconditions.
+    unsafe { IsUserAnAdmin() != 0 }
 }
 
 /// # Safety
@@ -524,6 +535,9 @@ fn is_apple_mobile(hardware_ids: &str) -> bool {
 /// and installs it on matching devices, then asks Windows to re-scan. Returns 0 on success,
 /// [`REPAIR_NOT_INSTALLED`] when Apple Mobile Device Support is missing, 1 otherwise.
 pub fn repair_driver() -> u32 {
+    if !is_admin() {
+        return REPAIR_ACCESS_DENIED;
+    }
     let Some(common) =
         env::var_os("CommonProgramW6432").or_else(|| env::var_os("CommonProgramFiles"))
     else {

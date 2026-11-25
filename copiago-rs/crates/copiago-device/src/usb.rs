@@ -42,7 +42,7 @@ const LISTEN_RETRY: Duration = Duration::from_secs(4);
 /// Status when the Apple Mobile Device Service (usbmuxd) cannot be reached or cannot list
 /// devices. The host recognizes it to show the service diagnosis and repair controls.
 pub const APPLE_SERVICE_UNAVAILABLE: &str =
-    "无法连接电脑上的 Apple 设备连接服务（与手机和数据线无关），正在检查原因…";
+    "无法连接电脑上的 Apple 设备连接服务（与手机和数据线无关）。";
 /// Developer Mode is off and the Settings switch could not be revealed, usually because
 /// the phone is not on USB. Revealing needs the trusted USB connection.
 /// Pairing found no iPhone among the Apple service's USB devices. The host recognizes it

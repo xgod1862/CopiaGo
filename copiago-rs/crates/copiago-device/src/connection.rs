@@ -318,8 +318,9 @@ impl Failure {
                 ConnState::Waiting,
                 Message::new(match self {
                     Self::Usb(UsbProbeError::Usbmuxd) => crate::usb::APPLE_SERVICE_UNAVAILABLE,
+                    // Reconnects are automatic; a paired phone has no "Connect" button.
                     Self::Usb(UsbProbeError::DeviceLocked) => {
-                        "请先解锁 iPhone，再点「连接 iPhone」"
+                        "iPhone 已锁定，解锁后会自动重新连接。"
                     }
                     _ => WAITING_FOR_IPHONE,
                 }),

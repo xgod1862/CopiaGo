@@ -424,7 +424,10 @@ impl SettingsState {
             }
             SettingsAction::OpenAppleDevicesStore => matches!(
                 self.connection.driver,
-                DriverState::Failed | DriverState::ServiceUnavailable | DriverState::UsbDriver
+                DriverState::Missing
+                    | DriverState::Failed
+                    | DriverState::ServiceUnavailable
+                    | DriverState::UsbDriver
             ),
             SettingsAction::FinishPairing => self.connection.pairing_complete(),
             SettingsAction::OpenUpdate => self.available_version.is_some(),

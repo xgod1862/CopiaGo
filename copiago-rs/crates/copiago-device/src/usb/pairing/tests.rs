@@ -122,3 +122,12 @@ Lbw7YY/nGfdRJUXlDdOpS0WlrrJD0uUXUzLNsKPzCVkmzS1uOYv17QHlI5R5vTDO
 3/DrecnhBP4ipAZaXJWDzr97pYq+giVCuYAvMKNFyYN2TZca1qT7gd3JuLApTdUM
 W+cejKYQuCNDRHvypMLzFCHODwW5vGmbOQIDAQAB
 -----END RSA PUBLIC KEY-----\n";
+
+#[test]
+fn reads_the_major_ios_version() {
+    assert_eq!(ios_major("17.0.1"), Some(17));
+    assert_eq!(ios_major("16.7"), Some(16));
+    assert_eq!(ios_major("27"), Some(27));
+    assert_eq!(ios_major(""), None);
+    assert_eq!(ios_major("unknown"), None);
+}

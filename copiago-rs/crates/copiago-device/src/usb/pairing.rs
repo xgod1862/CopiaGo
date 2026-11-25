@@ -30,14 +30,17 @@ pub(crate) enum PairingError {
     Failed,
     ReadOnly,
     Stopped,
+    /// The phone runs a system older than [`MIN_IOS_MAJOR`].
+    UnsupportedIos,
 }
+
+/// RemotePairing and the CoreDevice tunnel that CopiaGo uses exist from iOS 17.
+const MIN_IOS_MAJOR: u32 = 17;
 
 impl PairingError {
     pub(crate) fn message(self) -> Message {
         Message::new(match self {
-            Self::Usb(UsbProbeError::NoUsbDevice) => {
-                "未找到 USB 连接的 iPhone。请用数据线连接并解锁后重试"
-            }
+            Self::Usb(UsbProbeError::NoUsbDevice) => super::NO_USB_IPHONE,
             Self::Usb(UsbProbeError::MultipleUsbDevices(_)) => "请暂时只连接一台 iPhone",
             Self::Usb(UsbProbeError::Usbmuxd) => super::APPLE_SERVICE_UNAVAILABLE,
             Self::Usb(UsbProbeError::DeviceLocked) => "请先解锁 iPhone，再点「连接 iPhone」",
@@ -52,6 +55,9 @@ impl PairingError {
                 "未完成配对：请在 iPhone 上点「信任」并输入锁屏密码，然后再点「连接 iPhone」"
             }
             Self::ReadOnly => "当前为只读模式，无法配对",
+            Self::UnsupportedIos => {
+                "CopiaGo 需要 iOS 17 或更高版本，这台 iPhone 的系统版本过低。请在 iPhone「设置 → 通用 → 软件更新」升级后，再点「连接 iPhone」。"
+            }
             _ => "配对未完成：请保持 iPhone 解锁并连着数据线，然后再点「连接 iPhone」",
         })
     }
@@ -131,6 +137,11 @@ async fn pair(
         return Err(PairingError::Stopped);
     }
     let info = device_info::read_lockdown(&mut lockdown, data_dir).await;
+    // Older phones would otherwise fail at the next step with a generic message that
+    // no retry can fix. An unreadable version is not treated as too old.
+    if ios_major(&info.os_version).is_some_and(|major| major < MIN_IOS_MAJOR) {
+        return Err(PairingError::UnsupportedIos);
+    }
     let _ = info.save(data_dir);
     enable_wifi_connections(&mut lockdown).await?;
 
@@ -229,6 +240,10 @@ async fn create_lockdown_pairing(
     .await;
     let legacy_tls = lockdown.start_session(&record.0).await?;
     Ok((lockdown, record, legacy_tls))
+}
+
+fn ios_major(version: &str) -> Option<u32> {
+    version.split('.').next()?.trim().parse().ok()
 }
 
 async fn enable_wifi_connections(lockdown: &mut LockdownClient) -> Result<(), IdeviceError> {

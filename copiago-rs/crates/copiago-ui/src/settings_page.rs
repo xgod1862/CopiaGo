@@ -114,6 +114,8 @@ pub enum DriverState {
     Missing,
     /// Installed support is unreachable or failed to enumerate devices.
     ServiceUnavailable,
+    /// Windows sees the phone on USB, but Apple's USB driver is not working for it.
+    UsbDriver,
     Installing,
     Failed,
 }
@@ -416,12 +418,13 @@ impl SettingsState {
                         self.connection.driver,
                         DriverState::Missing
                             | DriverState::ServiceUnavailable
+                            | DriverState::UsbDriver
                             | DriverState::Failed
                     )
             }
             SettingsAction::OpenAppleDevicesStore => matches!(
                 self.connection.driver,
-                DriverState::Failed | DriverState::ServiceUnavailable
+                DriverState::Failed | DriverState::ServiceUnavailable | DriverState::UsbDriver
             ),
             SettingsAction::FinishPairing => self.connection.pairing_complete(),
             SettingsAction::OpenUpdate => self.available_version.is_some(),
@@ -491,13 +494,17 @@ impl SettingsState {
                 }
             }
             SettingsAction::InstallDriver => {
-                let repair = self.connection.driver == DriverState::ServiceUnavailable;
+                let notice = match self.connection.driver {
+                    DriverState::ServiceUnavailable => {
+                        message!("正在修复 Apple 连接服务，请完成 Windows 管理员授权。")
+                    }
+                    DriverState::UsbDriver => {
+                        message!("正在修复 Apple USB 驱动，请完成 Windows 管理员授权。")
+                    }
+                    _ => message!("正在安装 Apple 连接组件，请完成 Windows 提示。"),
+                };
                 self.connection.driver = DriverState::Installing;
-                self.notice = Some(if repair {
-                    message!("正在修复 Apple 连接服务，请完成 Windows 管理员授权。")
-                } else {
-                    message!("正在安装 Apple 连接组件，请完成 Windows 提示。")
-                });
+                self.notice = Some(notice);
                 SettingsEffect::InstallDriver
             }
             SettingsAction::OpenAppleDevicesStore => SettingsEffect::OpenAppleDevicesStore,

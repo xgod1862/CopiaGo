@@ -28,7 +28,7 @@ use windows_sys::{
     w,
 };
 
-use crate::service::{self, Diagnosis, REPAIR_NOT_INSTALLED};
+use crate::service::{self, Diagnosis, REPAIR_NOT_INSTALLED, UsbPresence};
 
 /// Raw OS error when the user answers "No" in the UAC prompt.
 const ERROR_CANCELLED: i32 = 1223;
@@ -178,7 +178,30 @@ pub(super) fn open_url(url: &str) -> io::Result<()> {
     }
 }
 
+/// What a [`DriverInstall`] does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Job {
+    /// Install Apple Mobile Device Support through winget.
+    Install,
+    /// Start or restart Apple Mobile Device Service in an elevated copy of CopiaGo.
+    RepairService,
+    /// Reinstall Apple's bundled USB driver in an elevated copy of CopiaGo.
+    RepairDriver,
+}
+
+impl Job {
+    /// The job that fixes what the guide currently shows.
+    pub fn for_state(state: DriverState) -> Self {
+        match state {
+            DriverState::ServiceUnavailable => Self::RepairService,
+            DriverState::UsbDriver => Self::RepairDriver,
+            _ => Self::Install,
+        }
+    }
+}
+
 pub(super) struct DriverInstall {
+    job: Job,
     process: Process,
     next_poll: Instant,
     timeout: Instant,
@@ -186,37 +209,43 @@ pub(super) struct DriverInstall {
 }
 
 impl DriverInstall {
-    /// Runs a user-requested install, or an elevated repair of the Apple service on a
-    /// background thread. A successful exit is followed by a separate reachability check.
-    pub fn start(now: Instant, repair: bool) -> io::Result<Self> {
-        let (process, timeout) = if repair {
-            diagnostic::event(format_args!("event=service_repair_started"));
-            (
-                Process::Repair(Some(service::spawn_repair())),
+    /// Runs a user-requested install, or an elevated repair on a background thread.
+    /// A successful exit is followed by a separate check that the fix took effect.
+    pub fn start(now: Instant, job: Job) -> io::Result<Self> {
+        diagnostic::event(format_args!("event=driver_job_started job={job:?}"));
+        let (process, timeout) = match job {
+            Job::RepairService => (
+                Process::Repair(Some(service::spawn_repair(service::REPAIR_FLAG))),
                 REPAIR_TIMEOUT,
-            )
-        } else {
-            let child = Command::new("winget.exe")
-                .args([
-                    "install",
-                    "--id",
-                    "Apple.AppleMobileDeviceSupport",
-                    "--exact",
-                    "--source",
-                    "winget",
-                    "--silent",
-                    "--accept-package-agreements",
-                    "--accept-source-agreements",
-                    "--disable-interactivity",
-                ])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()?;
-            (Process::Install(child), INSTALL_TIMEOUT)
+            ),
+            Job::RepairDriver => (
+                Process::Repair(Some(service::spawn_repair(service::DRIVER_REPAIR_FLAG))),
+                REPAIR_TIMEOUT,
+            ),
+            Job::Install => {
+                let child = Command::new("winget.exe")
+                    .args([
+                        "install",
+                        "--id",
+                        "Apple.AppleMobileDeviceSupport",
+                        "--exact",
+                        "--source",
+                        "winget",
+                        "--silent",
+                        "--accept-package-agreements",
+                        "--accept-source-agreements",
+                        "--disable-interactivity",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn()?;
+                (Process::Install(child), INSTALL_TIMEOUT)
+            }
         };
         Ok(Self {
+            job,
             process,
             next_poll: now + Duration::from_millis(300),
             timeout: now + timeout,
@@ -234,7 +263,7 @@ impl DriverInstall {
         }
         self.next_poll = now + Duration::from_millis(300);
         if !self.exited {
-            match self.process.finish() {
+            match self.process.finish(self.job) {
                 Finish::Running if now < self.timeout => return None,
                 Finish::Running => return Some(self.failed()),
                 Finish::Succeeded => self.exited = true,
@@ -242,10 +271,14 @@ impl DriverInstall {
                 Finish::Unsuccessful => return Some(self.failed()),
             }
         }
-        // Neither a successful installer nor a started service proves the port is
-        // listening yet. Allow startup to finish before reporting success.
-        if detect() == DriverState::Ready {
-            diagnostic::event(format_args!("event=driver_ready"));
+        // A successful process does not prove the fix took effect: the port may still be
+        // coming up, and Windows may still be binding the driver.
+        let fixed = match self.job {
+            Job::RepairDriver => service::apple_usb_presence() != UsbPresence::DriverProblem,
+            Job::Install | Job::RepairService => detect() == DriverState::Ready,
+        };
+        if fixed {
+            diagnostic::event(format_args!("event=driver_ready job={:?}", self.job));
             Some((
                 DriverState::Ready,
                 message!("连接组件已就绪，可以连接 iPhone。"),
@@ -260,21 +293,32 @@ impl DriverInstall {
     fn failed(&self) -> (DriverState, Message) {
         let state = diagnose(false).state;
         diagnostic::event(format_args!(
-            "event=driver_failed repair={} state={state:?}",
-            matches!(self.process, Process::Repair(_))
+            "event=driver_failed job={:?} state={state:?}",
+            self.job
         ));
-        if matches!(self.process, Process::Repair(_)) || state == DriverState::ServiceUnavailable {
-            (
+        match self.job {
+            Job::RepairDriver => (
+                DriverState::UsbDriver,
+                message!(
+                    "Apple USB 驱动仍未正常工作。请重新插拔数据线后再点「修复 Apple 驱动」；仍不行请重启电脑，或点「在 Microsoft Store 中查找」重新安装 Apple Devices。"
+                ),
+            ),
+            Job::RepairService => (
                 DriverState::ServiceUnavailable,
                 message!(
                     "Apple 连接服务仍不可用。请重启电脑后再试；仍不行请在 Microsoft Store 中修复或重新安装 Apple Devices。"
                 ),
-            )
-        } else {
-            (
+            ),
+            Job::Install if state == DriverState::ServiceUnavailable => (
+                DriverState::ServiceUnavailable,
+                message!(
+                    "Apple 连接服务仍不可用。请重启电脑后再试；仍不行请在 Microsoft Store 中修复或重新安装 Apple Devices。"
+                ),
+            ),
+            Job::Install => (
                 DriverState::Failed,
                 message!("安装未完成。可以在 Microsoft Store 安装「Apple Devices」后重试。"),
-            )
+            ),
         }
     }
 }
@@ -289,12 +333,12 @@ enum Finish {
 enum Process {
     Install(Child),
     /// Taken when joined. Dropping an unjoined handle detaches the thread, so closing
-    /// the app never interrupts a service operation in progress.
+    /// the app never interrupts a service or driver operation in progress.
     Repair(Option<JoinHandle<io::Result<u32>>>),
 }
 
 impl Process {
-    fn finish(&mut self) -> Finish {
+    fn finish(&mut self, job: Job) -> Finish {
         match self {
             Self::Install(child) => match child.try_wait() {
                 Ok(None) => Finish::Running,
@@ -307,23 +351,38 @@ impl Process {
                 }
                 let result = handle.take().map(JoinHandle::join);
                 diagnostic::event(format_args!(
-                    "event=service_repair_finished result={result:?}"
+                    "event=driver_job_finished job={job:?} result={result:?}"
                 ));
                 match result {
                     Some(Ok(Ok(0))) => Finish::Succeeded,
                     Some(Ok(Ok(REPAIR_NOT_INSTALLED))) => Finish::Failed((
                         DriverState::Missing,
-                        message!(
-                            "未找到 Apple Mobile Device Service。请点「安装连接组件」重新安装。"
-                        ),
+                        if job == Job::RepairDriver {
+                            message!(
+                                "没有找到 Apple 自带的 USB 驱动文件。请点「安装连接组件」重新安装 Apple Mobile Device Support。"
+                            )
+                        } else {
+                            message!(
+                                "未找到 Apple Mobile Device Service。请点「安装连接组件」重新安装。"
+                            )
+                        },
                     )),
                     Some(Ok(Err(error))) if error.raw_os_error() == Some(ERROR_CANCELLED) => {
-                        Finish::Failed((
-                            DriverState::ServiceUnavailable,
-                            message!(
-                                "已取消管理员授权，未修复 Apple 连接服务。需要时请再点「修复连接服务」，并在 Windows 弹窗中点「是」。"
-                            ),
-                        ))
+                        Finish::Failed(if job == Job::RepairDriver {
+                            (
+                                DriverState::UsbDriver,
+                                message!(
+                                    "已取消管理员授权，未修复 Apple USB 驱动。需要时请再点「修复 Apple 驱动」，并在 Windows 弹窗中点「是」。"
+                                ),
+                            )
+                        } else {
+                            (
+                                DriverState::ServiceUnavailable,
+                                message!(
+                                    "已取消管理员授权，未修复 Apple 连接服务。需要时请再点「修复连接服务」，并在 Windows 弹窗中点「是」。"
+                                ),
+                            )
+                        })
                     }
                     _ => Finish::Unsuccessful,
                 }
@@ -340,6 +399,33 @@ impl Drop for Process {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+/// Explains why "find a USB iPhone" failed from what Windows itself sees on USB.
+/// Returns the driver state to show and a precise next step.
+pub(super) fn explain_missing_iphone() -> (DriverState, Message) {
+    let presence = service::apple_usb_presence();
+    diagnostic::event(format_args!("event=usb_presence state={presence:?}"));
+    match presence {
+        UsbPresence::Absent => (
+            DriverState::Ready,
+            message!(
+                "电脑没有检测到 iPhone。请确认数据线能传输数据（有些线只能充电），把手机直接插在电脑机身的 USB 口并解锁，然后点「连接 iPhone」。"
+            ),
+        ),
+        UsbPresence::DriverProblem => (
+            DriverState::UsbDriver,
+            message!(
+                "电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。点「修复 Apple 驱动」并在 Windows 弹窗中点「是」即可自动修复。"
+            ),
+        ),
+        UsbPresence::Working => (
+            DriverState::Ready,
+            message!(
+                "电脑检测到了 iPhone，但还不能和它通信。请解锁 iPhone 并停留在主屏幕，手机上出现「要信任此电脑吗」时点「信任」，然后点「连接 iPhone」。"
+            ),
+        ),
     }
 }
 

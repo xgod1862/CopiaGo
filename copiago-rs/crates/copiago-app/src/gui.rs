@@ -2,6 +2,7 @@
 
 mod actions;
 mod driver;
+mod network;
 mod popup;
 mod report;
 mod status;
@@ -283,6 +284,7 @@ impl Host<'_> {
                 connection.driver,
                 copiago_ui::settings_page::DriverState::Failed
                     | copiago_ui::settings_page::DriverState::ServiceUnavailable
+                    | copiago_ui::settings_page::DriverState::UsbDriver
             ) {
                 connection.driver = driver;
                 self.settings.set_connection(connection);

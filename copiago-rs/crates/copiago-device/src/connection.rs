@@ -37,6 +37,9 @@ mod tests;
 
 use clipboard_queue::ClipboardQueue;
 
+/// Status while a paired phone is not reachable. The host recognizes it to add hints
+/// about the PC's network, such as an active VPN adapter.
+pub const WAITING_FOR_IPHONE: &str = "等待 iPhone 连接；请检查解锁、信任及同一局域网";
 const RETRY_DELAY: Duration = Duration::from_secs(4);
 // After this many consecutive misses the phone is probably away. Stop blind polling and
 // wait for its network announcement, with a slow timer as a safety net.
@@ -318,7 +321,7 @@ impl Failure {
                     Self::Usb(UsbProbeError::DeviceLocked) => {
                         "请先解锁 iPhone，再点「连接 iPhone」"
                     }
-                    _ => "等待 iPhone 连接；请检查解锁、信任及同一局域网",
+                    _ => WAITING_FOR_IPHONE,
                 }),
             ),
         };

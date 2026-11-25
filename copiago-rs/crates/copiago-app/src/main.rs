@@ -34,6 +34,10 @@ fn main() -> ExitCode {
             // must not take the single-instance lock held by the running app.
             ExitCode::from(service::repair().min(255) as u8)
         }
+        #[cfg(windows)]
+        (Some(service::DRIVER_REPAIR_FLAG), None) => {
+            ExitCode::from(service::repair_driver().min(255) as u8)
+        }
         (Some("--help" | "-h"), None) => {
             attach_console();
             println!("{USAGE}");

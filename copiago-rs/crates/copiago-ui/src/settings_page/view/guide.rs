@@ -30,6 +30,7 @@ const DEVELOPER_HELP: &str = concat!(
 );
 const DRIVER_HELP: &str = "需要先安装 Apple 设备连接组件。将通过 Windows 包管理器安装 Apple Mobile Device Support，并代表你接受其许可协议。";
 const SERVICE_HELP: &str = "Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务，可能暂时中断其他 Apple 软件的设备连接。";
+const USB_DRIVER_HELP: &str = "电脑检测到了 iPhone，但 Apple 的 USB 驱动没有正常工作。修复将请求管理员权限，为这台电脑重新安装 Apple 自带的驱动。";
 
 impl Builder<'_> {
     pub(super) fn guide(&mut self, complete: bool) -> Result<f32> {
@@ -306,10 +307,10 @@ impl Builder<'_> {
         let note = scene.wrapped_text(
             &tr!(
                 language,
-                if driver == DriverState::ServiceUnavailable {
-                    SERVICE_HELP
-                } else {
-                    DRIVER_HELP
+                match driver {
+                    DriverState::ServiceUnavailable => SERVICE_HELP,
+                    DriverState::UsbDriver => USB_DRIVER_HELP,
+                    _ => DRIVER_HELP,
                 }
             ),
             TextStyle {
@@ -334,12 +335,11 @@ impl Builder<'_> {
         self.target(false).Children()?.InsertAtTop(&note.visual)?;
         let name = tr!(
             language,
-            if driver == DriverState::Installing {
-                "正在处理…"
-            } else if driver == DriverState::ServiceUnavailable {
-                "修复连接服务"
-            } else {
-                "安装连接组件"
+            match driver {
+                DriverState::Installing => "正在处理…",
+                DriverState::ServiceUnavailable => "修复连接服务",
+                DriverState::UsbDriver => "修复 Apple 驱动",
+                _ => "安装连接组件",
             },
         )
         .into_owned();
@@ -359,7 +359,7 @@ impl Builder<'_> {
         )?;
         if matches!(
             driver,
-            DriverState::Failed | DriverState::ServiceUnavailable
+            DriverState::Failed | DriverState::ServiceUnavailable | DriverState::UsbDriver
         ) {
             let name = tr!(language, "在 Microsoft Store 中查找").into_owned();
             let store = Button::text(

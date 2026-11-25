@@ -7,7 +7,9 @@
 use std::{
     env, io,
     net::{Ipv4Addr, SocketAddrV4, TcpStream},
-    os::windows::ffi::OsStrExt,
+    os::windows::{ffi::OsStrExt, process::CommandExt},
+    path::PathBuf,
+    process::Command,
     ptr::{addr_of, null, null_mut},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -15,9 +17,15 @@ use std::{
 
 use windows_sys::{
     Win32::{
+        Devices::DeviceAndDriverInstallation::{
+            CM_Get_DevNode_Status, CR_SUCCESS, DIGCF_ALLCLASSES, DIGCF_PRESENT, DN_HAS_PROBLEM,
+            HDEVINFO, SP_DEVINFO_DATA, SPDRP_HARDWAREID, SetupDiDestroyDeviceInfoList,
+            SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW,
+        },
         Foundation::{
             CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SERVICE_ALREADY_RUNNING,
-            ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS, GetLastError, WAIT_OBJECT_0,
+            ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS, GetLastError, INVALID_HANDLE_VALUE,
+            WAIT_OBJECT_0,
         },
         NetworkManagement::IpHelper::{
             GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
@@ -33,7 +41,7 @@ use windows_sys::{
                 SERVICE_STATUS, SERVICE_STOP, SERVICE_STOP_PENDING, SERVICE_STOPPED, StartServiceW,
             },
             Threading::{
-                GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32,
+                CREATE_NO_WINDOW, GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32,
                 PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, WaitForSingleObject,
             },
         },
@@ -49,10 +57,14 @@ use windows_sys::{
     w,
 };
 
-/// Command-line flag of the elevated repair process.
+/// Command-line flag of the elevated service repair process.
 pub const REPAIR_FLAG: &str = "--repair-apple-service";
-/// Exit code of the repair process when the service is not installed at all.
+/// Command-line flag of the elevated USB driver repair process.
+pub const DRIVER_REPAIR_FLAG: &str = "--repair-apple-driver";
+/// Exit code of a repair process when the Apple component it needs is not installed.
 pub const REPAIR_NOT_INSTALLED: u32 = 3;
+/// Apple's USB driver, installed with Apple Mobile Device Support.
+const DRIVER_INF: &str = "Apple\\Mobile Device Support\\Drivers\\usbaapl64.inf";
 
 const SERVICE_NAME: PCWSTR = w!("Apple Mobile Device Service");
 const SERVICE_KEY: PCWSTR = w!("SYSTEM\\CurrentControlSet\\Services\\Apple Mobile Device Service");
@@ -303,17 +315,17 @@ fn process_name(pid: u32) -> Option<String> {
 /// Starts the elevated repair on a background thread so the UAC prompt never blocks the
 /// UI thread. The thread yields the repair process's exit code; an error with raw OS code
 /// 1223 means the user declined the prompt.
-pub fn spawn_repair() -> JoinHandle<io::Result<u32>> {
-    thread::spawn(run_elevated_repair)
+pub fn spawn_repair(flag: &'static str) -> JoinHandle<io::Result<u32>> {
+    thread::spawn(move || run_elevated_repair(flag))
 }
 
-fn run_elevated_repair() -> io::Result<u32> {
+fn run_elevated_repair(flag: &str) -> io::Result<u32> {
     let executable: Vec<u16> = env::current_exe()?
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
         .collect();
-    let parameters: Vec<u16> = REPAIR_FLAG.encode_utf16().chain(Some(0)).collect();
+    let parameters: Vec<u16> = flag.encode_utf16().chain(Some(0)).collect();
     // SAFETY: All-zero is a valid initial state for this size-tagged Win32 structure.
     let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
     info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
@@ -436,6 +448,111 @@ unsafe fn wait_for(service: SC_HANDLE, target: RunState) -> bool {
     false
 }
 
+/// Whether Windows itself sees an Apple phone on USB, independent of the Apple service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsbPresence {
+    /// No Apple mobile device is attached: cable, port, or a charge-only cable.
+    Absent,
+    /// Attached and every device node has a working driver.
+    Working,
+    /// Attached, but a device node reports a problem, usually a missing Apple driver.
+    DriverProblem,
+}
+
+/// Looks for Apple mobile devices (vendor 05AC, product 12xx) among present USB device
+/// nodes, including their interface nodes, which is where a missing Apple driver shows.
+pub fn apple_usb_presence() -> UsbPresence {
+    // SAFETY: The set is checked, used only while open and destroyed once. Every output
+    // pointer refers to writable local storage of the stated size.
+    unsafe {
+        let set = SetupDiGetClassDevsW(
+            null(),
+            w!("USB"),
+            null_mut(),
+            DIGCF_PRESENT | DIGCF_ALLCLASSES,
+        );
+        if set == INVALID_HANDLE_VALUE as HDEVINFO {
+            return UsbPresence::Absent;
+        }
+        let mut found = false;
+        let mut problem = false;
+        let mut index = 0;
+        loop {
+            let mut data: SP_DEVINFO_DATA = std::mem::zeroed();
+            data.cbSize = size_of::<SP_DEVINFO_DATA>() as u32;
+            if SetupDiEnumDeviceInfo(set, index, &mut data) == 0 {
+                break;
+            }
+            index += 1;
+            let mut ids = [0u16; 512];
+            let read = SetupDiGetDeviceRegistryPropertyW(
+                set,
+                &data,
+                SPDRP_HARDWAREID,
+                null_mut(),
+                ids.as_mut_ptr().cast(),
+                size_of_val(&ids) as u32,
+                null_mut(),
+            );
+            if read == 0 || !is_apple_mobile(&String::from_utf16_lossy(&ids)) {
+                continue;
+            }
+            found = true;
+            let (mut status, mut code) = (0, 0);
+            if CM_Get_DevNode_Status(&mut status, &mut code, data.DevInst, 0) == CR_SUCCESS
+                && status & DN_HAS_PROBLEM != 0
+            {
+                problem = true;
+            }
+        }
+        SetupDiDestroyDeviceInfoList(set);
+        match (found, problem) {
+            (false, _) => UsbPresence::Absent,
+            (true, false) => UsbPresence::Working,
+            (true, true) => UsbPresence::DriverProblem,
+        }
+    }
+}
+
+fn is_apple_mobile(hardware_ids: &str) -> bool {
+    hardware_ids
+        .to_ascii_uppercase()
+        .contains("VID_05AC&PID_12")
+}
+
+/// Body of the elevated driver repair. Adds Apple's bundled USB driver to the driver store
+/// and installs it on matching devices, then asks Windows to re-scan. Returns 0 on success,
+/// [`REPAIR_NOT_INSTALLED`] when Apple Mobile Device Support is missing, 1 otherwise.
+pub fn repair_driver() -> u32 {
+    let Some(common) =
+        env::var_os("CommonProgramW6432").or_else(|| env::var_os("CommonProgramFiles"))
+    else {
+        return 1;
+    };
+    let inf = PathBuf::from(common).join(DRIVER_INF);
+    if !inf.is_file() {
+        return REPAIR_NOT_INSTALLED;
+    }
+    // Use the system copy, never a pnputil found through PATH.
+    let root = env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    let pnputil = PathBuf::from(root).join("System32").join("pnputil.exe");
+    let added = Command::new(&pnputil)
+        .arg("/add-driver")
+        .arg(&inf)
+        .arg("/install")
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    let _ = Command::new(&pnputil)
+        .arg("/scan-devices")
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    // 3010: installed, restart recommended. 259: the store already had this driver.
+    match added.ok().and_then(|status| status.code()) {
+        Some(0 | 259 | 3010) => 0,
+        _ => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +610,14 @@ mod tests {
         let mut store = report(Some(false), None, None);
         store.listening = true;
         assert_eq!(store.diagnose(false), Diagnosis::Listening);
+    }
+
+    #[test]
+    fn recognizes_apple_mobile_hardware_ids() {
+        assert!(is_apple_mobile("USB\\VID_05AC&PID_12A8&REV_1702&MI_01"));
+        assert!(is_apple_mobile("usb\\vid_05ac&pid_12a8"));
+        assert!(!is_apple_mobile("USB\\VID_05AC&PID_8290"));
+        assert!(!is_apple_mobile("USB\\VID_046D&PID_C52B"));
     }
 
     #[test]

@@ -86,7 +86,7 @@ impl Host<'_> {
                 }
                 SettingsEffect::ForgetDevice => self.begin_forget(),
                 SettingsEffect::InstallDriver => {
-                    self.install_driver(now, connection.driver == DriverState::ServiceUnavailable)
+                    self.install_driver(now, driver::Job::for_state(connection.driver))
                 }
                 SettingsEffect::OpenAppleDevicesStore => {
                     if driver::open_store().is_err() {
@@ -232,22 +232,26 @@ impl Host<'_> {
         if let Some(SettingsEffect::InstallDriver) =
             self.settings.activate(SettingsAction::InstallDriver, now)
         {
-            self.install_driver(now, true);
+            self.install_driver(now, driver::Job::RepairService);
         }
     }
 
-    fn install_driver(&mut self, now: Instant, repair: bool) {
+    fn install_driver(&mut self, now: Instant, job: driver::Job) {
         let install = if self.isolated {
             Err(std::io::ErrorKind::PermissionDenied.into())
         } else {
-            driver::DriverInstall::start(now, repair)
+            driver::DriverInstall::start(now, job)
         };
         match install {
             Ok(install) => self.driver_install = Some(install),
             Err(_) => {
-                let (state, message) = if repair {
+                let (state, message) = if job != driver::Job::Install {
                     (
-                        DriverState::ServiceUnavailable,
+                        if job == driver::Job::RepairDriver {
+                            DriverState::UsbDriver
+                        } else {
+                            DriverState::ServiceUnavailable
+                        },
                         message!(
                             "无法启动服务修复。请重启电脑；仍不行请在 Microsoft Store 中修复 Apple Devices。"
                         ),

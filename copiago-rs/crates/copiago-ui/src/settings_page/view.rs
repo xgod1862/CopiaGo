@@ -352,6 +352,7 @@ impl Body {
                 driver:
                     DriverState::Missing
                     | DriverState::ServiceUnavailable
+                    | DriverState::UsbDriver
                     | DriverState::Installing
                     | DriverState::Failed,
                 ..

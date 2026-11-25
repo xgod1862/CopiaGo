@@ -45,6 +45,9 @@ pub const APPLE_SERVICE_UNAVAILABLE: &str =
     "无法连接电脑上的 Apple 设备连接服务（与手机和数据线无关），正在检查原因…";
 /// Developer Mode is off and the Settings switch could not be revealed, usually because
 /// the phone is not on USB. Revealing needs the trusted USB connection.
+/// Pairing found no iPhone among the Apple service's USB devices. The host recognizes it
+/// to explain the cause from what Windows itself sees on USB.
+pub const NO_USB_IPHONE: &str = "未找到 USB 连接的 iPhone。请用数据线连接并解锁后重试";
 pub(crate) const DEVELOPER_MENU_RETRY: &str = "iPhone 需要开启开发者模式，但「设置」里还没有这个开关。请用数据线连接并解锁 iPhone，再点「继续连接」，CopiaGo 会让这个开关出现。";
 
 mod pairing;

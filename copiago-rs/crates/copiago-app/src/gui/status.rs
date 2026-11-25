@@ -108,6 +108,7 @@ impl Host<'_> {
     }
 
     fn connection_status(&mut self, state: ConnState, detail: Message, now: Instant) {
+        let detail = self.network_hint(detail);
         let mut connection = self.settings.connection().clone();
         let previous = connection.phase;
         let phase = connection_phase(state);
@@ -134,6 +135,18 @@ impl Host<'_> {
             let check = super::driver::diagnose(true);
             connection.driver = check.state;
             self.settings.set_notice(check.notice);
+        }
+        if self.driver_install.is_none()
+            && detail == Message::new(copiago_device::NO_USB_IPHONE)
+            && !repeated
+        {
+            // "No iPhone" covers a charge-only cable, a missing Apple driver and a locked
+            // phone alike. What Windows sees on USB tells them apart.
+            let (driver, notice) = super::driver::explain_missing_iphone();
+            if driver != copiago_ui::settings_page::DriverState::Ready {
+                connection.driver = driver;
+            }
+            self.settings.set_notice(Some(notice));
         }
         if self.connection.just_forgot && state == ConnState::Setup {
             connection.detail = Some(message!("已忘记 iPhone。请用数据线连接后重新配对"));
@@ -333,6 +346,26 @@ impl Host<'_> {
         });
         self.history_page
             .set_offer(self.offer.presentation(language));
+    }
+
+    /// While a paired phone is unreachable, names an active VPN or proxy adapter, the most
+    /// common PC-side reason for a phone that never reappears on Wi-Fi.
+    fn network_hint(&self, detail: Message) -> Message {
+        if detail != Message::new(copiago_device::WAITING_FOR_IPHONE) {
+            return detail;
+        }
+        let Some(adapter) = super::network::vpn_adapter() else {
+            return detail;
+        };
+        let hint = message!(
+            "等待 iPhone 连接。电脑正在使用 VPN 或代理虚拟网卡「{adapter}」，它可能拦截局域网连接；如果一直连不上，请暂时关闭它或开启局域网直连，并确认手机和电脑在同一 Wi-Fi。",
+            adapter = adapter,
+        );
+        if self.settings.connection().detail.as_ref() != Some(&hint) {
+            // The adapter name is user-chosen, so only record that one was found.
+            diagnostic::event(format_args!("event=vpn_adapter_active"));
+        }
+        hint
     }
 
     pub(super) fn reset_connection_feedback(&mut self) {

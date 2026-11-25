@@ -79,11 +79,9 @@ impl Host<'_> {
                     self.settings.complete_startup(result);
                 }
                 SettingsEffect::RequestPair => {
-                    self.request_connection(DeviceCommand::RequestPair, connection, now)
+                    self.request_connection(DeviceCommand::RequestPair, connection)
                 }
-                SettingsEffect::Retry => {
-                    self.request_connection(DeviceCommand::Retry, connection, now)
-                }
+                SettingsEffect::Retry => self.request_connection(DeviceCommand::Retry, connection),
                 SettingsEffect::ForgetDevice => self.begin_forget(),
                 SettingsEffect::InstallDriver => {
                     self.install_driver(now, driver::Job::for_state(connection.driver))
@@ -153,12 +151,7 @@ impl Host<'_> {
         }
     }
 
-    fn request_connection(
-        &mut self,
-        command: DeviceCommand,
-        previous: ConnectionState,
-        now: Instant,
-    ) {
+    fn request_connection(&mut self, command: DeviceCommand, previous: ConnectionState) {
         // Saved RemotePairing records can connect over Wi-Fi without the USB
         // service. Only gate a fresh USB pairing on the local service check.
         if previous.device.is_none() && !copiago_device::has_pairing_records(&self.data_dir) {
@@ -167,13 +160,10 @@ impl Host<'_> {
                 let mut connection = previous;
                 connection.driver = check.state;
                 self.settings.set_connection(connection);
+                // Explain the cause and the repair button, but never raise an
+                // administrator prompt the user did not ask for: "Connect" is not
+                // consent to change a system service.
                 self.settings.set_notice(check.notice);
-                // The user asked to connect, and a stopped or disabled service is the
-                // only obstacle: go straight to the repair. Windows still asks for
-                // administrator approval, and success continues the connection.
-                if check.repairable && !self.isolated {
-                    self.start_service_repair(now);
-                }
                 return;
             }
         }
@@ -233,18 +223,6 @@ impl Host<'_> {
         }
     }
 
-    /// Starts the elevated repair through the settings state, which shows its progress.
-    pub(super) fn start_service_repair(&mut self, now: Instant) {
-        if self.driver_install.is_some() {
-            return;
-        }
-        if let Some(SettingsEffect::InstallDriver) =
-            self.settings.activate(SettingsAction::InstallDriver, now)
-        {
-            self.install_driver(now, driver::Job::RepairService);
-        }
-    }
-
     fn install_driver(&mut self, now: Instant, job: driver::Job) {
         let install = if self.isolated {
             Err(std::io::ErrorKind::PermissionDenied.into())
@@ -297,7 +275,7 @@ impl Host<'_> {
                 _ => None,
             };
             if let Some(command) = command {
-                self.request_connection(command, previous, Instant::now());
+                self.request_connection(command, previous);
             }
         }
     }

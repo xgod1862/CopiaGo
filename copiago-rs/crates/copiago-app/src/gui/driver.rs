@@ -49,9 +49,6 @@ pub(super) struct ServiceCheck {
     pub state: DriverState,
     /// Precise reason and next step; `None` when nothing looks wrong.
     pub notice: Option<Message>,
-    /// Starting or restarting the service is likely to fix it. A port held by another
-    /// program or a missing installation needs a different action first.
-    pub repairable: bool,
 }
 
 /// Explains why the Apple service cannot be used and logs the facts behind it.
@@ -90,10 +87,6 @@ pub(super) fn diagnose(enumeration_failed: bool) -> ServiceCheck {
     ServiceCheck {
         state: driver_state(diagnosis),
         notice,
-        repairable: matches!(
-            diagnosis,
-            Diagnosis::Disabled | Diagnosis::Stopped | Diagnosis::Unresponsive
-        ),
     }
 }
 

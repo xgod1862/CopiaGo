@@ -279,7 +279,7 @@ copiago-rs/
 | 编号 | 需求 |
 |---|---|
 | F-AMDS-1 | 不用管理员权限诊断 Apple Mobile Device Service：是否安装（服务管理器）、运行状态、启动类型（注册表 `Start`）、`127.0.0.1:27015` 是否监听及监听进程的文件名，并给出对应提示（未安装、被禁用、未运行、端口被占用、无响应）。 |
-| F-AMDS-2 | 修复以管理员身份运行 `copiago.exe --repair-apple-service`，直接调用服务接口：启动类型为禁用或手动时恢复为自动，运行中无响应时重启，否则启动。UAC 等待放在后台线程。点「连接 iPhone」时若只差服务这一步，直接发起修复。 |
+| F-AMDS-2 | 修复以管理员身份运行 `copiago.exe --repair-apple-service`，直接调用服务接口：启动类型为禁用或手动时恢复为自动，运行中无响应时重启，否则启动。UAC 等待放在后台线程。只在用户点「修复连接服务」后提权；点「连接 iPhone」时发现服务问题只说明原因和修复按钮，不自动弹出授权。 |
 | F-AMDS-3 | 配对找不到 iPhone 时，用 SetupAPI 检查 Windows 是否看到 Apple 移动设备（`VID_05AC&PID_12xx`）及设备节点是否有问题码，区分"未检测到"、"驱动异常"和"已检测到但未信任/锁定"。驱动异常时以管理员身份运行 `copiago.exe --repair-apple-driver`，用系统 `pnputil` 重装 Apple 组件自带的 `usbaapl64.inf`（x86 为 `usbaapl.inf`）。 |
 | F-AMDS-4 | 安装组件优先用 winget；没有 winget 时在诊断阶段即说明。「手动下载安装」在有 Microsoft Store 时打开 Apple Devices，否则打开 apple.com 的 iTunes 下载。提权进程无管理员权限、用户取消授权、授权弹窗超时分别提示。 |
 

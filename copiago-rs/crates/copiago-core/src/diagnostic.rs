@@ -26,7 +26,9 @@ const MAX_LOG_BYTES: u64 = 512 * 1024;
 struct Log {
     path: PathBuf,
     start: Instant,
-    write: Mutex<()>,
+    /// Serializes writes and tracks the current file's size, so a long-running process
+    /// rotates as it goes instead of only at startup.
+    write: Mutex<u64>,
 }
 
 static DIAGNOSTIC: OnceLock<Log> = OnceLock::new();
@@ -39,16 +41,18 @@ pub fn init(data_dir: &Path, version: &str) {
     let path = env::var_os("ICB_DIAGNOSTIC_FILE")
         .filter(|path| !path.is_empty())
         .map_or_else(|| data_dir.join(LOG_FILE), PathBuf::from);
-    rotate(&path);
-    let log = DIAGNOSTIC.get_or_init(|| Log {
-        path,
-        start: Instant::now(),
-        write: Mutex::new(()),
+    let log = DIAGNOSTIC.get_or_init(|| {
+        let size = fs::metadata(&path).map_or(0, |metadata| metadata.len());
+        Log {
+            path,
+            start: Instant::now(),
+            write: Mutex::new(size),
+        }
     });
-    append(
-        &log.path,
-        format_args!("{} event=log_opened version={version}", utc_now()),
-    );
+    if let Ok(mut size) = log.write.lock() {
+        let line = format!("{} event=log_opened version={version}", utc_now());
+        write_line(&log.path, &mut size, MAX_LOG_BYTES, &line);
+    }
 }
 
 /// Appends one line when the log is open. Never fails visibly: diagnostics must not
@@ -57,15 +61,28 @@ pub fn event(details: fmt::Arguments<'_>) {
     let Some(log) = DIAGNOSTIC.get() else {
         return;
     };
-    if let Ok(_write) = log.write.lock() {
-        append(
-            &log.path,
-            format_args!(
-                "{} elapsed_ms={} {details}",
-                utc_now(),
-                log.start.elapsed().as_millis()
-            ),
+    if let Ok(mut size) = log.write.lock() {
+        let line = format!(
+            "{} elapsed_ms={} {details}",
+            utc_now(),
+            log.start.elapsed().as_millis()
         );
+        write_line(&log.path, &mut size, MAX_LOG_BYTES, &line);
+    }
+}
+
+/// Appends a line, first rotating the file once it has reached `limit` bytes. Keeps disk
+/// use at about twice the limit. `size` tracks the current file and must be guarded by
+/// the caller's lock.
+fn write_line(path: &Path, size: &mut u64, limit: u64, line: &str) {
+    if *size >= limit {
+        // Rename replaces an earlier rotated log on Windows.
+        if fs::rename(path, old_path(path)).is_ok() {
+            *size = 0;
+        }
+    }
+    if append(path, format_args!("{line}")) {
+        *size += line.len() as u64 + 1;
     }
 }
 
@@ -102,13 +119,13 @@ pub fn install_crash_hook(data_dir: &Path, version: &'static str) {
                 .unwrap_or("unknown");
             (file, location.line(), location.column())
         });
-        append(
+        let _ = append(
             &path,
             format_args!("version={version} file={file} line={line} column={column}"),
         );
         // Bypass the write lock: the panicking thread may already hold it.
         if let Some(log) = DIAGNOSTIC.get() {
-            append(
+            let _ = append(
                 &log.path,
                 format_args!(
                     "{} event=panic file={file} line={line} column={column}",
@@ -121,12 +138,6 @@ pub fn install_crash_hook(data_dir: &Path, version: &'static str) {
 
 fn old_path(path: &Path) -> PathBuf {
     path.with_file_name(OLD_LOG_FILE)
-}
-
-fn rotate(path: &Path) {
-    if fs::metadata(path).is_ok_and(|metadata| metadata.len() > MAX_LOG_BYTES) {
-        let _ = fs::rename(path, old_path(path));
-    }
 }
 
 fn read_tail(path: &Path, max_bytes: u64) -> Vec<String> {
@@ -151,15 +162,14 @@ fn read_tail(path: &Path, max_bytes: u64) -> Vec<String> {
     lines
 }
 
-fn append(path: &Path, details: fmt::Arguments<'_>) {
-    if let Ok(mut file) = OpenOptions::new()
+fn append(path: &Path, details: fmt::Arguments<'_>) -> bool {
+    OpenOptions::new()
         .create(true)
         .append(true)
         .access_mode(FILE_APPEND_DATA)
         .open(path)
-    {
-        let _ = file.write_all(format!("{details}\n").as_bytes());
-    }
+        .and_then(|mut file| file.write_all(format!("{details}\n").as_bytes()))
+        .is_ok()
 }
 
 /// UTC wall-clock time, so lines from different users line up with their reports.
@@ -201,6 +211,25 @@ mod tests {
         assert_eq!(format_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(format_utc(951_782_400), "2000-02-29T00:00:00Z");
         assert_eq!(format_utc(1_795_574_461), "2026-11-25T02:41:01Z");
+    }
+
+    #[test]
+    fn rotates_while_writing_and_keeps_one_old_log() {
+        let dir = std::env::temp_dir().join(format!("copiago-rotate-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(LOG_FILE);
+        let mut size = 0;
+        for index in 0..12 {
+            write_line(&path, &mut size, 20, &format!("line {index:02}"));
+        }
+        // Each line is 7 bytes plus a newline, so every file holds three lines.
+        assert!(fs::metadata(&path).unwrap().len() <= 27);
+        assert_eq!(
+            fs::read_to_string(old_path(&path)).unwrap(),
+            "line 06\nline 07\nline 08\n"
+        );
+        assert_eq!(size, fs::metadata(&path).unwrap().len());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

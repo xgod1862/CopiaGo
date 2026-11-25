@@ -36,8 +36,9 @@ use crate::service::{self, Diagnosis, REPAIR_ACCESS_DENIED, REPAIR_NOT_INSTALLED
 /// Raw OS error when the user answers "No" in the UAC prompt.
 const ERROR_CANCELLED: i32 = 1223;
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
-/// Remind the user if Windows has not returned a repair result yet.
-const REPAIR_REMINDER: Duration = Duration::from_secs(120);
+/// Remind the user if Windows has not returned a repair result yet. Windows dismisses an
+/// unanswered UAC prompt after about two minutes, so the reminder must come well before.
+const REPAIR_REMINDER: Duration = Duration::from_secs(60);
 /// Apple Devices starts its device process within seconds of opening.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(45);
 

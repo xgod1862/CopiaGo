@@ -43,7 +43,7 @@
 
 每个步骤失败时，CopiaGo 都会显示原因和下一步该做什么。下面这些问题可以在应用内直接处理：
 
-- **Apple 设备连接服务没有运行、被禁用或没有响应**：点「修复连接服务」。CopiaGo 会请求管理员授权，启动或重启 Apple Mobile Device Service，并把它恢复为随 Windows 自动启动（Apple 的默认设置）。如果端口 27015 被其他程序占用，会提示是哪个程序。
+- **Apple 设备连接服务没有运行、被禁用或没有响应**：点「修复连接服务」。CopiaGo 会请求管理员授权，启动或重启 Apple Mobile Device Service，并把它恢复为随 Windows 自动启动（Apple 的默认设置）。修复后会让 Windows 重新识别插着的 iPhone，相当于重新插拔一次数据线。如果端口 27015 被其他程序占用，会提示是哪个程序。
 - **电脑检测到了 iPhone，但 Apple USB 驱动没有工作**：点「修复 Apple 驱动」。CopiaGo 会请求管理员授权，用系统自带的 `pnputil` 重新安装 Apple 组件放在 Windows 驱动库里的 USB 驱动（`appleusb.inf`；旧版组件为 `usbaapl64.inf`）。
 - **使用 Microsoft Store 版 Apple Devices，但它的设备连接进程没有运行**（刚安装、还没打开过时常见）：点「打开 Apple Devices」即可，不需要管理员授权。Store 版没有 Apple Mobile Device Service，CopiaGo 不会再让你另装一套组件。
 - **iPhone 在设备管理器中被禁用**：CopiaGo 会提示在「设备管理器」中重新启用它。
@@ -81,7 +81,7 @@
 - 仅在可信的 Windows 电脑上配对。停用时可在托盘设置中选「忘记此 iPhone」。
 - 每次启动约 15 秒后，CopiaGo 会向 GitHub 查询一次最新版本，有新版时在托盘面板底部提示，不会自动下载或安装。GitHub 会看到这台电脑的 IP 地址和 CopiaGo 版本号。可在设置中关闭「启动时检查新版本」。
 - 首次准备开发者服务时，CopiaGo 依次尝试 raw.githubusercontent.com、ghfast.top（第三方 GitHub 加速镜像）和 fastly.jsdelivr.net 下载开发者组件，每个文件都按固定的 SHA-256 校验；随后向 Apple 的签名服务器请求签名。这些服务会看到这台电脑的 IP 地址。
-- CopiaGo 会在数据目录写入诊断日志 `diagnostic.log`（超过 512 KB 时轮换，最多保留约 1 MB），只记录事件类型、阶段、错误类别和数值，不记录剪贴板内容、文件名、iPhone 名称、序列号或文件路径。日志只保存在本机，只有你点「复制诊断信息」或「反馈问题」时才会复制到剪贴板，由你决定是否发送。复制的内容另含 Windows 和 CopiaGo 版本、iPhone 机型和 iOS 版本，发送前可以先检查。
+- CopiaGo 会在数据目录写入诊断日志 `diagnostic.log`（超过 512 KB 时轮换，最多保留约 1 MB），只记录事件类型、阶段、错误类别和数值，不记录剪贴板内容、文件名、iPhone 名称、序列号或文件路径；唯一的例外是端口 27015 被其他程序占用时，会记下该程序的文件名（不含路径）。日志只保存在本机，只有你点「复制诊断信息」或「反馈问题」时才会复制到剪贴板，由你决定是否发送。复制的内容另含 Windows 和 CopiaGo 版本、iPhone 机型和 iOS 版本，以及当前占用端口的程序名（如有），发送前可以先检查。
 - 需要管理员授权的操作只在你点击对应按钮后发生，并由 Windows 弹窗确认；点「连接 iPhone」时如果是 Apple 服务的问题，只会说明原因并提示点「修复连接服务」。这些操作包括：安装 Apple 组件（通过 winget，会代你接受 Apple 的许可协议）、启动 Apple 设备连接服务并恢复自动启动、重新安装 Apple USB 驱动。
 - 开发者模式会放宽 iPhone 的部分安全限制，使用 CopiaGo 期间需要保持开启；不再使用时，可以在 iPhone「设置 → 隐私与安全性 → 开发者模式」中关闭。
 - 卸载时会询问是否删除数据目录，包括配对记录、历史、设置和诊断日志。

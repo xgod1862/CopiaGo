@@ -21,7 +21,7 @@ use windows_sys::{
             CM_Get_DevNode_Status, CM_PROB_DISABLED, CR_SUCCESS, DIGCF_ALLCLASSES, DIGCF_PRESENT,
             DN_HAS_PROBLEM, HDEVINFO, SP_DEVINFO_DATA, SPDRP_COMPATIBLEIDS, SPDRP_HARDWAREID,
             SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-            SetupDiGetDeviceRegistryPropertyW,
+            SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceRegistryPropertyW,
         },
         Foundation::{
             CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SERVICE_ALREADY_RUNNING,
@@ -517,6 +517,9 @@ pub fn repair() -> u32 {
         } else {
             let code = repair_service(service);
             CloseServiceHandle(service);
+            if code == 0 {
+                restart_apple_usb_devices();
+            }
             code
         };
         CloseServiceHandle(manager);
@@ -610,6 +613,8 @@ pub enum UsbPresence {
 
 /// What [`apple_usb_presence`] learns about one present USB device node.
 struct UsbNode {
+    /// Device instance ID, used only inside the elevated repair; never logged.
+    instance_id: String,
     hardware_ids: String,
     compatible_ids: String,
     /// The node's problem code, `None` when it has no problem.
@@ -630,8 +635,9 @@ fn classify_usb(nodes: &[UsbNode]) -> UsbPresence {
     if apple.is_empty() {
         return UsbPresence::Absent;
     }
-    // A photo node establishes presence, but only connection nodes determine the repair.
-    apple.retain(|node| !is_still_image(&node.compatible_ids));
+    // A photo interface establishes presence, but only the physical device and the
+    // connection interfaces determine the repair.
+    apple.retain(|node| !is_photo_interface(node));
     if apple
         .iter()
         .any(|node| node.problem == Some(CM_PROB_DISABLED))
@@ -645,10 +651,44 @@ fn classify_usb(nodes: &[UsbNode]) -> UsbPresence {
     }
 }
 
-fn is_still_image(compatible_ids: &str) -> bool {
-    compatible_ids
-        .to_ascii_uppercase()
-        .contains(r"USB\CLASS_06")
+/// The photo import interface: a child interface node (`&MI_xx`) of the USB still image
+/// class, driven by Windows' own MTP driver rather than Apple's. The physical iPhone node
+/// can report the same class in its compatible IDs, so the interface marker is required.
+fn is_photo_interface(node: &UsbNode) -> bool {
+    node.hardware_ids.to_ascii_uppercase().contains("&MI_")
+        && node
+            .compatible_ids
+            .to_ascii_uppercase()
+            .contains(r"USB\CLASS_06")
+}
+
+/// Instance IDs of the physical Apple mobile devices (not their interface nodes).
+fn apple_physical_devices() -> Vec<String> {
+    usb_nodes()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|node| {
+            is_apple_mobile(&node.hardware_ids)
+                && !node.hardware_ids.to_ascii_uppercase().contains("&MI_")
+                && node.problem.is_none()
+        })
+        .map(|node| node.instance_id)
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+/// Re-enumerates attached iPhones, as unplugging and replugging would. The Apple service
+/// does not list a phone that was already attached while it was stopped until the phone
+/// arrives again, so a repaired service would otherwise still see no device.
+fn restart_apple_usb_devices() {
+    let pnputil = system_root().join("System32").join("pnputil.exe");
+    for instance in apple_physical_devices() {
+        let _ = Command::new(&pnputil)
+            .arg("/restart-device")
+            .arg(&instance)
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
 }
 
 /// Present device nodes under the USB enumerator, or `None` when Windows cannot list them.
@@ -684,7 +724,22 @@ fn usb_nodes() -> Option<Vec<UsbNode>> {
                 == CR_SUCCESS
                 && status & DN_HAS_PROBLEM != 0)
                 .then_some(code);
+            let mut instance = [0u16; 512];
+            let instance_id = if SetupDiGetDeviceInstanceIdW(
+                set,
+                &data,
+                instance.as_mut_ptr(),
+                instance.len() as u32,
+                null_mut(),
+            ) != 0
+            {
+                let length = instance.iter().position(|&unit| unit == 0).unwrap_or(0);
+                String::from_utf16_lossy(&instance[..length])
+            } else {
+                String::new()
+            };
             nodes.push(UsbNode {
+                instance_id,
                 hardware_ids,
                 compatible_ids,
                 problem,
@@ -946,10 +1001,29 @@ mod tests {
 
     fn node(hardware: &str, compatible: &str, problem: Option<u32>) -> UsbNode {
         UsbNode {
+            instance_id: String::new(),
             hardware_ids: hardware.into(),
             compatible_ids: compatible.into(),
             problem,
         }
+    }
+
+    #[test]
+    fn a_disabled_iphone_is_found_even_when_its_device_node_reports_the_photo_class() {
+        // Seen on a real PC: with the iPhone disabled, only the physical node is present,
+        // and Windows lists the still image class among its compatible IDs.
+        const PHYSICAL: &str = "USB\\VID_05AC&PID_12A8&REV_1702\0USB\\VID_05AC&PID_12A8";
+        const STILL: &str = "USB\\COMPAT_VID_05AC&Class_06&SubClass_01&Prot_01\0USB\\Class_06";
+        let disabled = [node(PHYSICAL, STILL, Some(CM_PROB_DISABLED))];
+        assert_eq!(classify_usb(&disabled), UsbPresence::Disabled);
+        let broken = [node(PHYSICAL, STILL, Some(28))];
+        assert_eq!(classify_usb(&broken), UsbPresence::DriverProblem);
+        assert!(!is_photo_interface(&node(PHYSICAL, STILL, None)));
+        assert!(is_photo_interface(&node(
+            "USB\\VID_05AC&PID_12A8&MI_00",
+            STILL,
+            None
+        )));
     }
 
     #[test]

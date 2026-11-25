@@ -168,6 +168,8 @@ impl Host<'_> {
             }
         }
         if self.worker.commands.try_send(command).is_ok() {
+            // A user-started attempt deserves a fresh Apple service check.
+            self.connection.refresh_service_check();
             let connection = self.settings.connection();
             self.set_status(connection.default_detail(), StatusTone::Muted);
             diagnostic::event(format_args!(
@@ -282,6 +284,7 @@ impl Host<'_> {
         state: DriverState,
         notice: copiago_core::i18n::Message,
     ) {
+        self.connection.refresh_service_check();
         if let Some(action) = self.settings.complete_driver(state, notice) {
             let previous = self.settings.connection().clone();
             let command = match self.settings.activate(action, Instant::now()) {

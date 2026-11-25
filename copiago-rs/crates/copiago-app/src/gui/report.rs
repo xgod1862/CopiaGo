@@ -73,10 +73,27 @@ impl Host<'_> {
         let _ = writeln!(text, "service: {}", service.log_fields());
         let _ = writeln!(text, "--- recent log ---");
         for line in diagnostic::recent_lines(LOG_LINES, LOG_BYTES) {
-            let _ = writeln!(text, "{line}");
+            let _ = writeln!(text, "{}", redact_port_owner(&line));
         }
         text
     }
+}
+
+/// Keeps the program that holds the port out of past log lines: only the current owner,
+/// in the `service:` summary, is exported. The local log keeps it for this PC.
+fn redact_port_owner(line: &str) -> std::borrow::Cow<'_, str> {
+    const KEY: &str = "port_owner=";
+    let Some(start) = line.find(KEY).map(|index| index + KEY.len()) else {
+        return line.into();
+    };
+    // The file name may contain spaces, so the value ends at the next known field.
+    let end = line[start..]
+        .find(" store_app=")
+        .map_or(line.len(), |offset| start + offset);
+    if &line[start..end] == "-" {
+        return line.into();
+    }
+    format!("{}<omitted>{}", &line[..start], &line[end..]).into()
 }
 
 /// Export structured fields and fixed status text. Formatted UI messages can contain names.
@@ -154,6 +171,23 @@ mod tests {
         assert!(text.contains("vpn_adapter_active=true"));
         assert!(text.contains("iphone=iPhone 15 ios=17.0"));
         assert!(!text.contains("private-"));
+    }
+
+    #[test]
+    fn past_log_lines_omit_the_port_owner() {
+        let line = "t event=service_check diagnosis=PortTaken listening=true port_owner=My Game Server.exe store_app=false";
+        assert_eq!(
+            redact_port_owner(line),
+            "t event=service_check diagnosis=PortTaken listening=true port_owner=<omitted> store_app=false"
+        );
+        // Lines written before the store_app field existed end with the owner.
+        assert_eq!(
+            redact_port_owner("t port_owner=srcds.exe"),
+            "t port_owner=<omitted>"
+        );
+        let none = "t listening=false port_owner=- store_app=false";
+        assert_eq!(redact_port_owner(none), none);
+        assert_eq!(redact_port_owner("t event=connected"), "t event=connected");
     }
 
     #[test]

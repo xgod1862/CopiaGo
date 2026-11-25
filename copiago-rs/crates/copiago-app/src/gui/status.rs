@@ -37,6 +37,12 @@ pub(super) struct ConnectionFeedback {
 }
 
 impl ConnectionFeedback {
+    /// Forgets the cached Apple service diagnosis, so the next service failure is checked
+    /// again. Called when the user starts an attempt or a repair finishes.
+    pub(super) fn refresh_service_check(&mut self) {
+        self.service_check = None;
+    }
+
     pub fn deadline(&self, phase: ConnectionPhase) -> Option<Instant> {
         let notice = self
             .disconnected_at
@@ -123,8 +129,10 @@ impl Host<'_> {
         let repeated = connection.detail.as_ref() == Some(&detail);
         let mut detail = detail;
         let service_failed = detail == Message::new(copiago_device::APPLE_SERVICE_UNAVAILABLE);
-        // A user-started attempt deserves a fresh check; background repeats reuse it.
-        if !service_failed || previous.busy() {
+        // Background reconnects pass through Connecting between every failure, so only a
+        // settled status other than the service failure ends the run. User-started
+        // attempts and finished repairs clear the cache through refresh_service_check.
+        if !service_failed && !phase.busy() {
             self.connection.service_check = None;
         }
         if service_failed && self.driver_install.is_none() {

@@ -272,16 +272,16 @@ copiago-rs/
 |---|---|
 | F-LOG-1 | 默认写诊断事件到数据目录的 `diagnostic.log`，超过 512 KB 轮换为 `diagnostic.old.log`；环境变量 `ICB_DIAGNOSTIC_FILE` 非空时，应用和命令行探针均写到指定文件。使用自定义文件名时，其轮换文件名在原名后追加 `.old`。事件名与 `diagnostic_event` 同类（`paired_records=`、`tunnel_open`、`monitor_ready`、`pull timeout types=` 等），另记录配对、USB 隧道步骤、服务诊断等结果。只记录类型、类别和数值，**绝不记录剪贴板内容、文件名、设备名、序列号或路径**；库错误中 12 位以上的十六进制串替换为 `<id>`。 |
 | F-LOG-2 | 崩溃（panic=abort 前的 panic hook）写一行到数据目录下的 `crash.log`，带版本号和位置，同时写入诊断日志。 |
-| F-LOG-3 | 引导页处于卡住状态时、以及设置页底部，提供「复制诊断信息」和「反馈问题」。复制内容含版本、Windows 版本、连接阶段、Apple 服务状态、iPhone 机型与 iOS 版本和最近的诊断日志。VPN 提示仅导出是否检测到虚拟网卡，设备名和网卡名均不写入报告；写入剪贴板时标记为本机写入，不同步到 iPhone、不进电脑历史。「反馈问题」另打开预填模板的 GitHub Issue，URL 中不含任何诊断内容。 |
+| F-LOG-3 | 引导页处于卡住状态时、以及设置页底部，提供「复制诊断信息」和「反馈问题」。复制内容含版本、Windows 版本、连接阶段、Apple 服务状态、iPhone 机型与 iOS 版本和最近的诊断日志。VPN 提示仅导出是否检测到虚拟网卡，设备名和网卡名均不写入报告；端口占用程序名只在 `service:` 摘要中出现一次，近期日志里的 `port_owner=` 值导出时替换为 `<omitted>`；写入剪贴板时标记为本机写入，不同步到 iPhone、不进电脑历史。「反馈问题」另打开预填模板的 GitHub Issue，URL 中不含任何诊断内容。 |
 
 ### 4.15a Apple 设备连接组件（app）
 
 | 编号 | 需求 |
 |---|---|
 | F-AMDS-1 | 不用管理员权限诊断 Apple Mobile Device Service：是否安装（服务管理器）、运行状态、启动类型（注册表 `Start`）、`127.0.0.1:27015` 是否监听及监听进程的文件名，并给出对应提示（未安装、被禁用、未运行、端口被占用、无响应）。同时从 `HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages` 检测 Microsoft Store 版 Apple Devices（包名 `AppleInc.AppleDevices`）：它没有 Windows 服务，由 `AppleMobileDeviceProcess.exe` 提供同一端口。只装了 Store 版时，端口没有监听或无法列出设备，提示「打开 Apple Devices」（以 `shell:AppsFolder\<包族名>!<应用 ID>` 启动，不提权），不进入服务修复，也不引导再装一套组件。 |
-| F-AMDS-2 | 修复以管理员身份运行 `copiago.exe --repair-apple-service`，直接调用服务接口：启动类型为禁用或手动时恢复为自动，运行中无响应时重启，否则启动。UAC 等待放在后台线程。只在用户点「修复连接服务」后提权；点「连接 iPhone」时发现服务问题只说明原因和修复按钮，不自动弹出授权。 |
-| F-AMDS-3 | 配对找不到 iPhone 时，用 SetupAPI 检查 Windows 是否看到 Apple 移动设备（`VID_05AC&PID_12xx`）及设备节点是否有问题码，区分"未检测到"、"驱动异常"、"在设备管理器中被禁用"（问题码 22，只提示手动启用，不提供驱动修复）、"已检测到但未信任/锁定"和"无法读取设备列表"（不归咎于数据线）。照片导入接口（USB 静态图像类，使用 Windows 自带的 MTP 驱动）的问题不算驱动异常。驱动异常时以管理员身份运行 `copiago.exe --repair-apple-driver`，用系统 `pnputil` 重装驱动库中版本最新的 `appleusb.inf`（`DriverStore\FileRepository\appleusb.inf_<架构>_*`，当前 Apple 组件使用的 WinUSB 驱动）；驱动库里没有时退回旧版组件放在 `Common Files\Apple\Mobile Device Support\Drivers` 的 `usbaapl64.inf`（x86 为 `usbaapl.inf`），两者都没有时提示重装组件。 |
-| F-AMDS-4 | 安装组件优先用 winget；没有 winget 时在诊断阶段即说明。「手动下载安装」在有 Microsoft Store 时打开 Apple Devices，否则打开 apple.com 的 iTunes 下载。提权进程无管理员权限、用户取消授权、长时间等待 Windows 返回结果时分别提示。等待期间保留当前任务，收到最终结果后才允许再次修复。UAC 批准后，提权修复进程最多等待 10 分钟，超时按修复失败提示，避免界面一直停在「正在处理」。 |
+| F-AMDS-2 | 修复以管理员身份运行 `copiago.exe --repair-apple-service`，直接调用服务接口：启动类型为禁用或手动时恢复为自动，运行中无响应时重启，否则启动。服务就绪后，对已插入且无问题码的 iPhone 物理节点执行 `pnputil /restart-device`：服务停止期间已插着的手机，在重新插入前不会被 Apple 服务列出。UAC 等待放在后台线程。只在用户点「修复连接服务」后提权；点「连接 iPhone」时发现服务问题只说明原因和修复按钮，不自动弹出授权。 |
+| F-AMDS-3 | 配对找不到 iPhone 时，用 SetupAPI 检查 Windows 是否看到 Apple 移动设备（`VID_05AC&PID_12xx`）及设备节点是否有问题码，区分"未检测到"、"驱动异常"、"在设备管理器中被禁用"（问题码 22，只提示手动启用，不提供驱动修复）、"已检测到但未信任/锁定"和"无法读取设备列表"（不归咎于数据线）。照片导入接口（硬件 ID 带 `&MI_xx` 的 USB 静态图像类子接口，使用 Windows 自带的 MTP 驱动）的问题不算驱动异常；iPhone 物理节点的兼容 ID 也可能含静态图像类，但始终参与判断。驱动异常时以管理员身份运行 `copiago.exe --repair-apple-driver`，用系统 `pnputil` 重装驱动库中版本最新的 `appleusb.inf`（`DriverStore\FileRepository\appleusb.inf_<架构>_*`，当前 Apple 组件使用的 WinUSB 驱动）；驱动库里没有时退回旧版组件放在 `Common Files\Apple\Mobile Device Support\Drivers` 的 `usbaapl64.inf`（x86 为 `usbaapl.inf`），两者都没有时提示重装组件。 |
+| F-AMDS-4 | 安装组件优先用 winget；没有 winget 时在诊断阶段即说明。「手动下载安装」在有 Microsoft Store 时打开 Apple Devices，否则打开 apple.com 的 iTunes 下载。提权进程无管理员权限、用户取消授权、长时间等待 Windows 返回结果时分别提示；等待提醒在 60 秒时出现，早于 Windows 约两分钟自动关闭 UAC 弹窗。等待期间保留当前任务，收到最终结果后才允许再次修复。UAC 批准后，提权修复进程最多等待 10 分钟，超时按修复失败提示，避免界面一直停在「正在处理」。 |
 
 ### 4.16 安装与分发
 

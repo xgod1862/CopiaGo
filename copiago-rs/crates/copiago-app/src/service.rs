@@ -26,7 +26,7 @@ use windows_sys::{
         Foundation::{
             CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SERVICE_ALREADY_RUNNING,
             ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS, GetLastError, INVALID_HANDLE_VALUE,
-            WAIT_OBJECT_0,
+            WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         NetworkManagement::IpHelper::{
             GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
@@ -45,7 +45,7 @@ use windows_sys::{
                 SERVICE_STATUS, SERVICE_STOP, SERVICE_STOP_PENDING, SERVICE_STOPPED, StartServiceW,
             },
             Threading::{
-                CREATE_NO_WINDOW, GetExitCodeProcess, INFINITE, OpenProcess, PROCESS_NAME_WIN32,
+                CREATE_NO_WINDOW, GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32,
                 PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, WaitForSingleObject,
             },
         },
@@ -92,6 +92,8 @@ const SERVICE_KEY: PCWSTR = w!("SYSTEM\\CurrentControlSet\\Services\\Apple Mobil
 const USBMUXD_PORT: u16 = 27015;
 const AF_INET: u32 = 2;
 const STATE_TIMEOUT: Duration = Duration::from_secs(20);
+/// Upper bound for the elevated repair process after the UAC prompt was approved.
+const REPAIR_PROCESS_TIMEOUT_MS: u32 = 10 * 60 * 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunState {
@@ -470,11 +472,16 @@ fn run_elevated_repair(flag: &str) -> io::Result<u32> {
     if info.hProcess.is_null() {
         return Err(io::Error::other("repair returned no process handle"));
     }
+    // ShellExecuteExW already returned, so the UAC prompt has been answered and only the
+    // elevated repair itself is still running. Its own steps finish in well under a
+    // minute; the cap keeps a hung pnputil or service call from blocking the UI forever.
     // SAFETY: ShellExecuteExW transferred ownership of hProcess, which is closed once below.
-    let waited = unsafe { WaitForSingleObject(info.hProcess, INFINITE) };
+    let waited = unsafe { WaitForSingleObject(info.hProcess, REPAIR_PROCESS_TIMEOUT_MS) };
     let mut code = 1u32;
     // SAFETY: The handle is valid and the output points to initialized storage.
-    let result = if waited == WAIT_OBJECT_0
+    let result = if waited == WAIT_TIMEOUT {
+        Err(io::ErrorKind::TimedOut.into())
+    } else if waited == WAIT_OBJECT_0
         && unsafe { GetExitCodeProcess(info.hProcess, &mut code) } != 0
     {
         Ok(code)

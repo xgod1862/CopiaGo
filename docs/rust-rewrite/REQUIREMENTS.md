@@ -281,7 +281,7 @@ copiago-rs/
 | F-AMDS-1 | 不用管理员权限诊断 Apple Mobile Device Service：是否安装（服务管理器）、运行状态、启动类型（注册表 `Start`）、`127.0.0.1:27015` 是否监听及监听进程的文件名，并给出对应提示（未安装、被禁用、未运行、端口被占用、无响应）。同时从 `HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages` 检测 Microsoft Store 版 Apple Devices（包名 `AppleInc.AppleDevices`）：它没有 Windows 服务，由 `AppleMobileDeviceProcess.exe` 提供同一端口。只装了 Store 版时，端口没有监听或无法列出设备，提示「打开 Apple Devices」（以 `shell:AppsFolder\<包族名>!<应用 ID>` 启动，不提权），不进入服务修复，也不引导再装一套组件。 |
 | F-AMDS-2 | 修复以管理员身份运行 `copiago.exe --repair-apple-service`，直接调用服务接口：启动类型为禁用或手动时恢复为自动，运行中无响应时重启，否则启动。UAC 等待放在后台线程。只在用户点「修复连接服务」后提权；点「连接 iPhone」时发现服务问题只说明原因和修复按钮，不自动弹出授权。 |
 | F-AMDS-3 | 配对找不到 iPhone 时，用 SetupAPI 检查 Windows 是否看到 Apple 移动设备（`VID_05AC&PID_12xx`）及设备节点是否有问题码，区分"未检测到"、"驱动异常"、"在设备管理器中被禁用"（问题码 22，只提示手动启用，不提供驱动修复）、"已检测到但未信任/锁定"和"无法读取设备列表"（不归咎于数据线）。照片导入接口（USB 静态图像类，使用 Windows 自带的 MTP 驱动）的问题不算驱动异常。驱动异常时以管理员身份运行 `copiago.exe --repair-apple-driver`，用系统 `pnputil` 重装驱动库中版本最新的 `appleusb.inf`（`DriverStore\FileRepository\appleusb.inf_<架构>_*`，当前 Apple 组件使用的 WinUSB 驱动）；驱动库里没有时退回旧版组件放在 `Common Files\Apple\Mobile Device Support\Drivers` 的 `usbaapl64.inf`（x86 为 `usbaapl.inf`），两者都没有时提示重装组件。 |
-| F-AMDS-4 | 安装组件优先用 winget；没有 winget 时在诊断阶段即说明。「手动下载安装」在有 Microsoft Store 时打开 Apple Devices，否则打开 apple.com 的 iTunes 下载。提权进程无管理员权限、用户取消授权、长时间等待 Windows 返回结果时分别提示。等待期间保留当前任务，收到最终结果后才允许再次修复。 |
+| F-AMDS-4 | 安装组件优先用 winget；没有 winget 时在诊断阶段即说明。「手动下载安装」在有 Microsoft Store 时打开 Apple Devices，否则打开 apple.com 的 iTunes 下载。提权进程无管理员权限、用户取消授权、长时间等待 Windows 返回结果时分别提示。等待期间保留当前任务，收到最终结果后才允许再次修复。UAC 批准后，提权修复进程最多等待 10 分钟，超时按修复失败提示，避免界面一直停在「正在处理」。 |
 
 ### 4.16 安装与分发
 

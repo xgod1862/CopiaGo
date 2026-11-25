@@ -18,7 +18,7 @@ use copiago_core::{
 };
 use copiago_device::{DeviceRunOptions, HostSignal, has_pairing_records};
 use copiago_ui::{
-    history::{HistoryAction, HistoryPage, HistoryTarget, StatusTone},
+    history::{HistoryPage, HistoryTarget, StatusTone},
     settings_page::{ConnectionState, SettingsState, StartupState},
 };
 use copiago_win::{
@@ -285,6 +285,7 @@ impl Host<'_> {
                 copiago_ui::settings_page::DriverState::Failed
                     | copiago_ui::settings_page::DriverState::ServiceUnavailable
                     | copiago_ui::settings_page::DriverState::UsbDriver
+                    | copiago_ui::settings_page::DriverState::AppleDevicesApp
             ) {
                 connection.driver = driver;
                 self.settings.set_connection(connection);
@@ -408,8 +409,12 @@ impl Host<'_> {
             | self.history_page.expire_confirmation(now)
             | self.connection_tick(now);
         if let Some((state, notice)) = self.driver_install.as_mut().and_then(|job| job.poll(now)) {
-            self.driver_install = None;
-            self.set_driver_result(state, notice);
+            if state == copiago_ui::settings_page::DriverState::Installing {
+                self.settings.set_notice(Some(notice));
+            } else {
+                self.driver_install = None;
+                self.set_driver_result(state, notice);
+            }
             changed = true;
         }
         if self.copy_hide_at.is_some_and(|deadline| now >= deadline) {
@@ -467,12 +472,6 @@ impl Host<'_> {
         self.settings.set_available_version(version.clone());
         self.history_page.set_update(version);
         self.redraw(now);
-    }
-
-    fn feedback(&mut self, action: HistoryAction) {
-        if let Err(error) = self.popup.feedback(&self.history_page, action) {
-            self.render_failed(error);
-        }
     }
 }
 

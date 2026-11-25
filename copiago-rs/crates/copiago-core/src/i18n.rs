@@ -121,6 +121,11 @@ impl Message {
         Self { source, values }
     }
 
+    /// A fixed message that can be exported without including runtime arguments.
+    pub fn literal_text(&self) -> Option<&'static str> {
+        self.values.is_empty().then_some(self.source)
+    }
+
     pub fn render(&self, language: Language) -> Cow<'static, str> {
         tr(language, self.source, &self.values)
     }

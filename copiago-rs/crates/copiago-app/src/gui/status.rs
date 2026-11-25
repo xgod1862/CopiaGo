@@ -27,6 +27,8 @@ pub(super) struct ConnectionFeedback {
     notice_sent: bool,
     awaiting_wireless: bool,
     just_forgot: bool,
+    /// Whether the current waiting status displayed a VPN hint.
+    pub(super) vpn_adapter_active: bool,
     /// Diagnosis for the current run of "Apple service unavailable" statuses. Background
     /// reconnects repeat that status every few seconds; the check runs once per run.
     service_check: Option<(DriverState, Option<Message>)>,
@@ -35,6 +37,12 @@ pub(super) struct ConnectionFeedback {
 }
 
 impl ConnectionFeedback {
+    /// Forgets the cached Apple service diagnosis, so the next service failure is checked
+    /// again. Called when the user starts an attempt or a repair finishes.
+    pub(super) fn refresh_service_check(&mut self) {
+        self.service_check = None;
+    }
+
     pub fn deadline(&self, phase: ConnectionPhase) -> Option<Instant> {
         let notice = self
             .disconnected_at
@@ -121,8 +129,10 @@ impl Host<'_> {
         let repeated = connection.detail.as_ref() == Some(&detail);
         let mut detail = detail;
         let service_failed = detail == Message::new(copiago_device::APPLE_SERVICE_UNAVAILABLE);
-        // A user-started attempt deserves a fresh check; background repeats reuse it.
-        if !service_failed || previous.busy() {
+        // Background reconnects pass through Connecting between every failure, so only a
+        // settled status other than the service failure ends the run. User-started
+        // attempts and finished repairs clear the cache through refresh_service_check.
+        if !service_failed && !phase.busy() {
             self.connection.service_check = None;
         }
         if service_failed && self.driver_install.is_none() {
@@ -146,7 +156,7 @@ impl Host<'_> {
                         show_guide = self.popup.visible() && self.popup.screen() != Screen::Guide;
                     }
                     connection.driver = driver;
-                    self.settings.set_notice(notice);
+                    self.settings.set_diagnosis(notice);
                 }
             } else if notice.is_some() {
                 // A paired phone reconnecting in the background. The repair controls live
@@ -162,11 +172,11 @@ impl Host<'_> {
         {
             // "No iPhone" covers a charge-only cable, a missing Apple driver and a locked
             // phone alike. What Windows sees on USB tells them apart.
-            let (driver, notice) = super::driver::explain_missing_iphone();
-            if driver != copiago_ui::settings_page::DriverState::Ready {
-                connection.driver = driver;
-            }
-            self.settings.set_notice(Some(notice));
+            let notice = super::driver::explain_missing_iphone(
+                &mut connection.driver,
+                crate::service::apple_usb_presence(),
+            );
+            self.settings.set_diagnosis(Some(notice));
         }
         if self.connection.just_forgot && state == ConnState::Setup {
             connection.detail = Some(message!("已忘记 iPhone。请用数据线连接后重新配对"));
@@ -176,7 +186,9 @@ impl Host<'_> {
         }
 
         if let ConnectionPhase::Connected { wireless } = phase {
-            connection.driver = copiago_ui::settings_page::DriverState::Ready;
+            if self.driver_install.is_none() {
+                connection.driver = DriverState::Ready;
+            }
             self.clipboard_sync.connected(true);
             let transport = if wireless { "wifi" } else { "usb" };
             diagnostic::event(format_args!("event=connected transport={transport}"));
@@ -235,7 +247,12 @@ impl Host<'_> {
             diagnostic::event(format_args!("event=status state={state:?}"));
         }
 
+        let retry_hint = self
+            .settings
+            .retry_hint()
+            .filter(|_| phase == ConnectionPhase::Connecting);
         let tone = match phase {
+            ConnectionPhase::Connecting if retry_hint.is_some() => StatusTone::Warning,
             ConnectionPhase::Connected { .. } => StatusTone::Success,
             ConnectionPhase::Waiting
             | ConnectionPhase::DeveloperMode
@@ -246,14 +263,22 @@ impl Host<'_> {
             }
             _ => StatusTone::Muted,
         };
+        let status_detail = retry_hint.cloned().unwrap_or_else(|| detail.clone());
         let message = if matches!(
             state,
             ConnState::Connecting | ConnState::Waiting | ConnState::Error
         ) && let Some(time) = &self.connection.last_connected
         {
-            message!("{status}（上次连接 {time}）", status = detail, time = time)
+            message!(
+                "{status}（上次连接 {time}）",
+                status = status_detail,
+                time = time
+            )
         } else {
-            connection.detail.clone().unwrap_or(detail)
+            retry_hint
+                .cloned()
+                .or_else(|| connection.detail.clone())
+                .unwrap_or(detail)
         };
         self.set_status(message, tone);
         self.settings.set_connection(connection);
@@ -344,6 +369,8 @@ impl Host<'_> {
                     Some(ProgressState::Determinate(fraction))
                 })
                 .unwrap_or(ProgressState::Indeterminate)
+        } else if phase == ConnectionPhase::Waiting {
+            ProgressState::Waiting
         } else {
             ProgressState::Hidden
         };
@@ -356,6 +383,7 @@ impl Host<'_> {
                 _ => Status::Disconnected,
             },
             device_name: name.to_owned(),
+            retry_hint: self.settings.retry_hint().cloned(),
             detail,
             tone: self
                 .history_notice
@@ -363,6 +391,7 @@ impl Host<'_> {
                 .map_or(StatusTone::Muted, |(_, tone)| *tone),
             progress,
             can_retry: connection.can_retry(),
+            copied: self.copy_hide_at.is_some(),
         });
         self.history_page
             .set_offer(self.offer.presentation(language));
@@ -370,11 +399,14 @@ impl Host<'_> {
 
     /// While a paired phone is unreachable, names an active VPN or proxy adapter, the most
     /// common PC-side reason for a phone that never reappears on Wi-Fi.
-    fn network_hint(&self, detail: Message) -> Message {
-        if detail != Message::new(copiago_device::WAITING_FOR_IPHONE) {
-            return detail;
-        }
-        let Some(adapter) = super::network::vpn_adapter() else {
+    fn network_hint(&mut self, detail: Message) -> Message {
+        let adapter = if detail == Message::new(copiago_device::WAITING_FOR_IPHONE) {
+            super::network::vpn_adapter()
+        } else {
+            None
+        };
+        self.connection.vpn_adapter_active = adapter.is_some();
+        let Some(adapter) = adapter else {
             return detail;
         };
         let hint = message!(

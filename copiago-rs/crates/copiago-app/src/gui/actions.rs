@@ -32,7 +32,6 @@ impl Host<'_> {
                 Ok(()) => {
                     self.history_page.copied(id);
                     self.copy_hide_at = Some(now + COPY_HIDE_DELAY);
-                    self.feedback(action);
                 }
                 Err(_) => self.set_status(message!("无法复制这条历史"), StatusTone::Warning),
             },
@@ -163,11 +162,13 @@ impl Host<'_> {
                 // Explain the cause and the repair button, but never raise an
                 // administrator prompt the user did not ask for: "Connect" is not
                 // consent to change a system service.
-                self.settings.set_notice(check.notice);
+                self.settings.set_diagnosis(check.notice);
                 return;
             }
         }
         if self.worker.commands.try_send(command).is_ok() {
+            // A user-started attempt deserves a fresh Apple service check.
+            self.connection.refresh_service_check();
             let connection = self.settings.connection();
             self.set_status(connection.default_detail(), StatusTone::Muted);
             diagnostic::event(format_args!(
@@ -210,7 +211,9 @@ impl Host<'_> {
         if success {
             self.reset_connection_feedback();
             let mut connection = self.settings.connection().clone();
-            connection.driver = driver::detect();
+            if self.driver_install.is_none() {
+                connection.driver = driver::detect();
+            }
             self.settings.set_connection(connection);
             self.set_status(
                 message!("已忘记 iPhone。请用数据线连接后重新配对"),
@@ -224,7 +227,10 @@ impl Host<'_> {
     }
 
     fn install_driver(&mut self, now: Instant, job: driver::Job) {
-        let install = if self.isolated {
+        // Opening Apple Devices changes nothing on the system, so isolated test instances
+        // may do it too.
+        let blocked = self.isolated && job != driver::Job::OpenAppleDevices;
+        let install = if blocked {
             Err(std::io::ErrorKind::PermissionDenied.into())
         } else {
             driver::DriverInstall::start(now, job)
@@ -232,7 +238,28 @@ impl Host<'_> {
         match install {
             Ok(install) => self.driver_install = Some(install),
             Err(_) => {
-                let (state, message) = if job != driver::Job::Install {
+                let (state, message) = if blocked {
+                    // An isolated test instance must never change system components; the
+                    // generic "restart your PC" advice would send testers the wrong way.
+                    (
+                        match job {
+                            driver::Job::RepairDriver => DriverState::UsbDriver,
+                            driver::Job::RepairService => DriverState::ServiceUnavailable,
+                            driver::Job::Install => DriverState::Missing,
+                            driver::Job::OpenAppleDevices => DriverState::AppleDevicesApp,
+                        },
+                        message!(
+                            "这是隔离测试实例（设置了 ICB_INSTANCE_NAMESPACE），不会安装或修复 Apple 组件。请用正常启动的 CopiaGo 操作。"
+                        ),
+                    )
+                } else if job == driver::Job::OpenAppleDevices {
+                    (
+                        DriverState::AppleDevicesApp,
+                        message!(
+                            "无法自动打开 Apple Devices。请从开始菜单打开「Apple Devices」，然后回到这里点「连接 iPhone」。"
+                        ),
+                    )
+                } else if job != driver::Job::Install {
                     (
                         if job == driver::Job::RepairDriver {
                             DriverState::UsbDriver
@@ -256,22 +283,9 @@ impl Host<'_> {
         state: DriverState,
         notice: copiago_core::i18n::Message,
     ) {
-        let mut connection = self.settings.connection().clone();
-        connection.driver = state;
-        self.settings.set_connection(connection);
-        self.settings.set_notice(Some(notice));
-        // A successful repair only proves service reachability. Continue through
-        // the normal worker so trust, device enumeration and pairing are verified.
-        let connection = self.settings.connection();
-        if state == DriverState::Ready
-            && (connection.device.is_none() || connection.phase.can_continue())
-        {
+        self.connection.refresh_service_check();
+        if let Some(action) = self.settings.complete_driver(state, notice) {
             let previous = self.settings.connection().clone();
-            let action = if previous.phase.can_continue() {
-                SettingsAction::Retry
-            } else {
-                SettingsAction::RequestPair
-            };
             let command = match self.settings.activate(action, Instant::now()) {
                 Some(SettingsEffect::Retry) => Some(DeviceCommand::Retry),
                 Some(SettingsEffect::RequestPair) => Some(DeviceCommand::RequestPair),

@@ -65,3 +65,23 @@ pub fn slide_indicator(animator: &Animator, indicator: &impl Interface, x: f32) 
         })
     })
 }
+
+/// Crossfade content that changes in place. The caller publishes the new input model immediately.
+pub fn crossfade(
+    animator: &Animator,
+    parent: &ContainerVisual,
+    outgoing: &ContainerVisual,
+    incoming: &ContainerVisual,
+) -> Result<()> {
+    let children = parent.Children()?;
+    if !animator.policy().allows_motion() {
+        children.InsertAbove(incoming, outgoing)?;
+        return children.Remove(outgoing);
+    }
+    incoming.SetOpacity(0.0)?;
+    children.InsertAbove(incoming, outgoing)?;
+    animator.opacity(incoming, 1.0, Tween::new(180))?;
+    animator.detach_after(parent, outgoing, || {
+        animator.opacity(outgoing, 0.0, Tween::new(140))
+    })
+}

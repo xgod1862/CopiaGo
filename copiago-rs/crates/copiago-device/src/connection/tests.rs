@@ -317,7 +317,7 @@ async fn connection_policy_by_failure_stage() {
             F(Failure::DeveloperModeRequired),
             None,
             ConnState::Hold,
-            Some(Failure::DeveloperMenuUnavailable),
+            Some(Failure::DeveloperModeOffline),
         ),
         (
             "USB setup error wins",
@@ -663,6 +663,42 @@ fn first_setup_keeps_actionable_causes() {
         Failure::DeveloperModeRequired.after_usb(Failure::Usb(UsbProbeError::Timeout)),
         Failure::DeveloperModeRequired
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn explicit_retry_of_an_offline_paired_phone_resumes_wireless_discovery() {
+    let phone = FakePhone::new(
+        None,
+        [
+            Session::Failure(OFFLINE),
+            Session::Failure(OFFLINE),
+            Session::Connected,
+        ],
+    );
+    let (send, mut commands) = mpsc::channel(4);
+    let mut inputs = rig(&mut commands, (), None);
+    let waits = Cell::new(0);
+    let emit = |event| {
+        if let DeviceEvent::Status(state, _) = event {
+            match state {
+                ConnState::Waiting => {
+                    if waits.get() == 0 {
+                        send.try_send(DeviceCommand::Retry).unwrap();
+                    }
+                    waits.set(waits.get() + 1);
+                }
+                ConnState::Connected { wireless: true } => return ControlFlow::Break(()),
+                ConnState::Hold => panic!("ordinary offline retry requested intervention"),
+                _ => {}
+            }
+        }
+        ControlFlow::Continue(())
+    };
+    timeout(RETRY_DELAY * 3, run(&phone, &mut inputs, &emit))
+        .await
+        .unwrap();
+    assert_eq!(waits.get(), 2);
+    assert_eq!(phone.attempts(), [Transport::Wifi; 3]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1202,4 +1238,23 @@ async fn an_advertisement_ends_the_slow_wait_early() {
     phone.advertises_after.set(Some(Duration::from_secs(10)));
     let gaps = waiting_gaps(&phone, misses).await;
     assert_eq!(gaps.last(), Some(&(RETRY_DELAY.as_secs() + 10)));
+}
+
+#[test]
+fn developer_mode_hints_match_whether_the_phone_is_on_usb() {
+    // Without USB the switch may already be visible, so the hint leads with Settings.
+    let offline = Failure::DeveloperModeOffline.wait(false);
+    assert_eq!(offline.state, ConnState::Hold);
+    assert_eq!(
+        offline.message,
+        Message::new(crate::usb::DEVELOPER_MODE_OFF_NO_USB)
+    );
+    assert!(crate::usb::DEVELOPER_MODE_OFF_NO_USB.starts_with("iPhone 的开发者模式没有开启。请在"));
+    // On USB a failed reveal must not ask for the cable that is already attached.
+    let on_usb = Failure::DeveloperMenuUnavailable.wait(false);
+    assert_eq!(
+        on_usb.message,
+        Message::new(crate::usb::DEVELOPER_MENU_RETRY)
+    );
+    assert!(!crate::usb::DEVELOPER_MENU_RETRY.contains("请用数据线连接"));
 }

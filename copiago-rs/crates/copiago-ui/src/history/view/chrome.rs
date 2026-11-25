@@ -19,9 +19,6 @@ use crate::{
 use super::*;
 use crate::history::HistoryOffer;
 
-/// Status lines under the title before the text is ellipsized.
-const MAX_DETAIL_LINES: usize = 4;
-
 #[derive(Clone, PartialEq)]
 pub(super) struct ChromeState {
     pub(super) tab: Source,
@@ -31,9 +28,14 @@ pub(super) struct ChromeState {
     enabled: bool,
     clear: bool,
     pub(super) detail: Vec<String>,
+    pub(super) activity: Option<String>,
     tone: StatusTone,
     retry_width: Option<f32>,
+    retry_enabled: bool,
+    pub(super) copied: bool,
     offer: Option<HistoryOffer>,
+    offer_lines: Vec<String>,
+    footer_lines: Vec<String>,
     update: Option<String>,
 }
 
@@ -48,7 +50,7 @@ impl ChromeState {
         let hide = value.is_empty()
             || (page.status.tone == StatusTone::Success
                 && value.starts_with(tr!(language, "已连接").as_ref()));
-        let retry_width = if !hide && page.status.can_retry {
+        let retry_width = if !hide && (page.status.can_retry || page.status.retry_hint.is_some()) {
             Some(
                 measure
                     .width(&tr!(language, "继续连接"), Font::Regular, NOTE_SIZE)?
@@ -58,16 +60,41 @@ impl ChromeState {
         } else {
             None
         };
-        let detail = if hide {
+        let activity = match page.status.progress {
+            ProgressState::Waiting => Some("等待下一次自动重试"),
+            ProgressState::Indeterminate if page.status.retry_hint.is_some() => {
+                Some("正在重新连接…")
+            }
+            _ => None,
+        }
+        .map(|caption| tr!(language, caption).into_owned());
+        let mut detail = if hide {
             Vec::new()
         } else {
             let width = INNER - retry_width.map_or(0.0, |w| w + 8.0);
             // Instructions such as enabling Developer Mode need three lines; never cut them off.
-            wrap(&value, width - 2.0, MAX_DETAIL_LINES, |line| {
-                measure.width(line, Font::Regular, NOTE_SIZE)
-            })?
+            measure.lines(&value, width - 4.0, Font::Regular, NOTE_SIZE)?
         };
-        Ok(Self {
+        if let Some(hint) = &page.status.retry_hint {
+            let hint = hint.render(language);
+            if !value.starts_with(hint.as_ref()) {
+                let width = INNER - retry_width.map_or(0.0, |w| w + 8.0);
+                let mut lines = measure.lines(&hint, width - 4.0, Font::Regular, NOTE_SIZE)?;
+                lines.append(&mut detail);
+                detail = lines;
+            }
+        }
+        let offer_lines = if let Some(offer) = page.current_offer() {
+            measure.lines(
+                &offer.reason.render(language),
+                INNER - 32.0,
+                Font::Regular,
+                NOTE_SIZE,
+            )?
+        } else {
+            Vec::new()
+        };
+        let mut state = Self {
             tab: page.tab,
             language,
             phone_count: page.phone.records.len(),
@@ -76,9 +103,73 @@ impl ChromeState {
             clear: page.clear_until.is_some(),
             detail,
             tone: page.status.tone,
+            activity,
+            retry_enabled: page.status.can_retry,
+            copied: page.status.copied,
             retry_width,
             offer: page.current_offer().cloned(),
             update: page.update.clone(),
+            offer_lines,
+            footer_lines: Vec::new(),
+        };
+        let count = state.count(state.tab);
+        let clear_width = if count == 0 {
+            0.0
+        } else {
+            button_width(
+                measure,
+                &tr!(
+                    language,
+                    if state.clear {
+                        "确认清空"
+                    } else {
+                        "清空"
+                    }
+                ),
+                28.0,
+            )? + 8.0
+        };
+        state.footer_lines = measure.lines(
+            &state.footer_note(),
+            INNER - 8.0 - clear_width,
+            Font::Regular,
+            NOTE_SIZE,
+        )?;
+        Ok(state)
+    }
+
+    fn footer_note(&self) -> Cow<'_, str> {
+        let language = self.language;
+        let count = self.count(self.tab);
+        if let Some(version) = &self.update {
+            tr!(
+                language,
+                "发现新版本 {version}，点击查看",
+                version = version
+            )
+        } else if self.enabled && count != 0 {
+            tr!(language, "{count} 条 · 加密保存在本机", count = count)
+        } else if self.enabled {
+            tr!(language, "已开启 · 加密保存在本机")
+        } else {
+            tr!(
+                language,
+                if self.tab == Source::Phone {
+                    "未保留 iPhone 剪贴板历史"
+                } else {
+                    "未保留电脑剪贴板历史"
+                }
+            )
+        }
+    }
+
+    pub(super) fn footer_height(&self) -> f32 {
+        (self.footer_lines.len() as f32 * 18.0).max(32.0) + 30.0
+    }
+
+    pub(super) fn offer_height(&self) -> f32 {
+        self.offer.as_ref().map_or(0.0, |offer| {
+            56.0 + self.offer_lines.len() as f32 * 18.0 + if offer.busy { 24.0 } else { 46.0 }
         })
     }
 
@@ -101,6 +192,8 @@ pub(super) struct Chrome {
     pub(super) frame: ContainerVisual,
     pub(super) scrolled: ContainerVisual,
     pub(super) state: ChromeState,
+    pub(super) inline_height: f32,
+    pub(super) footer_top: f32,
     controls: Vec<Control>,
 }
 
@@ -115,13 +208,15 @@ impl Chrome {
             frame: scene.compositor().CreateContainerVisual()?,
             scrolled: scene.compositor().CreateContainerVisual()?,
             state: layout.state.clone(),
+            inline_height: layout.inline_height,
+            footer_top: layout.footer_top(),
             controls: Vec::new(),
         };
         let style = &layout.state;
         let language = style.language;
         label(
             scene,
-            &chrome.frame,
+            chrome.layer(layout.scroll_all),
             Rect::new(PAD, 16.0, 160.0, 36.0),
             &tr!(language, "剪贴板"),
             (Font::Bold, 20.0),
@@ -138,18 +233,28 @@ impl Chrome {
             &LIGHT_THEME,
         )?;
         let settings = HistoryTarget::Action(HistoryAction::OpenSettings);
-        chrome.button(button, Some(settings), false)?;
+        chrome.button(button, Some(settings), layout.scroll_all)?;
         let detail_width = INNER - style.retry_width.map_or(0.0, |width| width + 8.0);
         let tone = match style.tone {
             StatusTone::Muted => LIGHT_THEME.muted,
             StatusTone::Success => LIGHT_THEME.connected.text,
             StatusTone::Warning => LIGHT_THEME.disconnected.text,
         };
+        let scrolls = layout.scrolls_feedback();
+        let top = if scrolls && !layout.scroll_all {
+            4.0
+        } else {
+            61.0
+        };
         for (index, line) in style.detail.iter().enumerate() {
             label(
                 scene,
-                &chrome.frame,
-                Rect::new(PAD, 61.0 + index as f32 * 18.0, detail_width, 18.0),
+                if scrolls {
+                    &chrome.scrolled
+                } else {
+                    &chrome.frame
+                },
+                Rect::new(PAD, top + index as f32 * 18.0, detail_width, 18.0),
                 line,
                 (Font::Regular, NOTE_SIZE),
                 tone,
@@ -157,16 +262,49 @@ impl Chrome {
             )?;
         }
         if let Some(width) = style.retry_width {
-            let button = Button::text(
+            let mut button = Button::text(
                 scene,
-                Rect::new(WIDTH - PAD - width, 58.0, width, 26.0),
+                Rect::new(WIDTH - PAD - width, top - 3.0, width, 26.0),
                 ButtonStyle::Neutral,
                 &tr!(language, "继续连接"),
                 &LIGHT_THEME,
             )?;
+            button.set_enabled(animator, style.retry_enabled)?;
             chrome.button(
                 button,
-                Some(HistoryTarget::Action(HistoryAction::Retry)),
+                style
+                    .retry_enabled
+                    .then_some(HistoryTarget::Action(HistoryAction::Retry)),
+                scrolls,
+            )?;
+        }
+        if style.copied {
+            label(
+                scene,
+                if scrolls {
+                    &chrome.scrolled
+                } else {
+                    &chrome.frame
+                },
+                Rect::new(PAD, top + style.detail.len() as f32 * 18.0, INNER, 18.0),
+                &tr!(language, "已复制"),
+                (Font::Semibold, NOTE_SIZE),
+                LIGHT_THEME.connected.text,
+                false,
+            )?;
+        }
+        if let Some(caption) = &style.activity {
+            label(
+                scene,
+                if scrolls {
+                    &chrome.scrolled
+                } else {
+                    &chrome.frame
+                },
+                Rect::new(PAD, layout.feedback_bottom() - 37.0, INNER, 18.0),
+                caption,
+                (Font::Regular, NOTE_SIZE),
+                LIGHT_THEME.muted,
                 false,
             )?;
         }
@@ -178,6 +316,14 @@ impl Chrome {
             chrome.empty(scene, &layout.measure)?;
         }
         Ok(chrome)
+    }
+
+    fn layer(&self, scrolled: bool) -> &ContainerVisual {
+        if scrolled {
+            &self.scrolled
+        } else {
+            &self.frame
+        }
     }
 
     fn button(
@@ -302,7 +448,7 @@ impl Chrome {
         let y = layout.tabs_top();
         shape(
             scene,
-            &self.frame,
+            self.layer(layout.scroll_all),
             Rect::new(PAD, y, INNER, 32.0),
             16.0,
             LIGHT_THEME.control,
@@ -321,7 +467,9 @@ impl Chrome {
             LIGHT_THEME.white,
         )?;
         indicator.visual.SetOffset(xy(x(previous) + 3.0, y + 3.0))?;
-        self.frame.Children()?.InsertAtTop(&indicator.visual)?;
+        self.layer(layout.scroll_all)
+            .Children()?
+            .InsertAtTop(&indicator.visual)?;
         animator.offset(
             &indicator.visual,
             xy(x(self.state.tab) + 3.0, y + 3.0),
@@ -339,7 +487,7 @@ impl Chrome {
             let bounds = Rect::new(x(tab), y, INNER / 2.0, 32.0);
             label(
                 scene,
-                &self.frame,
+                self.layer(layout.scroll_all),
                 bounds,
                 &name,
                 (
@@ -360,7 +508,7 @@ impl Chrome {
             self.controls.push(Control {
                 target: HistoryTarget::Tab(tab),
                 bounds,
-                clipped: false,
+                clipped: layout.scroll_all,
                 button: None,
             });
         }
@@ -371,27 +519,7 @@ impl Chrome {
         let state = &layout.state;
         let language = state.language;
         let count = state.count(state.tab);
-        let top = layout.viewport.bottom() + 12.0;
-        let note = if let Some(version) = &state.update {
-            tr!(
-                language,
-                "发现新版本 {version}，点击查看",
-                version = version
-            )
-        } else if state.enabled && count != 0 {
-            tr!(language, "{count} 条 · 加密保存在本机", count = count)
-        } else if state.enabled {
-            tr!(language, "已开启 · 加密保存在本机")
-        } else {
-            tr!(
-                language,
-                if state.tab == Source::Phone {
-                    "未保留 iPhone 剪贴板历史"
-                } else {
-                    "未保留电脑剪贴板历史"
-                }
-            )
-        };
+        let top = layout.footer_top() + 12.0;
         let mut right = WIDTH - PAD;
         if count != 0 {
             let value = tr!(
@@ -423,38 +551,34 @@ impl Chrome {
             self.button(
                 button,
                 Some(HistoryTarget::Action(HistoryAction::Clear(state.tab))),
-                false,
+                layout.scroll_all,
             )?;
             right -= width + 8.0;
         }
-        let note_bounds = Rect::new(PAD + 4.0, top, right - PAD - 4.0, 32.0);
-        let note = fit(&note, note_bounds.width - 2.0, |text| {
-            layout.measure.width(text, Font::Regular, NOTE_SIZE)
-        })?;
         let is_link = state.update.is_some();
-        label(
-            scene,
-            &self.frame,
-            note_bounds,
-            &note,
-            (Font::Regular, NOTE_SIZE),
-            if is_link {
-                LIGHT_THEME.accent
-            } else {
-                LIGHT_THEME.muted
-            },
-            false,
-        )?;
+        let width = right - PAD - 4.0;
+        let text_height = state.footer_lines.len() as f32 * 18.0;
+        let y = top + (32.0 - text_height).max(0.0) / 2.0;
+        for (index, line) in state.footer_lines.iter().enumerate() {
+            label(
+                scene,
+                self.layer(layout.scroll_all),
+                Rect::new(PAD + 4.0, y + index as f32 * 18.0, width, 18.0),
+                line,
+                (Font::Regular, NOTE_SIZE),
+                if is_link {
+                    LIGHT_THEME.accent
+                } else {
+                    LIGHT_THEME.muted
+                },
+                false,
+            )?;
+        }
         if is_link {
-            let width = layout
-                .measure
-                .width(&note, Font::Regular, NOTE_SIZE)?
-                .ceil()
-                + 8.0;
             self.controls.push(Control {
                 target: HistoryTarget::Action(HistoryAction::OpenUpdate),
-                bounds: Rect::new(PAD, top, width, 32.0),
-                clipped: false,
+                bounds: Rect::new(PAD, top, width, text_height.max(32.0)),
+                clipped: layout.scroll_all,
                 button: None,
             });
         }
@@ -468,28 +592,34 @@ impl Chrome {
         offer: &HistoryOffer,
     ) -> Result<()> {
         let language = self.state.language;
+        let top = self.inline_height;
         shape(
             scene,
             &self.scrolled,
-            Rect::new(PAD, 4.0, INNER, 96.0),
+            Rect::new(PAD, top + 4.0, INNER, self.state.offer_height()),
             16.0,
             rgb(240, 214, 170),
         )?;
         shape(
             scene,
             &self.scrolled,
-            Rect::new(PAD + 1.0, 5.0, INNER - 2.0, 94.0),
+            Rect::new(
+                PAD + 1.0,
+                top + 5.0,
+                INNER - 2.0,
+                self.state.offer_height() - 2.0,
+            ),
             15.0,
             LIGHT_THEME.file_tint,
         )?;
-        let tile = Rect::new(PAD + 12.0, 16.0, 36.0, 36.0);
+        let tile = Rect::new(PAD + 12.0, top + 16.0, 36.0, 36.0);
         shape(scene, &self.scrolled, tile, 10.0, LIGHT_THEME.white)?;
         let color = LIGHT_THEME.disconnected.text;
         icon(scene, &self.scrolled, tile, '\u{E7C3}', 18.0, color)?;
         label(
             scene,
             &self.scrolled,
-            Rect::new(PAD + 60.0, 15.0, INNER - 74.0, 20.0),
+            Rect::new(PAD + 60.0, top + 15.0, INNER - 74.0, 20.0),
             &offer.name,
             (Font::Semibold, TEXT_SIZE),
             LIGHT_THEME.ink,
@@ -498,15 +628,31 @@ impl Chrome {
         label(
             scene,
             &self.scrolled,
-            Rect::new(PAD + 60.0, 34.0, INNER - 74.0, 20.0),
+            Rect::new(PAD + 60.0, top + 34.0, INNER - 74.0, 20.0),
             &offer.metadata,
             (Font::Regular, NOTE_SIZE),
             LIGHT_THEME.muted,
             false,
         )?;
-        let reason = offer.reason.render(language);
+        for (index, line) in self.state.offer_lines.iter().enumerate() {
+            label(
+                scene,
+                &self.scrolled,
+                Rect::new(
+                    PAD + 14.0,
+                    top + 54.0 + index as f32 * 18.0,
+                    INNER - 28.0,
+                    18.0,
+                ),
+                line,
+                (Font::Regular, NOTE_SIZE),
+                color,
+                false,
+            )?;
+        }
+        let actions_y = top + 60.0 + self.state.offer_lines.len() as f32 * 18.0;
         if offer.busy {
-            let track = Rect::new(PAD + 14.0, 81.0, INNER - 28.0, 5.0);
+            let track = Rect::new(PAD + 14.0, actions_y, INNER - 28.0, 5.0);
             shape(scene, &self.scrolled, track, 2.5, LIGHT_THEME.tint)?;
             if let Some(percent) = offer.percent.filter(|&percent| percent != 0) {
                 let width = track.width * f32::from(percent.min(100)) / 100.0;
@@ -519,15 +665,7 @@ impl Chrome {
                     LIGHT_THEME.accent,
                 )?;
             }
-            return label(
-                scene,
-                &self.scrolled,
-                Rect::new(PAD + 14.0, 54.0, INNER - 28.0, 22.0),
-                &reason,
-                (Font::Regular, NOTE_SIZE),
-                color,
-                false,
-            );
+            return Ok(());
         }
         let mut right = WIDTH - PAD - 12.0;
         for (accept, text, style) in [
@@ -538,7 +676,7 @@ impl Chrome {
             let width = button_width(measure, &value, 28.0)?;
             let button = Button::text(
                 scene,
-                Rect::new(right - width, 58.0, width, 30.0),
+                Rect::new(right - width, actions_y, width, 30.0),
                 style,
                 &value,
                 &LIGHT_THEME,
@@ -550,18 +688,11 @@ impl Chrome {
             self.button(button, Some(HistoryTarget::Action(action)), true)?;
             right -= width + 8.0;
         }
-        label(
-            scene,
-            &self.scrolled,
-            Rect::new(PAD + 14.0, 58.0, right - PAD - 18.0, 30.0),
-            &reason,
-            (Font::Regular, NOTE_SIZE),
-            color,
-            false,
-        )
+        Ok(())
     }
 
     fn empty(&mut self, scene: &PopupScene, measure: &TextMeasurer) -> Result<()> {
+        let top = self.inline_height;
         let state = &self.state;
         let language = state.language;
         let (title, hint, enable) = match (state.tab, state.enabled) {
@@ -586,7 +717,7 @@ impl Chrome {
                 Some("开启电脑剪贴板历史"),
             ),
         };
-        let tile = Rect::new(WIDTH / 2.0 - 28.0, 48.0, 56.0, 56.0);
+        let tile = Rect::new(WIDTH / 2.0 - 28.0, top + 48.0, 56.0, 56.0);
         shape(scene, &self.scrolled, tile, 28.0, LIGHT_THEME.tint)?;
         icon(
             scene,
@@ -599,23 +730,20 @@ impl Chrome {
         label(
             scene,
             &self.scrolled,
-            Rect::new(PAD, 120.0, INNER, 24.0),
+            Rect::new(PAD, top + 120.0, INNER, 24.0),
             &tr!(language, title),
             (Font::Semibold, 14.0),
             LIGHT_THEME.ink,
             true,
         )?;
         let width = WIDTH - 4.0 * PAD;
-        for (index, line) in wrap(&tr!(language, hint), width - 2.0, 2, |text| {
-            measure.width(text, Font::Regular, NOTE_SIZE)
-        })?
-        .iter()
-        .enumerate()
-        {
+        let hint_lines =
+            measure.lines(&tr!(language, hint), width - 4.0, Font::Regular, NOTE_SIZE)?;
+        for (index, line) in hint_lines.iter().enumerate() {
             label(
                 scene,
                 &self.scrolled,
-                Rect::new(PAD * 2.0, 148.0 + index as f32 * 20.0, width, 20.0),
+                Rect::new(PAD * 2.0, top + 148.0 + index as f32 * 20.0, width, 20.0),
                 line,
                 (Font::Regular, NOTE_SIZE),
                 LIGHT_THEME.muted,
@@ -625,7 +753,12 @@ impl Chrome {
         if let Some(enable) = enable {
             let value = tr!(language, enable);
             let width = (measure.width(&value, Font::Semibold, 14.0)?.ceil() + 40.0).min(INNER);
-            let bounds = Rect::new((WIDTH - width) / 2.0, 208.0, width, 38.0);
+            let bounds = Rect::new(
+                (WIDTH - width) / 2.0,
+                top + 168.0 + hint_lines.len() as f32 * 20.0,
+                width,
+                38.0,
+            );
             let button = Button::text(scene, bounds, ButtonStyle::Primary, &value, &LIGHT_THEME)?;
             self.button(
                 button,
@@ -708,5 +841,55 @@ mod tests {
         let state = ChromeState::new(&page, &TextMeasurer::new().unwrap()).unwrap();
         assert!(state.detail.len() > 2, "{:?}", state.detail);
         assert!(state.detail.concat().ends_with("「继续连接」"));
+    }
+    #[test]
+    fn constrained_history_keeps_the_entire_warning_before_the_first_item() {
+        let mut page = HistoryPage::new(Language::En);
+        let warning = message!(
+            "端口 27015 被「{program}」占用，Apple 连接服务无法工作。请退出该程序（或在任务管理器中结束它），然后点「修复连接服务」。",
+            program = "long-process-name-".repeat(24)
+        );
+        page.set_status(HistoryStatus {
+            detail: Some(warning.clone()),
+            retry_hint: Some(warning.clone()),
+            tone: StatusTone::Warning,
+            progress: ProgressState::Waiting,
+            can_retry: true,
+            ..Default::default()
+        });
+        let layout = page.layout_with_limit(320.0).unwrap();
+        assert!(layout.scrolls_feedback());
+        assert!(layout.bounds().height <= 320.0);
+        let text: String = layout.state.detail.concat().split_whitespace().collect();
+        assert_eq!(
+            text,
+            warning
+                .render(Language::En)
+                .split_whitespace()
+                .collect::<String>()
+        );
+        assert!(layout.state.detail.len() > 4);
+        assert!(layout.state.activity.is_some());
+        page.set_status(HistoryStatus {
+            detail: Some(warning.clone()),
+            retry_hint: Some(warning),
+            tone: StatusTone::Warning,
+            progress: ProgressState::Indeterminate,
+            can_retry: false,
+            ..Default::default()
+        });
+        let trying = page.layout_with_limit(320.0).unwrap();
+        assert_eq!(layout.state.detail, trying.state.detail);
+        assert_eq!(layout.inline_height, trying.inline_height);
+        assert_eq!(layout.viewport(), trying.viewport());
+        assert_ne!(layout.state.activity, trying.state.activity);
+        for height in [96.0, 120.0, 180.0] {
+            let small = page.layout_with_limit(height).unwrap();
+            assert!(small.scroll_all);
+            assert_eq!(small.bounds().height, height);
+            assert_eq!(small.viewport().height, height);
+            assert_eq!(small.state.detail, trying.state.detail);
+            assert!(small.footer_top() >= small.inline_height);
+        }
     }
 }

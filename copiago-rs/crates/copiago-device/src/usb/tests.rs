@@ -102,6 +102,31 @@ fn usb_list_filters_other_transports() {
     });
 }
 
+#[tokio::test]
+async fn stalled_enumeration_reports_the_service_before_requesting_trust() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = UsbmuxdAddr::TcpSocket(listener.local_addr().unwrap());
+    let server = async {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket.read_u32_le().await.unwrap();
+        tokio::time::pause();
+        tokio::time::sleep(PROBE_TIMEOUT * 3).await;
+    };
+    let local = LocalFixture::new();
+    let pair = pair_over_usb(&addr, &local.root, true, |_| {
+        panic!("unexpected trust prompt")
+    });
+    let (result, ()) = tokio::join!(timeout(PROBE_TIMEOUT * 2, pair), server);
+    assert_eq!(
+        result.unwrap(),
+        Err(PairingError::Usb(UsbProbeError::Usbmuxd))
+    );
+    assert_eq!(
+        PairingError::Usb(UsbProbeError::Usbmuxd).message(),
+        copiago_core::i18n::Message::new(APPLE_SERVICE_UNAVAILABLE)
+    );
+}
+
 #[test]
 fn paired_usb_selection_requires_both_serial_and_usb() {
     run(async {

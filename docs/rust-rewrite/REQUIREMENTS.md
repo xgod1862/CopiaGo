@@ -152,12 +152,12 @@ copiago-rs/
 | F-DEV-2 | **USB 配对**（与 `device.py::pair_over_usb` 一致）：lockdown 自动配对（手机弹"信任"），读取 DeviceName/ProductType/ProductVersion 存入 device-info；若 `EnableWifiConnections` 为假则打开；通过 `RemotePairingLockdownService` 完成 RPPairing，保存 `remote_<udid>.plist`（DPAPI，含 `identifier`）。各阶段通过 `PairingPrompt` 推送提示文案。整体超时 120 s。 |
 | F-DEV-3 | lockdown 配对记录优先从 usbmuxd 取，失败时回落到 `device-data\<udid>.plist`（原型 `Provider` 已实现）。 |
 | F-DEV-4 | **连接策略**（同 `device.py` 的连接主循环）：已配对时先走 Wi‑Fi（mDNS → pair‑verify → createListener → TLS‑PSK）。无线连接失败时，若同一已配对手机在 USB 上可用，再试 CoreDeviceProxy。中止、重置或镜像流程的下载/签名错误按原状态处理。无线安装阶段错误允许尝试 USB，普通 USB 失败仍保留已知的安装错误。连接后状态文案："已连接（USB） · 可以拔掉数据线，之后将通过无线连接" / "已连接（无线）"。 |
-| F-DEV-5 | **断线重连**：隧道断开、通知流结束、或连续 3 次元数据拉取失败（每 2 s 一次）时判定断线。普通连接失败等待 4 s 后重试。已配对时，开发者模式、镜像流程或首次配置的挂起错误保留提示并等待用户重试。USB 插拔更新回退资格，正常无线会话保持连接。 |
+| F-DEV-5 | **断线重连**：隧道断开、通知流结束、或连续 3 次元数据拉取失败（每 2 s 一次）时判定断线。普通连接失败等待 4 s 后重试。已配对手机暂时离线时，手动点「继续连接」后仍按后台重连策略继续查找。已配对时，开发者模式、镜像流程或首次配置的挂起错误保留提示并等待用户重试。USB 插拔更新回退资格，正常无线会话保持连接。 |
 | F-DEV-6 | **睡眠/唤醒**：收到 `WM_POWERBROADCAST(PBT_APMRESUMEAUTOMATIC)` 或网络变化（`NotifyIpInterfaceChange`）时主动重建连接。 |
 | F-DEV-7 | **RP 控制连接**必须在隧道生命周期内持有（原型用 `mem::forget` 只是权宜），隧道关闭时一并关闭。 |
 | F-DEV-8 | 服务列表中没有 `com.apple.coredevice.pasteboardservice` 时进入开发者镜像流程（F-DDI），完成后重连一次；仍没有则报"install"类错误（与 `DeveloperSetupError("install")` 对应）。 |
 | F-DEV-9 | 连接后读取设备信息：RSD 的 ProductType/ProductVersion + 隧道内 lockdown 的 DeviceName（3 s 超时，失败用已保存的名字），发出 `DeviceInfo` 事件并保存。机型名映射表从 `device_info.py::model_name` 迁移。 |
-| F-DEV-10 | **忘记设备**：删除所有 `remote_*.plist` 和 device-info，断开当前连接，回到 `Setup`。 |
+| F-DEV-10 | **忘记设备**：删除所有 `remote_*.plist` 和 device-info，断开当前连接，回到 `Setup`。已启动的系统修复完成后须由用户重新发起配对。 |
 | F-DEV-11 | **Wi‑Fi 发现**用 `DnsServiceBrowse` + `DnsServiceResolve`，在每块 IPv4 网卡上查询（排除 127./169.254./0.），IPv4 优先。自动连接沿用 Python 的匹配顺序，用 idevice `remote_pairing::PeerDevice::validate_auth_tag` 校验配对记录的 `peer_alt_irk` 和 `_remotepairing._tcp` 广播 TXT 的 `identifier`、`authTag`，仅对命中的地址拨号并执行 `pair-verify`。没有匹配时按 F-DEV-4 尝试同一台手机的 USB。显式 `wifi_probe --addr` 用于诊断，默认只读，仍须通过 `pair-verify`。每轮发现最多等待 5 s，连接重试按 F-DEV-5。 |
 
 ### 4.6 剪贴板同步（device + win）
@@ -270,18 +270,18 @@ copiago-rs/
 
 | 编号 | 需求 |
 |---|---|
-| F-LOG-1 | 默认写诊断事件到数据目录的 `diagnostic.log`，超过 512 KB 轮换为 `diagnostic.old.log`；环境变量 `ICB_DIAGNOSTIC_FILE` 非空时改写到指定文件。事件名与 `diagnostic_event` 同类（`paired_records=`、`tunnel_open`、`monitor_ready`、`pull timeout types=` 等），另记录配对、USB 隧道步骤、服务诊断等结果。只记录类型、类别和数值，**绝不记录剪贴板内容、文件名、设备名、序列号或路径**；库错误中 12 位以上的十六进制串替换为 `<id>`。 |
+| F-LOG-1 | 默认写诊断事件到数据目录的 `diagnostic.log`，超过 512 KB 轮换为 `diagnostic.old.log`；环境变量 `ICB_DIAGNOSTIC_FILE` 非空时，应用和命令行探针均写到指定文件。使用自定义文件名时，其轮换文件名在原名后追加 `.old`。事件名与 `diagnostic_event` 同类（`paired_records=`、`tunnel_open`、`monitor_ready`、`pull timeout types=` 等），另记录配对、USB 隧道步骤、服务诊断等结果。只记录类型、类别和数值，**绝不记录剪贴板内容、文件名、设备名、序列号或路径**；库错误中 12 位以上的十六进制串替换为 `<id>`。 |
 | F-LOG-2 | 崩溃（panic=abort 前的 panic hook）写一行到数据目录下的 `crash.log`，带版本号和位置，同时写入诊断日志。 |
-| F-LOG-3 | 引导页处于卡住状态时、以及设置页底部，提供「复制诊断信息」和「反馈问题」。复制内容含版本、Windows 版本、连接阶段、Apple 服务状态、iPhone 机型与 iOS 版本和最近的诊断日志，不含设备名；写入剪贴板时标记为本机写入，不同步到 iPhone、不进电脑历史。「反馈问题」另打开预填模板的 GitHub Issue，URL 中不含任何诊断内容。 |
+| F-LOG-3 | 引导页处于卡住状态时、以及设置页底部，提供「复制诊断信息」和「反馈问题」。复制内容含版本、Windows 版本、连接阶段、Apple 服务状态、iPhone 机型与 iOS 版本和最近的诊断日志。VPN 提示仅导出是否检测到虚拟网卡，设备名和网卡名均不写入报告；端口占用程序名只在 `service:` 摘要中出现一次，近期日志里的 `port_owner=` 值导出时替换为 `<omitted>`；写入剪贴板时标记为本机写入，不同步到 iPhone、不进电脑历史。「反馈问题」另打开预填模板的 GitHub Issue，URL 中不含任何诊断内容。 |
 
 ### 4.15a Apple 设备连接组件（app）
 
 | 编号 | 需求 |
 |---|---|
-| F-AMDS-1 | 不用管理员权限诊断 Apple Mobile Device Service：是否安装（服务管理器）、运行状态、启动类型（注册表 `Start`）、`127.0.0.1:27015` 是否监听及监听进程的文件名，并给出对应提示（未安装、被禁用、未运行、端口被占用、无响应）。 |
-| F-AMDS-2 | 修复以管理员身份运行 `copiago.exe --repair-apple-service`，直接调用服务接口：启动类型为禁用或手动时恢复为自动，运行中无响应时重启，否则启动。UAC 等待放在后台线程。只在用户点「修复连接服务」后提权；点「连接 iPhone」时发现服务问题只说明原因和修复按钮，不自动弹出授权。 |
-| F-AMDS-3 | 配对找不到 iPhone 时，用 SetupAPI 检查 Windows 是否看到 Apple 移动设备（`VID_05AC&PID_12xx`）及设备节点是否有问题码，区分"未检测到"、"驱动异常"和"已检测到但未信任/锁定"。驱动异常时以管理员身份运行 `copiago.exe --repair-apple-driver`，用系统 `pnputil` 重装 Apple 组件自带的 `usbaapl64.inf`（x86 为 `usbaapl.inf`）。 |
-| F-AMDS-4 | 安装组件优先用 winget；没有 winget 时在诊断阶段即说明。「手动下载安装」在有 Microsoft Store 时打开 Apple Devices，否则打开 apple.com 的 iTunes 下载。提权进程无管理员权限、用户取消授权、授权弹窗超时分别提示。 |
+| F-AMDS-1 | 不用管理员权限诊断 Apple Mobile Device Service：是否安装（服务管理器）、运行状态、启动类型（注册表 `Start`）、`127.0.0.1:27015` 是否监听及监听进程的文件名，并给出对应提示（未安装、被禁用、未运行、端口被占用、无响应）。同时从 `HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages` 检测 Microsoft Store 版 Apple Devices（包名 `AppleInc.AppleDevices`）：它没有 Windows 服务，由 `AppleMobileDeviceProcess.exe` 提供同一端口。只装了 Store 版时，端口没有监听或无法列出设备，提示「打开 Apple Devices」（以 `shell:AppsFolder\<包族名>!<应用 ID>` 启动，不提权），不进入服务修复，也不引导再装一套组件。 |
+| F-AMDS-2 | 修复以管理员身份运行 `copiago.exe --repair-apple-service`，直接调用服务接口：启动类型为禁用或手动时恢复为自动，运行中无响应时重启，否则启动。服务就绪后，对已插入且无问题码的 iPhone 物理节点执行 `pnputil /restart-device`：服务停止期间已插着的手机，在重新插入前不会被 Apple 服务列出。UAC 等待放在后台线程。只在用户点「修复连接服务」后提权；点「连接 iPhone」时发现服务问题只说明原因和修复按钮，不自动弹出授权。 |
+| F-AMDS-3 | 配对找不到 iPhone 时，用 SetupAPI 检查 Windows 是否看到 Apple 移动设备（`VID_05AC&PID_12xx`）及设备节点是否有问题码，区分"未检测到"、"驱动异常"、"在设备管理器中被禁用"（问题码 22，只提示手动启用，不提供驱动修复）、"已检测到但未信任/锁定"和"无法读取设备列表"（不归咎于数据线）。照片导入接口（硬件 ID 带 `&MI_xx` 的 USB 静态图像类子接口，使用 Windows 自带的 MTP 驱动）的问题不算驱动异常；iPhone 物理节点的兼容 ID 也可能含静态图像类，但始终参与判断。驱动异常时以管理员身份运行 `copiago.exe --repair-apple-driver`，用系统 `pnputil` 重装驱动库中版本最新的 `appleusb.inf`（`DriverStore\FileRepository\appleusb.inf_<架构>_*`，当前 Apple 组件使用的 WinUSB 驱动）；驱动库里没有时退回旧版组件放在 `Common Files\Apple\Mobile Device Support\Drivers` 的 `usbaapl64.inf`（x86 为 `usbaapl.inf`），两者都没有时提示重装组件。 |
+| F-AMDS-4 | 安装组件优先用 winget；没有 winget 时在诊断阶段即说明。「手动下载安装」在有 Microsoft Store 时打开 Apple Devices，否则打开 apple.com 的 iTunes 下载。提权进程无管理员权限、用户取消授权、长时间等待 Windows 返回结果时分别提示；等待提醒在 60 秒时出现，早于 Windows 约两分钟自动关闭 UAC 弹窗。等待期间保留当前任务，收到最终结果后才允许再次修复。UAC 批准后，提权修复进程最多等待 10 分钟，超时按修复失败提示，避免界面一直停在「正在处理」。 |
 
 ### 4.16 安装与分发
 

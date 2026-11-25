@@ -19,7 +19,7 @@ use crate::{
     components::{
         Interaction, ItemAction, ItemActions, ItemContent, ItemHit, ItemKind, ItemLayout,
         LIGHT_THEME, ListItem, ProgressBar, ProgressState, Rect, Removal, ScrollLayout, ScrollView,
-        Status, StatusPill, Toast, Tooltip, holder, xy,
+        Status, StatusPill, Tooltip, holder, xy,
     },
     composition::{Font, MAX_THUMBNAIL_SIDE, PopupBounds, PopupScene, TextMeasurer},
 };
@@ -33,7 +33,6 @@ const PAD: f32 = 18.0;
 const INNER: f32 = WIDTH - 2.0 * PAD;
 const HEADER: f32 = 64.0;
 const LIST_HEIGHT: f32 = 356.0;
-const OFFER_SPACE: f32 = 104.0;
 const TEXT_SIZE: f32 = ItemLayout::TITLE_SIZE;
 const NOTE_SIZE: f32 = 12.0;
 const PREVIEW_WIDTH: u32 = 88;
@@ -46,6 +45,8 @@ pub struct HistoryLayout {
     measure: TextMeasurer,
     state: ChromeState,
     viewport: Rect,
+    inline_height: f32,
+    scroll_all: bool,
     rows: Vec<LayoutRow>,
     content_height: f32,
     today: NaiveDate,
@@ -62,10 +63,14 @@ struct LayoutRow {
 
 impl HistoryPage {
     pub fn layout(&self) -> Result<HistoryLayout> {
-        self.layout_for(Local::now().date_naive())
+        self.layout_with_limit(f32::INFINITY)
     }
 
-    fn layout_for(&self, today: NaiveDate) -> Result<HistoryLayout> {
+    pub fn layout_with_limit(&self, available_height: f32) -> Result<HistoryLayout> {
+        self.measure_layout(Local::now().date_naive(), available_height)
+    }
+
+    fn measure_layout(&self, today: NaiveDate, available_height: f32) -> Result<HistoryLayout> {
         let measure = TextMeasurer::new()?;
         let state = ChromeState::new(self, &measure)?;
         let progress = self.status.progress != ProgressState::Hidden;
@@ -75,11 +80,39 @@ impl HistoryPage {
             } else {
                 state.detail.len() as f32 * 18.0 + 6.0
             }
-            + if progress { 16.0 } else { 0.0 };
-        let viewport = Rect::new(0.0, tabs_top + 42.0, WIDTH, LIST_HEIGHT);
-        let mut y = 4.0
-            + if self.current_offer().is_some() {
-                OFFER_SPACE
+            + if state.copied { 22.0 } else { 0.0 }
+            + if progress { 16.0 } else { 0.0 }
+            + if state.activity.is_some() { 22.0 } else { 0.0 };
+        // Move all fixed chrome into the same scroll view if even a single
+        // usable row cannot fit between the header and footer.
+        let footer = state.footer_height();
+        let scroll_all = HEADER + 42.0 + footer + 64.0 > available_height;
+        let (inline_height, viewport) = if scroll_all {
+            (
+                tabs_top + 42.0,
+                Rect::new(0.0, 0.0, WIDTH, available_height.max(1.0)),
+            )
+        } else {
+            let inline = if tabs_top + 42.0 + footer + 64.0 > available_height {
+                tabs_top - HEADER
+            } else {
+                0.0
+            };
+            let top = tabs_top - inline + 42.0;
+            (
+                inline,
+                Rect::new(
+                    0.0,
+                    top,
+                    WIDTH,
+                    (available_height - top - footer).min(LIST_HEIGHT),
+                ),
+            )
+        };
+        let mut y = inline_height
+            + 4.0
+            + if state.offer_height() > 0.0 {
+                state.offer_height() + 8.0
             } else {
                 0.0
             };
@@ -116,12 +149,19 @@ impl HistoryPage {
             });
             y += item.height + ItemLayout::GAP;
         }
+        let rows_empty = rows.is_empty();
         Ok(HistoryLayout {
             measure,
             state,
             viewport,
+            inline_height,
+            scroll_all,
             rows,
-            content_height: y,
+            content_height: if rows_empty {
+                y.max(inline_height + 258.0)
+            } else {
+                y
+            } + if scroll_all { footer } else { 0.0 },
             today,
             selected_title,
         })
@@ -130,15 +170,50 @@ impl HistoryPage {
 
 impl HistoryLayout {
     pub fn bounds(&self) -> PopupBounds {
-        PopupBounds::new(WIDTH, self.viewport.bottom() + 62.0, 24.0)
+        PopupBounds::new(
+            WIDTH,
+            self.viewport.bottom()
+                + if self.scroll_all {
+                    0.0
+                } else {
+                    self.state.footer_height()
+                },
+            24.0,
+        )
     }
 
     pub fn viewport(&self) -> Rect {
         self.viewport
     }
 
+    pub fn scrolls_feedback(&self) -> bool {
+        self.inline_height > 0.0
+    }
+
+    fn feedback_bottom(&self) -> f32 {
+        if self.scroll_all {
+            self.tabs_top()
+        } else if self.scrolls_feedback() {
+            self.inline_height + 4.0
+        } else {
+            self.tabs_top()
+        }
+    }
+
     fn tabs_top(&self) -> f32 {
-        self.viewport.y - 42.0
+        if self.scroll_all {
+            self.inline_height - 42.0
+        } else {
+            self.viewport.y - 42.0
+        }
+    }
+
+    fn footer_top(&self) -> f32 {
+        if self.scroll_all {
+            self.content_height - self.state.footer_height()
+        } else {
+            self.viewport.bottom()
+        }
     }
 }
 
@@ -201,7 +276,6 @@ pub struct HistoryView {
     progress: ProgressBar,
     scroll: ScrollView,
     fade: SpriteVisual,
-    toast: Toast,
     tooltip: Tooltip,
     language: copiago_core::i18n::Language,
     rows: Vec<Row>,
@@ -238,7 +312,7 @@ impl HistoryView {
             &LIGHT_THEME,
         )?;
         scroll.content().Children()?.InsertAtTop(&chrome.scrolled)?;
-        let fade = viewport_fade(scene)?;
+        let fade = viewport_fade(scene, layout.viewport.height)?;
         scroll
             .visual()
             .Children()?
@@ -254,22 +328,26 @@ impl HistoryView {
         )?;
         let progress = ProgressBar::new(
             scene,
-            Vector2::new(PAD, layout.tabs_top() - 15.0),
-            INNER,
-            &LIGHT_THEME,
-        )?;
-        let toast = Toast::new(
-            scene,
-            Vector2::new(WIDTH / 2.0, layout.viewport.bottom() - Toast::HEIGHT - 4.0),
+            Vector2::new(PAD, layout.feedback_bottom() - 15.0),
             INNER,
             &LIGHT_THEME,
         )?;
         let children = root.Children()?;
         children.InsertAtTop(&chrome.frame)?;
-        children.InsertAtTop(pill.visual())?;
-        children.InsertAtTop(progress.visual())?;
+        if layout.scroll_all {
+            scroll.content().Children()?.InsertAtTop(pill.visual())?;
+        } else {
+            children.InsertAtTop(pill.visual())?;
+        }
+        if layout.scrolls_feedback() {
+            scroll
+                .content()
+                .Children()?
+                .InsertAtTop(progress.visual())?;
+        } else {
+            children.InsertAtTop(progress.visual())?;
+        }
         children.InsertAtTop(scroll.visual())?;
-        children.InsertAtTop(toast.visual())?;
         let tooltip = action_tooltip(scene, layout, page.language)?;
         children.InsertAtTop(tooltip.visual())?;
         let mut view = Self {
@@ -280,7 +358,6 @@ impl HistoryView {
             progress,
             scroll,
             fade,
-            toast,
             tooltip,
             language: page.language,
             rows: Vec::new(),
@@ -331,14 +408,42 @@ impl HistoryView {
             return Err(Error::new(E_INVALIDARG, "History layout is out of date"));
         }
         let tab_changed = self.chrome.state.tab != layout.state.tab;
-        if self.chrome.state != layout.state {
+        if self.chrome.inline_height != layout.inline_height {
+            let parent = if self.chrome.inline_height > 0.0 {
+                self.scroll.content()
+            } else {
+                &self.root
+            };
+            parent.Children()?.Remove(self.progress.visual())?;
+            let parent = if layout.scrolls_feedback() {
+                self.scroll.content()
+            } else {
+                &self.root
+            };
+            parent.Children()?.InsertAtTop(self.progress.visual())?;
+            self.progress
+                .visual()
+                .SetOffset(xy(PAD, layout.feedback_bottom() - 15.0))?;
+        }
+        let reveal_feedback =
+            layout.scrolls_feedback() && self.chrome.state.detail != layout.state.detail;
+        if self.chrome.state != layout.state
+            || self.chrome.inline_height != layout.inline_height
+            || self.chrome.footer_top != layout.footer_top()
+        {
             let next = Chrome::new(scene, &self.animator, layout, self.chrome.state.tab)?;
-            let children = self.root.Children()?;
-            children.InsertAbove(&next.frame, &self.chrome.frame)?;
-            children.Remove(&self.chrome.frame)?;
-            let children = self.scroll.content().Children()?;
-            children.InsertAtTop(&next.scrolled)?;
-            children.Remove(&self.chrome.scrolled)?;
+            crate::page_transition::crossfade(
+                &self.animator,
+                &self.root,
+                &self.chrome.frame,
+                &next.frame,
+            )?;
+            crate::page_transition::crossfade(
+                &self.animator,
+                self.scroll.content(),
+                &self.chrome.scrolled,
+                &next.scrolled,
+            )?;
             self.chrome = next;
         }
         self.pill.set_status(
@@ -350,9 +455,8 @@ impl HistoryView {
         self.progress
             .set_state(&self.animator, page.status.progress)?;
         self.scroll.set_content_height(layout.content_height, now)?;
-        if tab_changed {
+        if tab_changed || reveal_feedback {
             self.scroll.jump_to(0.0, now)?;
-            self.toast.dismiss()?;
         } else if !self.animator.policy().allows_motion() {
             self.scroll.jump_to(self.scroll.target_offset(), now)?;
         }
@@ -664,25 +768,6 @@ impl HistoryView {
         }
         Ok(())
     }
-
-    pub fn show_feedback(
-        &mut self,
-        scene: &PopupScene,
-        page: &HistoryPage,
-        action: HistoryAction,
-    ) -> Result<()> {
-        let message = match action {
-            HistoryAction::Copy(_) => "已复制",
-            HistoryAction::Send(_) => "已发送到 iPhone",
-            _ => return Ok(()),
-        };
-        self.toast.show(
-            scene,
-            &self.animator,
-            &tr!(page.language, message),
-            Some('\u{E73E}'),
-        )
-    }
 }
 
 impl LayoutRow {
@@ -864,7 +949,7 @@ fn bounded_png(bytes: &[u8]) -> bool {
     (1..=PREVIEW_WIDTH).contains(&width) && (1..=PREVIEW_HEIGHT).contains(&height)
 }
 
-fn viewport_fade(scene: &PopupScene) -> Result<SpriteVisual> {
+fn viewport_fade(scene: &PopupScene, height: f32) -> Result<SpriteVisual> {
     let compositor = scene.compositor();
     let brush = compositor.CreateLinearGradientBrush()?;
     brush.SetStartPoint(Vector2::new(0.0, 0.0))?;
@@ -880,7 +965,7 @@ fn viewport_fade(scene: &PopupScene) -> Result<SpriteVisual> {
     stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(1.0, LIGHT_THEME.white)?)?;
     let visual = compositor.CreateSpriteVisual()?;
     visual.SetSize(Vector2::new(WIDTH, 18.0))?;
-    visual.SetOffset(xy(0.0, LIST_HEIGHT - 18.0))?;
+    visual.SetOffset(xy(0.0, height - 18.0))?;
     visual.SetBrush(&brush)?;
     Ok(visual)
 }

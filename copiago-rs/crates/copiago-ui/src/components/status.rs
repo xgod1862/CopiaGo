@@ -235,6 +235,7 @@ fn configure_dot(animator: &Animator, dot: &Visual, status: Status, pop: bool) -
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ProgressState {
     Hidden,
+    Waiting,
     Indeterminate,
     Determinate(f32),
     Complete,
@@ -294,9 +295,15 @@ impl ProgressBar {
         if state == self.state && self.policy == Some(animator.policy()) {
             return Ok(());
         }
-        self.visual.StopAnimation(h!("Opacity"))?;
-        let visible = state != ProgressState::Hidden;
-        self.visual.SetOpacity(if visible { 1.0 } else { 0.0 })?;
+        animator.opacity(
+            &self.visual,
+            if state == ProgressState::Hidden {
+                0.0
+            } else {
+                1.0
+            },
+            Tween::new(160),
+        )?;
         if self.state == ProgressState::Indeterminate || state == ProgressState::Indeterminate {
             self.fill.visual.StopAnimation(h!("Offset"))?;
             self.fill.visual.SetOffset(Vector3::default())?;
@@ -306,7 +313,7 @@ impl ProgressBar {
                 .SetSize(Vector2::new(0.0, Self::HEIGHT))?;
         }
         match state {
-            ProgressState::Hidden => {
+            ProgressState::Hidden | ProgressState::Waiting => {
                 self.fill.geometry.StopAnimation(h!("Size"))?;
                 self.fill
                     .geometry

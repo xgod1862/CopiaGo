@@ -8,9 +8,9 @@ use std::fmt::Write as _;
 
 use copiago_core::{
     diagnostic,
-    i18n::{Language, Message, message},
+    i18n::{Message, message},
 };
-use copiago_ui::settings_page::ConnectionPhase;
+use copiago_ui::settings_page::{ConnectionPhase, ConnectionState};
 
 use super::{Host, driver};
 use crate::{VERSION, service};
@@ -62,38 +62,66 @@ impl Host<'_> {
 
     fn diagnostic_report(&self) -> String {
         let connection = self.settings.connection();
-        let render = |message: Option<&Message>| {
-            message.map_or_else(String::new, |message| {
-                message.render(Language::ZhCn).into_owned()
-            })
-        };
-        let detail = render(connection.detail.as_ref());
-        let notice = render(self.settings.notice());
         let service = service::inspect();
         let mut text = String::new();
         let _ = writeln!(text, "CopiaGo 诊断信息");
         let _ = writeln!(text, "version={VERSION} {}", driver::system_summary());
-        let _ = writeln!(
-            text,
-            "phase={:?} driver={:?} paired={}",
-            connection.phase,
-            connection.driver,
-            connection.device.is_some()
-        );
-        if let Some(device) = &connection.device {
-            // Model and iOS version only: the device name often contains a person's name.
-            let _ = writeln!(text, "iphone={} ios={}", device.model, device.os_version);
-        }
-        let _ = writeln!(text, "service: {}", service.log_fields());
-        let _ = writeln!(text, "detail={detail}");
-        if !notice.is_empty() {
+        write_connection(&mut text, connection, self.connection.vpn_adapter_active);
+        if let Some(notice) = self
+            .settings
+            .repair_error()
+            .or_else(|| self.settings.notice())
+            .or_else(|| self.settings.diagnosis())
+            .and_then(Message::literal_text)
+        {
             let _ = writeln!(text, "notice={notice}");
         }
+        let _ = writeln!(text, "service: {}", service.log_fields());
         let _ = writeln!(text, "--- recent log ---");
         for line in diagnostic::recent_lines(LOG_LINES, LOG_BYTES) {
-            let _ = writeln!(text, "{line}");
+            let _ = writeln!(text, "{}", redact_port_owner(&line));
         }
         text
+    }
+}
+
+/// Keeps the program that holds the port out of past log lines: only the current owner,
+/// in the `service:` summary, is exported. The local log keeps it for this PC.
+fn redact_port_owner(line: &str) -> std::borrow::Cow<'_, str> {
+    const KEY: &str = "port_owner=";
+    let Some(start) = line.find(KEY).map(|index| index + KEY.len()) else {
+        return line.into();
+    };
+    // The file name may contain spaces, so the value ends at the next known field.
+    let end = line[start..]
+        .find(" store_app=")
+        .map_or(line.len(), |offset| start + offset);
+    if &line[start..end] == "-" {
+        return line.into();
+    }
+    format!("{}<omitted>{}", &line[..start], &line[end..]).into()
+}
+
+/// Export structured fields and fixed status text. Formatted UI messages can contain names.
+fn write_connection(text: &mut String, connection: &ConnectionState, vpn_active: bool) {
+    let _ = writeln!(
+        text,
+        "phase={:?} driver={:?} paired={}",
+        connection.phase,
+        connection.driver,
+        connection.device.is_some()
+    );
+    if vpn_active && connection.phase == ConnectionPhase::Waiting {
+        let _ = writeln!(text, "vpn_adapter_active=true");
+    }
+    if let Some(detail) = connection.detail.as_ref().and_then(Message::literal_text) {
+        let _ = writeln!(text, "detail={detail}");
+    }
+    if let Some((stage, _)) = connection.progress {
+        let _ = writeln!(text, "setup_stage={stage:?}");
+    }
+    if let Some(device) = &connection.device {
+        let _ = writeln!(text, "iphone={} ios={}", device.model, device.os_version);
     }
 }
 
@@ -131,6 +159,42 @@ fn percent_encode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copied_connection_report_omits_names_from_ui_messages() {
+        let connection = ConnectionState {
+            phase: ConnectionPhase::Waiting,
+            detail: Some(message!("VPN {adapter}", adapter = "private-project")),
+            device: Some(copiago_core::DeviceInfo {
+                name: "private-phone".into(),
+                model: "iPhone 15".into(),
+                os_version: "17.0".into(),
+            }),
+            ..ConnectionState::default()
+        };
+        let mut text = String::new();
+        write_connection(&mut text, &connection, true);
+        assert!(text.contains("vpn_adapter_active=true"));
+        assert!(text.contains("iphone=iPhone 15 ios=17.0"));
+        assert!(!text.contains("private-"));
+    }
+
+    #[test]
+    fn past_log_lines_omit_the_port_owner() {
+        let line = "t event=service_check diagnosis=PortTaken listening=true port_owner=My Game Server.exe store_app=false";
+        assert_eq!(
+            redact_port_owner(line),
+            "t event=service_check diagnosis=PortTaken listening=true port_owner=<omitted> store_app=false"
+        );
+        // Lines written before the store_app field existed end with the owner.
+        assert_eq!(
+            redact_port_owner("t port_owner=srcds.exe"),
+            "t port_owner=<omitted>"
+        );
+        let none = "t listening=false port_owner=- store_app=false";
+        assert_eq!(redact_port_owner(none), none);
+        assert_eq!(redact_port_owner("t event=connected"), "t event=connected");
+    }
 
     #[test]
     fn encodes_issue_links() {

@@ -15,7 +15,7 @@ use copiago_core::{
 };
 
 mod view;
-pub use view::{ControlInfo, ControlRole, SettingsScreen, SettingsView};
+pub use view::{ControlInfo, ControlRole, SettingsLayout, SettingsScreen, SettingsView};
 
 const FORGET_WINDOW: Duration = Duration::from_secs(3);
 
@@ -116,6 +116,9 @@ pub enum DriverState {
     ServiceUnavailable,
     /// Windows sees the phone on USB, but Apple's USB driver is not working for it.
     UsbDriver,
+    /// Only the Microsoft Store edition of Apple Devices is installed and its device
+    /// process is not running or not answering. Opening the app starts it again.
+    AppleDevicesApp,
     Installing,
     Failed,
 }
@@ -243,9 +246,13 @@ pub struct SettingsState {
     available_version: Option<String>,
     connection: ConnectionState,
     startup: StartupState,
+    retry_hint: Option<Message>,
+    diagnosis: Option<Message>,
+    repair_error: Option<Message>,
     notice: Option<Message>,
     forget_until: Option<Instant>,
     forgetting: bool,
+    after_driver: Option<SettingsAction>,
 }
 
 impl SettingsState {
@@ -259,9 +266,13 @@ impl SettingsState {
             available_version: None,
             connection: ConnectionState::default(),
             startup: StartupState::default(),
+            retry_hint: None,
+            diagnosis: None,
+            repair_error: None,
             notice: None,
             forget_until: None,
             forgetting: false,
+            after_driver: None,
         }
     }
 
@@ -293,6 +304,17 @@ impl SettingsState {
         if self.connection.device != connection.device {
             self.cancel_confirmation();
         }
+        match connection.phase {
+            ConnectionPhase::Waiting if connection.device.is_some() => {
+                self.retry_hint = connection.detail.clone();
+            }
+            ConnectionPhase::Connecting if connection.device.is_some() => {}
+            _ => self.retry_hint = None,
+        }
+        if matches!(connection.phase, ConnectionPhase::Connected { .. }) {
+            self.diagnosis = None;
+            self.repair_error = None;
+        }
         self.connection = connection;
     }
 
@@ -313,8 +335,47 @@ impl SettingsState {
         self.notice.as_ref()
     }
 
+    pub fn retry_hint(&self) -> Option<&Message> {
+        self.retry_hint.as_ref()
+    }
+
+    pub fn diagnosis(&self) -> Option<&Message> {
+        self.diagnosis.as_ref()
+    }
+
+    pub fn set_diagnosis(&mut self, notice: Option<Message>) {
+        if self.diagnosis != notice {
+            self.repair_error = None;
+        }
+        self.diagnosis = notice;
+    }
+
+    pub fn repair_error(&self) -> Option<&Message> {
+        self.repair_error.as_ref()
+    }
+
     pub fn set_notice(&mut self, notice: Option<Message>) {
         self.notice = notice;
+    }
+
+    /// Consume the connection action requested with this job. Forgetting a phone revokes it.
+    pub fn complete_driver(
+        &mut self,
+        driver: DriverState,
+        notice: Message,
+    ) -> Option<SettingsAction> {
+        self.connection.driver = driver;
+        self.notice = None;
+        if driver == DriverState::Ready {
+            self.diagnosis = None;
+            self.repair_error = None;
+            self.notice = Some(notice);
+        } else {
+            self.repair_error = Some(notice);
+        }
+        self.after_driver
+            .take()
+            .filter(|action| driver == DriverState::Ready && self.can_activate(*action))
     }
 
     pub fn startup(&self) -> StartupState {
@@ -342,6 +403,10 @@ impl SettingsState {
         }
         self.cancel_confirmation();
         if success {
+            self.after_driver = None;
+            self.retry_hint = None;
+            self.diagnosis = None;
+            self.repair_error = None;
             self.connection = ConnectionState {
                 detail: Some(message!("已忘记 iPhone。请用数据线连接后重新配对")),
                 driver: self.connection.driver,
@@ -426,6 +491,7 @@ impl SettingsState {
                     && matches!(
                         self.connection.driver,
                         DriverState::Missing
+                            | DriverState::AppleDevicesApp
                             | DriverState::ServiceUnavailable
                             | DriverState::UsbDriver
                             | DriverState::Failed
@@ -506,6 +572,14 @@ impl SettingsState {
                 }
             }
             SettingsAction::InstallDriver => {
+                self.repair_error = None;
+                self.after_driver = Some(
+                    if self.connection.device.is_some() || self.connection.phase.can_continue() {
+                        SettingsAction::Retry
+                    } else {
+                        SettingsAction::RequestPair
+                    },
+                );
                 let notice = match self.connection.driver {
                     DriverState::ServiceUnavailable => {
                         message!("正在修复 Apple 连接服务，请完成 Windows 管理员授权。")
@@ -513,6 +587,7 @@ impl SettingsState {
                     DriverState::UsbDriver => {
                         message!("正在修复 Apple USB 驱动，请完成 Windows 管理员授权。")
                     }
+                    DriverState::AppleDevicesApp => message!("正在打开 Apple Devices…"),
                     _ => message!("正在安装 Apple 连接组件，请完成 Windows 提示。"),
                 };
                 self.connection.driver = DriverState::Installing;
@@ -548,6 +623,8 @@ impl SettingsState {
     }
 
     fn start_connection(&mut self, phase: ConnectionPhase) {
+        self.diagnosis = None;
+        self.repair_error = None;
         self.connection.phase = phase;
         self.connection.detail = None;
         self.connection.progress = None;

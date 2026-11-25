@@ -472,3 +472,36 @@ fn repairing_a_paired_phone_keeps_forget_available() {
     });
     assert!(!state.connection().show_guide());
 }
+
+#[test]
+fn successful_forget_revokes_the_pending_driver_continuation() {
+    let fixture = Fixture::new();
+    let now = Instant::now();
+    for forget_succeeded in [false, true] {
+        let mut state = SettingsState::load(fixture.path(), "");
+        state.set_connection(ConnectionState {
+            phase: ConnectionPhase::RetryRequired,
+            device: Some(DeviceInfo::default()),
+            driver: DriverState::ServiceUnavailable,
+            ..ConnectionState::default()
+        });
+        assert_eq!(
+            state.activate(SettingsAction::InstallDriver, now),
+            Some(SettingsEffect::InstallDriver)
+        );
+        state.activate(SettingsAction::ForgetDevice, now);
+        assert_eq!(
+            state.activate(SettingsAction::ForgetDevice, now),
+            Some(SettingsEffect::ForgetDevice)
+        );
+        state.complete_forget(forget_succeeded);
+        assert_eq!(
+            state.complete_driver(DriverState::Ready, message!("已就绪")),
+            (!forget_succeeded).then_some(SettingsAction::Retry)
+        );
+        assert_eq!(
+            state.can_activate(SettingsAction::RequestPair),
+            forget_succeeded
+        );
+    }
+}

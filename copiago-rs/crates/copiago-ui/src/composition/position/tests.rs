@@ -34,6 +34,26 @@ fn anchor(work: RECT, bar: Option<RECT>, icon: Option<RECT>) -> TrayPlacement {
 }
 
 #[test]
+fn a_top_reservation_without_an_explorer_taskbar_keeps_the_lower_right_corner() {
+    let work = rect(-2560, -1368, 0, 0);
+    let tray = anchor(work, None, None);
+    assert_eq!(
+        card_box(tray.place(CARD, 96).unwrap()).bottom,
+        work.bottom - 12
+    );
+}
+
+#[test]
+fn an_oversized_native_card_fits_even_before_the_page_reflows() {
+    let work = rect(-1280, -720, 0, -48);
+    let tray = anchor(work, None, None);
+    let placement = tray
+        .place(PopupBounds::new(392.0, 1000.0, 24.0), 144)
+        .unwrap();
+    assert_eq!(card_box(placement), rect(-606, -702, -18, -66));
+}
+
+#[test]
 fn all_taskbar_edges_anchor_inside_the_correct_monitor_at_each_dpi() {
     for (edge, bar, work, icon, offset, pivot) in [
         (
@@ -76,11 +96,11 @@ fn all_taskbar_edges_anchor_inside_the_correct_monitor_at_each_dpi() {
         assert_eq!(actual_pivot, pivot);
         assert_eq!(matches!(axis, Axis::X), offset.X != 0.0);
 
-        let anchor = anchor(work, Some(bar), Some(icon));
+        let tray = anchor(work, Some(bar), Some(icon));
         for (dpi, width, height, gap) in
             [(96, 392, 452, 12), (144, 588, 678, 18), (192, 784, 904, 24)]
         {
-            let placement = anchor.place(CARD, dpi).unwrap();
+            let placement = tray.place(CARD, dpi).unwrap();
             let expected = match edge {
                 Edge::Left => rect(
                     work.left + gap,
@@ -108,6 +128,16 @@ fn all_taskbar_edges_anchor_inside_the_correct_monitor_at_each_dpi() {
                 ),
             };
             assert_eq!(card_box(placement), expected);
+            // Without an Explorer window, the tray icon still identifies a real reserved edge.
+            assert_eq!(
+                card_box(anchor(work, None, Some(icon)).place(CARD, dpi).unwrap()),
+                expected
+            );
+            // A revealed auto-hide taskbar can overlap rcWork.
+            assert_eq!(
+                card_box(anchor(DISPLAY, Some(bar), None).place(CARD, dpi).unwrap()),
+                expected
+            );
             assert_eq!(intersection(expected, work), Some(expected));
         }
     }
@@ -145,6 +175,33 @@ fn revealed_autohide_bar_and_tight_work_areas_are_respected() {
     let tray = anchor(work, None, None);
     assert_eq!(card_box(tray.place(CARD, 96).unwrap()).left, -396);
     let larger = tray.place(CARD, 192).unwrap();
-    assert_eq!(larger.position, POINT { x: -400, y: -480 });
+    assert_eq!(larger.position, POINT { x: -400, y: -456 });
+    assert_eq!(larger.position.y + larger.height, -24);
     assert!(tray.place(CARD, 0).is_err());
+}
+
+#[test]
+fn a_flyout_or_placeholder_does_not_turn_a_top_dock_into_a_taskbar() {
+    let screen = rect(0, 0, 1920, 1080);
+    let work = rect(0, 80, 1920, 1032);
+    assert_eq!(Edge::from_bar(screen, rect(0, 0, 1, 1)), None);
+    for icon in [
+        None,
+        Some(rect(1660, 800, 1692, 832)),
+        Some(rect(1660, 80, 1692, 112)),
+    ] {
+        assert_eq!(Edge::from_work_area(screen, work, icon), Edge::Bottom);
+    }
+    assert_eq!(
+        Edge::from_work_area(screen, work, Some(rect(1660, 8, 1692, 40))),
+        Edge::Top
+    );
+    let tray = TrayPlacement::on_display(
+        HMONITOR::default(),
+        screen,
+        work,
+        Some((Edge::Bottom, rect(0, 1032, 1920, 1080))),
+        Some(rect(1660, 8, 1692, 40)),
+    );
+    assert_eq!(tray.edge, Edge::Bottom);
 }

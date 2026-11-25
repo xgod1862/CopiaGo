@@ -27,10 +27,10 @@ use windows::{
             DirectWrite::{
                 DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_LINE_SPACING_METHOD_UNIFORM,
-                DWRITE_TEXT_METRICS, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory,
-                IDWriteFactory, IDWriteTextFormat,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_LINE_METRICS,
+                DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
+                DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
+                DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
             },
             Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
             Dxgi::IDXGIDevice,
@@ -87,6 +87,33 @@ impl TextMeasurer {
     pub fn new() -> Result<Self> {
         // SAFETY: The shared DirectWrite factory needs no additional parameters.
         unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }.map(Self)
+    }
+
+    /// Return every display line, using DirectWrite's word and grapheme boundaries.
+    pub fn lines(&self, value: &str, width: f32, font: Font, size: f32) -> Result<Vec<String>> {
+        let text: Vec<_> = value.encode_utf16().collect();
+        let format = single_line_format(&self.0, w!("Microsoft YaHei UI"), font, size)?;
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        // SAFETY: The UTF-16 buffer and both metrics buffers live through their calls.
+        let lines = unsafe {
+            format.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+            let layout = self.0.CreateTextLayout(&text, &format, width, f32::MAX)?;
+            layout.GetMetrics(&mut metrics)?;
+            let mut lines = vec![DWRITE_LINE_METRICS::default(); metrics.lineCount as usize];
+            let mut count = 0;
+            layout.GetLineMetrics(Some(&mut lines), &mut count)?;
+            lines
+        };
+        let mut offset = 0;
+        Ok(lines
+            .into_iter()
+            .map(|line| {
+                let end = offset + line.length as usize;
+                let value = String::from_utf16_lossy(&text[offset..end]);
+                offset = end;
+                value.trim_end().to_owned()
+            })
+            .collect())
     }
 
     pub fn width(&self, text: &str, font: Font, size: f32) -> Result<f32> {

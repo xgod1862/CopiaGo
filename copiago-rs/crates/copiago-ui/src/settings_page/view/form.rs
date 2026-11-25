@@ -47,7 +47,7 @@ const FORM: [(&str, &[Row]); 4] = [
 ];
 
 impl Builder<'_> {
-    pub(super) fn settings(&mut self, confirming: bool) -> Result<f32> {
+    pub(super) fn settings(&mut self, confirming: bool, start: f32) -> Result<f32> {
         let (scene, language) = (self.scene, self.language);
         let back = Button::icon(
             scene,
@@ -86,7 +86,7 @@ impl Builder<'_> {
         self.target(false).Children()?.InsertAtTop(pill.visual())?;
         self.body.pill = Some(pill);
 
-        let mut y = 4.0;
+        let mut y = start + 4.0;
         if let Some(device) = &self.state.connection().device {
             y = self.device_card(device, y, confirming)? + 14.0;
         }
@@ -103,7 +103,11 @@ impl Builder<'_> {
                 )?;
                 y += 24.0;
             }
-            let height = ROW_HEIGHT * rows.len() as f32;
+            let heights = rows
+                .iter()
+                .map(|row| self.row_height(row))
+                .collect::<Result<Vec<_>>>()?;
+            let height = heights.iter().sum();
             background(
                 scene,
                 self.target(true),
@@ -111,8 +115,8 @@ impl Builder<'_> {
                 16.0,
                 THEME.card,
             )?;
-            for (index, row) in rows.iter().enumerate() {
-                let top = y + index as f32 * ROW_HEIGHT;
+            let mut top = y;
+            for (index, (row, row_height)) in rows.iter().zip(heights).enumerate() {
                 if index > 0 {
                     background(
                         scene,
@@ -124,8 +128,11 @@ impl Builder<'_> {
                 }
                 match *row {
                     Row::Switch(setting, title) => self.switch_row(setting, title, top)?,
-                    Row::Choices(kind, title) => self.choice_row(kind, section, title, top)?,
+                    Row::Choices(kind, title) => {
+                        self.choice_row(kind, section, title, top, row_height)?
+                    }
                 }
+                top += row_height;
             }
             y += height + 14.0;
         }
@@ -138,20 +145,41 @@ impl Builder<'_> {
             12.0,
             THEME.muted,
         )?;
-        y = self.help_row(y + 24.0)? + 14.0;
-        self.settings_footer()?;
-        Ok(y - 14.0)
+        y = self.help_row(y + 24.0, true)? + 14.0;
+        let bottom = y - 14.0;
+        let footer_bottom = if self.body.scroll_all {
+            bottom + 62.0
+        } else {
+            self.body.height
+        };
+        self.settings_footer(footer_bottom)?;
+        Ok(if self.body.scroll_all {
+            footer_bottom
+        } else {
+            bottom
+        })
     }
 
     fn device_card(&mut self, device: &DeviceInfo, y: f32, confirming: bool) -> Result<f32> {
         let (scene, language) = (self.scene, self.language);
         let (title, summary) = device_strings(device);
         let phase = self.state.connection().phase;
-        let retry = self.state.connection().can_retry();
-        let detail_y = y + if retry { 54.0 } else { 38.0 };
-        let detail_height = if retry { 74.0 } else { 38.0 };
-        let summary_y = detail_y + detail_height;
-        let actions_y = summary_y + if summary.is_empty() { 0.0 } else { 18.0 };
+        let retry = self.state.connection().can_retry() || self.state.retry_hint().is_some();
+        let button = Rect::new(WIDTH - PAD - 12.0 - 126.0, y + 16.0, 126.0, 32.0);
+        let text_x = PAD + 60.0;
+        let title_width = button.x - text_x - 9.0;
+        let title_lines = self
+            .measure
+            .lines(&title, title_width - 4.0, Font::Semibold, 13.5)?;
+        let summary_width = WIDTH - PAD - 14.0 - text_x;
+        let summary_lines = if summary.is_empty() {
+            Vec::new()
+        } else {
+            self.measure
+                .lines(&summary, summary_width - 4.0, Font::Regular, 12.0)?
+        };
+        let summary_y = y + 54.0_f32.max(16.0 + title_lines.len() as f32 * 21.0);
+        let actions_y = summary_y + summary_lines.len() as f32 * 18.0;
         let height = actions_y - y + if retry { 50.0 } else { 18.0 };
         let phone = Rect::new(PAD + 12.0, y + 14.0, 36.0, 36.0);
         background(
@@ -171,18 +199,17 @@ impl Builder<'_> {
             THEME.accent,
         )?;
 
-        let button = Rect::new(WIDTH - PAD - 12.0 - 126.0, y + 16.0, 126.0, 32.0);
-        let text_x = PAD + 60.0;
-        let title_width = button.x - text_x - 9.0;
-        label(
-            scene,
-            self.target(true),
-            &title,
-            Rect::new(text_x, y + 12.0, title_width, 24.0),
-            Font::Semibold,
-            13.5,
-            THEME.ink,
-        )?;
+        for (i, line) in title_lines.iter().enumerate() {
+            label(
+                scene,
+                self.target(true),
+                line,
+                Rect::new(text_x, y + 12.0 + i as f32 * 21.0, title_width, 21.0),
+                Font::Semibold,
+                13.5,
+                THEME.ink,
+            )?;
+        }
         let label_text = tr!(
             language,
             if confirming {
@@ -200,23 +227,12 @@ impl Builder<'_> {
             ControlRole::Button,
         )?;
 
-        let detail_width = if retry {
-            WIDTH - PAD - 12.0 - text_x
-        } else {
-            title_width
-        };
-        self.body.detail = Some(TextSlot::new(
-            scene,
-            self.target(true),
-            Rect::new(text_x, detail_y, detail_width, detail_height),
-            if retry { 4 } else { 2 },
-        )?);
-        if !summary.is_empty() {
+        for (i, line) in summary_lines.iter().enumerate() {
             label(
                 scene,
                 self.target(true),
-                &summary,
-                Rect::new(text_x, summary_y, WIDTH - PAD - 14.0 - text_x, 18.0),
+                line,
+                Rect::new(text_x, summary_y + i as f32 * 18.0, summary_width, 18.0),
                 Font::Regular,
                 12.0,
                 THEME.muted,
@@ -239,7 +255,6 @@ impl Builder<'_> {
                 ControlRole::Button,
             )?;
         }
-        self.add_progress(y + height - 12.0)?;
         Ok(y + height)
     }
 
@@ -287,7 +302,41 @@ impl Builder<'_> {
         Ok(())
     }
 
-    fn choice_row(&mut self, kind: ChoiceRow, section: &str, title: &str, y: f32) -> Result<()> {
+    fn row_height(&self, row: &Row) -> Result<f32> {
+        let Row::Choices(kind, title) = row else {
+            return Ok(ROW_HEIGHT);
+        };
+        let single = !matches!(kind, ChoiceRow::Content(_));
+        let mut width = self
+            .measure
+            .width(&tr!(self.language, *title), Font::Regular, 13.5)?
+            + 40.0;
+        for (_, option, selected) in kind.options(self.state) {
+            width += self
+                .measure
+                .width(
+                    &tr!(self.language, option.as_str()),
+                    if selected {
+                        Font::Semibold
+                    } else {
+                        Font::Regular
+                    },
+                    if single { 12.0 } else { 12.5 },
+                )?
+                .ceil()
+                + if single { 23.0 } else { 39.0 };
+        }
+        Ok(if width > INNER { 68.0 } else { ROW_HEIGHT })
+    }
+
+    fn choice_row(
+        &mut self,
+        kind: ChoiceRow,
+        section: &str,
+        title: &str,
+        y: f32,
+        height: f32,
+    ) -> Result<()> {
         let title = tr!(self.language, title);
         let group = tr!(self.language, section);
         let mut right = WIDTH - PAD - 14.0;
@@ -297,7 +346,7 @@ impl Builder<'_> {
             let choice = tr!(self.language, choice.as_str());
             let button = Button::choice(
                 self.scene,
-                Vector2::new(right, y + ROW_HEIGHT / 2.0),
+                Vector2::new(right, y + height - ROW_HEIGHT / 2.0),
                 &choice,
                 selected,
                 single,
@@ -316,30 +365,20 @@ impl Builder<'_> {
             self.scene,
             self.target(true),
             &title,
-            Rect::new(PAD + 16.0, y, (right - PAD - 20.0).max(4.0), ROW_HEIGHT),
+            if height > ROW_HEIGHT {
+                Rect::new(PAD + 16.0, y + 4.0, INNER - 32.0, 24.0)
+            } else {
+                Rect::new(PAD + 16.0, y, (right - PAD - 20.0).max(4.0), ROW_HEIGHT)
+            },
             Font::Regular,
             13.5,
             THEME.ink,
         )
     }
 
-    fn settings_footer(&mut self) -> Result<()> {
+    fn settings_footer(&mut self, bottom: f32) -> Result<()> {
         let (scene, language) = (self.scene, self.language);
-        let mut y = SETTINGS_VIEWPORT.bottom() + 12.0;
-        if self.state.notice().is_some() {
-            self.body.notice = Some(TextSlot::new(
-                scene,
-                self.target(false),
-                Rect::new(
-                    PAD + 4.0,
-                    SETTINGS_VIEWPORT.bottom() + 1.0,
-                    INNER - 8.0,
-                    34.0,
-                ),
-                2,
-            )?);
-            y = 452.0;
-        }
+        let y = bottom - 50.0;
         let version = version_label(self.state.version());
         if let Some(available) = self.state.available_version() {
             let update = tr!(language, "发现新版本 {version}", version = available);

@@ -113,6 +113,27 @@ impl Host<'_> {
         let phase = connection_phase(state);
         connection.phase = phase;
         connection.progress = None;
+        let mut show_guide = false;
+        if self.driver_install.is_none()
+            && (connection.device.is_none() || state == ConnState::Hold)
+            && detail == message!("等待 Apple 设备连接服务或 iPhone…")
+        {
+            // An explicit retry of a saved phone can land here after upgrading.
+            // Use the same repair controls; restore the device card on connection.
+            if let Some(device) = connection.device.take() {
+                self.connection.pending_device = Some(device);
+                connection.first_connection = false;
+                show_guide = self.popup.visible() && self.popup.screen() != Screen::Guide;
+            }
+            let detected = super::driver::detect();
+            // A listening socket is insufficient when the actual device-list
+            // request failed. Preserve a repair action for protocol failures too.
+            connection.driver = if detected == copiago_ui::settings_page::DriverState::Missing {
+                detected
+            } else {
+                copiago_ui::settings_page::DriverState::ServiceUnavailable
+            };
+        }
         if self.connection.just_forgot && state == ConnState::Setup {
             connection.detail = Some(message!("已忘记 iPhone。请用数据线连接后重新配对"));
         } else {
@@ -120,8 +141,8 @@ impl Host<'_> {
             connection.detail = Some(detail.clone());
         }
 
-        let mut show_guide = false;
         if let ConnectionPhase::Connected { wireless } = phase {
+            connection.driver = copiago_ui::settings_page::DriverState::Ready;
             self.clipboard_sync.connected(true);
             let transport = if wireless { "wifi" } else { "usb" };
             diagnostic::event(format_args!("event=connected transport={transport}"));
@@ -307,7 +328,7 @@ impl Host<'_> {
                 .as_ref()
                 .map_or(StatusTone::Muted, |(_, tone)| *tone),
             progress,
-            can_retry: phase.can_continue(),
+            can_retry: connection.can_retry(),
         });
         self.history_page
             .set_offer(self.offer.presentation(language));

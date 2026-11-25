@@ -185,7 +185,8 @@ fn pairing_stops_before_prompt_or_writes_when_usb_selection_is_ambiguous() {
         let local = LocalFixture::new();
         for (devices, expected) in cases {
             let (addr, task) = mock_device_list(devices).await;
-            let result = pair_over_usb(&addr, &local.root, |_| panic!("prompted for trust")).await;
+            let result =
+                pair_over_usb(&addr, &local.root, true, |_| panic!("prompted for trust")).await;
             assert_eq!(result, Err(PairingError::Usb(expected)));
             assert!(
                 fs::read_dir(local.root.join(DEVICE_DATA_DIR))

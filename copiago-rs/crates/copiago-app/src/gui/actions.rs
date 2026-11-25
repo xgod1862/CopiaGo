@@ -83,7 +83,10 @@ impl Host<'_> {
                 }
                 SettingsEffect::Retry => self.request_connection(DeviceCommand::Retry, connection),
                 SettingsEffect::ForgetDevice => self.begin_forget(),
-                SettingsEffect::InstallDriver => self.install_driver(now),
+                SettingsEffect::InstallDriver => self.install_driver(
+                    now,
+                    connection.driver == DriverState::ServiceUnavailable,
+                ),
                 SettingsEffect::OpenAppleDevicesStore => {
                     if driver::open_store().is_err() {
                         self.settings
@@ -139,6 +142,22 @@ impl Host<'_> {
     }
 
     fn request_connection(&mut self, command: DeviceCommand, previous: ConnectionState) {
+        // Saved RemotePairing records can connect over Wi-Fi without the USB
+        // service. Only gate a fresh USB pairing on the local service check.
+        if previous.device.is_none() && !copiago_device::has_pairing_records(&self.data_dir) {
+            let driver = driver::detect();
+            if driver != DriverState::Ready {
+                let mut connection = previous;
+                connection.driver = driver;
+                self.settings.set_connection(connection);
+                self.settings.set_notice(Some(if driver == DriverState::Missing {
+                    message!("尚未发现 Apple 连接组件，请先安装。")
+                } else {
+                    message!("Apple 连接服务不可用，请先点「修复连接服务」。")
+                }));
+                return;
+            }
+        }
         if self.worker.commands.try_send(command).is_ok() {
             let connection = self.settings.connection();
             self.set_status(connection.default_detail(), StatusTone::Muted);
@@ -195,16 +214,27 @@ impl Host<'_> {
         }
     }
 
-    fn install_driver(&mut self, now: Instant) {
+    fn install_driver(&mut self, now: Instant, repair: bool) {
         let install = if self.isolated {
             Err(std::io::ErrorKind::PermissionDenied.into())
         } else {
-            driver::DriverInstall::start(now)
+            driver::DriverInstall::start(now, repair)
         };
         match install {
             Ok(install) => self.driver_install = Some(install),
-            Err(_) => {
-                let (state, message) = driver::failed_to_run();
+            Err(error) => {
+                let (state, message) = if repair {
+                    (
+                        DriverState::ServiceUnavailable,
+                        if error.raw_os_error() == Some(1223) {
+                            message!("已取消管理员授权，未修复 Apple 连接服务。")
+                        } else {
+                            message!("无法启动服务修复。请在 Windows 服务中启动 Apple Mobile Device Service，或修复 Apple Devices。")
+                        },
+                    )
+                } else {
+                    driver::failed_to_run()
+                };
                 self.set_driver_result(state, message);
             }
         }
@@ -219,6 +249,24 @@ impl Host<'_> {
         connection.driver = state;
         self.settings.set_connection(connection);
         self.settings.set_notice(Some(notice));
+        // A successful repair only proves service reachability. Continue through
+        // the normal worker so trust, device enumeration and pairing are verified.
+        if state == DriverState::Ready && self.settings.connection().device.is_none() {
+            let previous = self.settings.connection().clone();
+            let action = if previous.phase.can_continue() {
+                SettingsAction::Retry
+            } else {
+                SettingsAction::RequestPair
+            };
+            let command = match self.settings.activate(action, Instant::now()) {
+                Some(SettingsEffect::Retry) => Some(DeviceCommand::Retry),
+                Some(SettingsEffect::RequestPair) => Some(DeviceCommand::RequestPair),
+                _ => None,
+            };
+            if let Some(command) = command {
+                self.request_connection(command, previous);
+            }
+        }
     }
 
     fn open_update(&mut self) {

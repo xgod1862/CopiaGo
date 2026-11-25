@@ -106,6 +106,8 @@ pub enum DriverState {
     #[default]
     Ready,
     Missing,
+    /// Installed support is unreachable or failed to enumerate devices.
+    ServiceUnavailable,
     Installing,
     Failed,
 }
@@ -151,6 +153,12 @@ pub struct ConnectionState {
 }
 
 impl ConnectionState {
+    /// A saved pairing can have an unfinished first connection after an upgrade.
+    /// Let the user start interactive recovery while ordinary reconnects continue.
+    pub fn can_retry(&self) -> bool {
+        self.phase.can_continue() || (self.device.is_some() && self.phase == ConnectionPhase::Waiting)
+    }
+
     pub fn pairing_complete(&self) -> bool {
         self.first_connection && self.device.is_some()
     }
@@ -361,19 +369,29 @@ impl SettingsState {
             }
             SettingsAction::RequestPair => {
                 !self.forgetting
+                    && self.connection.driver != DriverState::Installing
                     && self.connection.device.is_none()
                     && !self.connection.phase.busy()
                     && !self.connection.phase.can_continue()
             }
-            SettingsAction::Retry => !self.forgetting && self.connection.phase.can_continue(),
+            SettingsAction::Retry => {
+                !self.forgetting
+                    && self.connection.driver != DriverState::Installing
+                    && self.connection.can_retry()
+            }
             SettingsAction::ForgetDevice => self.connection.device.is_some() && !self.forgetting,
             SettingsAction::InstallDriver => {
-                matches!(
-                    self.connection.driver,
-                    DriverState::Missing | DriverState::Failed
-                )
+                !self.forgetting
+                    && !self.connection.phase.busy()
+                    && matches!(
+                        self.connection.driver,
+                        DriverState::Missing | DriverState::ServiceUnavailable | DriverState::Failed
+                    )
             }
-            SettingsAction::OpenAppleDevicesStore => self.connection.driver == DriverState::Failed,
+            SettingsAction::OpenAppleDevicesStore => matches!(
+                self.connection.driver,
+                DriverState::Failed | DriverState::ServiceUnavailable
+            ),
             SettingsAction::FinishPairing => self.connection.pairing_complete(),
             SettingsAction::OpenUpdate => self.available_version.is_some(),
             _ => true,
@@ -442,8 +460,13 @@ impl SettingsState {
                 }
             }
             SettingsAction::InstallDriver => {
+                let repair = self.connection.driver == DriverState::ServiceUnavailable;
                 self.connection.driver = DriverState::Installing;
-                self.notice = Some(message!("正在安装 Apple 连接组件，请完成 Windows 提示。"));
+                self.notice = Some(if repair {
+                    message!("正在修复 Apple 连接服务，请完成 Windows 管理员授权。")
+                } else {
+                    message!("正在安装 Apple 连接组件，请完成 Windows 提示。")
+                });
                 SettingsEffect::InstallDriver
             }
             SettingsAction::OpenAppleDevicesStore => SettingsEffect::OpenAppleDevicesStore,

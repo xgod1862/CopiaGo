@@ -10,7 +10,7 @@ use std::time::Duration;
 use copiago_core::{dpapi, i18n::Language, paths::DEVICE_DATA_DIR};
 use futures_util::StreamExt;
 use idevice::{
-    IdeviceError, IdeviceService,
+    Idevice, IdeviceError, IdeviceService,
     core_device_proxy::CoreDeviceProxy,
     lockdown::LockdownClient,
     pairing_file::PairingFile,
@@ -35,9 +35,10 @@ use crate::{
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const USBMUX_PAIR_RECORD_TIMEOUT: Duration = Duration::from_secs(3);
 const LISTEN_RETRY: Duration = Duration::from_secs(4);
+pub(crate) const DEVELOPER_MENU_RETRY: &str = "请在 iPhone「设置 → 隐私与安全性」开启开发者模式并按提示重启。如果没有这个选项，请用数据线连接并解锁这台 iPhone，然后重试。";
 
 mod pairing;
-pub(crate) use pairing::{PairingError, pair_over_usb};
+pub(crate) use pairing::{PairingError, pair_over_usb, renew_usb_trust};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PairingRecordSource {
@@ -63,6 +64,7 @@ pub enum UsbProbeError {
     TrustRequired,
     DeviceLocked,
     DeveloperModeRequired,
+    DeveloperMenu,
     Lockdown,
     CoreDeviceProxy,
     Rsd,
@@ -84,6 +86,7 @@ impl fmt::Display for UsbProbeError {
             Self::TrustRequired => "iPhone rejected the lockdown pairing record",
             Self::DeviceLocked => "iPhone is locked",
             Self::DeveloperModeRequired => "iPhone requires Developer Mode",
+            Self::DeveloperMenu => "iPhone did not confirm the Developer Mode menu request",
             Self::Lockdown => "failed to open a lockdown session",
             Self::CoreDeviceProxy => "failed to open the CoreDeviceProxy tunnel",
             Self::Rsd => "failed to discover tunnel services through RSD",
@@ -230,18 +233,26 @@ pub(crate) async fn paired_usb_id(
         .map(|usb| usb.device_id))
 }
 
+pub(crate) fn paired_usb_provider(
+    addr: &UsbmuxdAddr,
+    paired: &PairedDevice,
+    id: u32,
+) -> UsbmuxdProvider {
+    UsbmuxdDevice {
+        connection_type: Connection::Usb,
+        udid: paired.serial.clone(),
+        device_id: id,
+    }
+    .to_provider(addr.clone(), "CopiaGo")
+}
+
 pub(crate) async fn open_paired_usb_tunnel(
     addr: &UsbmuxdAddr,
     data_dir: &Path,
     paired: &PairedDevice,
     id: u32,
 ) -> Result<RsdTunnel, UsbProbeError> {
-    let device = UsbmuxdDevice {
-        connection_type: Connection::Usb,
-        udid: paired.serial.clone(),
-        device_id: id,
-    };
-    let provider = device.to_provider(addr.clone(), "CopiaGo");
+    let provider = paired_usb_provider(addr, paired, id);
     let (tunnel, _) = timeout(PROBE_TIMEOUT, open_usb_tunnel(&provider, data_dir))
         .with_subscriber(Dispatch::none())
         .await
@@ -368,25 +379,102 @@ async fn trusted_lockdown(
     Ok((lockdown, record, legacy_tls, source))
 }
 
+async fn connect_lockdown_service(
+    provider: &UsbmuxdProvider,
+    lockdown: &mut LockdownClient,
+    record: &LockdownRecord,
+    legacy_tls: bool,
+    service: impl Into<String>,
+    step: UsbProbeError,
+) -> Result<Idevice, UsbProbeError> {
+    let (port, use_tls) = lockdown
+        .start_service(service)
+        .await
+        .map_err(|error| device_error(error, step))?;
+    let mut connection = provider.connect(port).await.map_err(|_| step)?;
+    if use_tls {
+        connection
+            .start_session(&record.0, legacy_tls)
+            .await
+            .map_err(|_| step)?;
+    }
+    Ok(connection)
+}
+
+/// Request only the Settings entry, using the trusted USB pairing for this phone.
+pub(crate) async fn reveal_developer_menu(
+    provider: &UsbmuxdProvider,
+    data_dir: &Path,
+) -> Result<(), UsbProbeError> {
+    let request = async {
+        let (mut lockdown, record, legacy_tls, _) = trusted_lockdown(provider, data_dir).await?;
+        let connection = connect_lockdown_service(
+            provider,
+            &mut lockdown,
+            &record,
+            legacy_tls,
+            "com.apple.amfi.lockdown",
+            UsbProbeError::DeveloperMenu,
+        )
+        .await?;
+        let socket = connection.get_socket().ok_or(UsbProbeError::DeveloperMenu)?;
+        request_developer_menu(socket).await
+    };
+    let result = timeout(PROBE_TIMEOUT, request)
+        .with_subscriber(Dispatch::none())
+        .await
+        .unwrap_or(Err(UsbProbeError::Timeout));
+    if let Err(error) = result {
+        copiago_core::diagnostic::event(format_args!("developer_menu_failed {error}"));
+    }
+    result
+}
+
+async fn request_developer_menu(
+    mut socket: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+) -> Result<(), UsbProbeError> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // idevice 0.1.68 accepts even "success": false. Verify the actual reply
+    // before directing the user to Settings. Only action 0 reveals the menu.
+    let mut body = Vec::new();
+    let request = plist::Dictionary::from_iter([("action", 0_u64)]);
+    plist::Value::Dictionary(request)
+        .to_writer_xml(&mut body)
+        .map_err(|_| UsbProbeError::DeveloperMenu)?;
+    let error = |_| UsbProbeError::DeveloperMenu;
+    socket.write_u32(body.len() as u32).await.map_err(error)?;
+    socket.write_all(&body).await.map_err(error)?;
+    socket.flush().await.map_err(error)?;
+    let length = socket.read_u32().await.map_err(error)?;
+    if !(1..=65_536).contains(&length) {
+        return Err(UsbProbeError::DeveloperMenu);
+    }
+    body.resize(length as usize, 0);
+    socket.read_exact(&mut body).await.map_err(error)?;
+    let reply: plist::Dictionary =
+        plist::from_bytes(&body).map_err(|_| UsbProbeError::DeveloperMenu)?;
+    if reply.get("success").and_then(plist::Value::as_boolean) != Some(true)
+        || reply.contains_key("Error")
+    {
+        return Err(UsbProbeError::DeveloperMenu);
+    }
+    Ok(())
+}
+
 async fn open_usb_tunnel(
     provider: &UsbmuxdProvider,
     data_dir: &Path,
 ) -> Result<(RsdTunnel, PairingRecordSource), UsbProbeError> {
     let (mut lockdown, record, legacy_tls, source) = trusted_lockdown(provider, data_dir).await?;
-    let (port, use_tls) = lockdown
-        .start_service(CoreDeviceProxy::service_name())
-        .await
-        .map_err(|error| device_error(error, UsbProbeError::CoreDeviceProxy))?;
-    let mut connection = provider
-        .connect(port)
-        .await
-        .map_err(|_| UsbProbeError::CoreDeviceProxy)?;
-    if use_tls {
-        connection
-            .start_session(&record.0, legacy_tls)
-            .await
-            .map_err(|_| UsbProbeError::CoreDeviceProxy)?;
-    }
+    let connection = connect_lockdown_service(
+        provider,
+        &mut lockdown,
+        &record,
+        legacy_tls,
+        CoreDeviceProxy::service_name(),
+        UsbProbeError::CoreDeviceProxy,
+    )
+    .await?;
     drop(record);
 
     let proxy = CoreDeviceProxy::new(connection)

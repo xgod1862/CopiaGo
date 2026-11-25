@@ -30,7 +30,9 @@ enum Session {
 #[derive(Debug, PartialEq, Eq)]
 enum Call {
     Scan,
+    RenewTrust(String),
     UsbList,
+    Reveal(String, u32),
     Pair,
     Forget,
     Attempt(Transport),
@@ -44,12 +46,14 @@ enum Pairing {
 }
 
 struct FakePhone {
+    renew_result: Cell<Result<(), PairingError>>,
     record: Cell<Result<&'static str, WifiProbeError>>,
     attached: Cell<Option<&'static str>>,
     sessions: RefCell<VecDeque<Session>>,
     calls: RefCell<Vec<(Instant, Call)>>,
     pairings: RefCell<VecDeque<Pairing>>,
     request_started: Notify,
+    reveal_error: Cell<Option<UsbProbeError>>,
     release_request: Notify,
     pushed: RefCell<Vec<Clip>>,
     fetched: RefCell<Vec<FileOffer>>,
@@ -60,12 +64,14 @@ struct FakePhone {
 impl FakePhone {
     fn new(attached: Option<&'static str>, sessions: impl IntoIterator<Item = Session>) -> Self {
         Self {
+            renew_result: Cell::new(Ok(())),
             record: Cell::new(Ok(PHONE)),
             attached: Cell::new(attached),
             sessions: RefCell::new(sessions.into_iter().collect()),
             calls: RefCell::new(Vec::new()),
             pairings: RefCell::new(VecDeque::new()),
             request_started: Notify::new(),
+            reveal_error: Cell::new(None),
             release_request: Notify::new(),
             pushed: RefCell::new(Vec::new()),
             fetched: RefCell::new(Vec::new()),
@@ -146,6 +152,20 @@ impl Backend for FakePhone {
             Some(delay) => sleep(delay).await,
             None => pending().await,
         }
+    }
+
+    async fn renew_usb_trust(&self, device: &PairedDevice) -> Result<(), PairingError> {
+        self.record_call(Call::RenewTrust(device.serial.clone()));
+        self.renew_result.get()
+    }
+
+    async fn reveal_developer_menu(
+        &self,
+        device: &PairedDevice,
+        id: u32,
+    ) -> Result<(), UsbProbeError> {
+        self.record_call(Call::Reveal(device.serial.clone(), id));
+        self.reveal_error.get().map_or(Ok(()), Err)
     }
 
     async fn session(
@@ -284,6 +304,22 @@ async fn connection_policy_by_failure_stage() {
             Some(USB_MODE),
         ),
         (
+            "Wi-Fi detects Developer Mode before the USB tunnel is available",
+            Some(PHONE),
+            F(Failure::DeveloperModeRequired),
+            None,
+            ConnState::Developer,
+            Some(Failure::DeveloperModeRequired),
+        ),
+        (
+            "do not reveal the menu on another USB phone",
+            Some(OTHER),
+            F(Failure::DeveloperModeRequired),
+            None,
+            ConnState::Hold,
+            Some(Failure::DeveloperMenuUnavailable),
+        ),
+        (
             "USB setup error wins",
             Some(PHONE),
             F(INSTALL),
@@ -328,6 +364,19 @@ async fn connection_policy_by_failure_stage() {
             .iter()
             .position(|(_, call)| matches!(call, Call::Attempt(_)));
         assert!(lookup.is_some() && lookup < first_attempt, "{name}");
+        let reveals: Vec<_> = calls
+            .iter()
+            .filter_map(|(_, call)| match call {
+                Call::Reveal(serial, id) => Some((serial.clone(), *id)),
+                _ => None,
+            })
+            .collect();
+        let expected_reveals = if expected == ConnState::Developer {
+            vec![(PHONE.to_owned(), USB_ID)]
+        } else {
+            vec![]
+        };
+        assert_eq!(reveals, expected_reveals, "{name}");
     }
 }
 
@@ -377,6 +426,40 @@ fn rig<S: HostSignals>(
         signals: Some(signals),
         detached,
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn developer_menu_failure_waits_for_user_and_retries_the_same_phone() {
+    let phone = FakePhone::new(
+        Some(PHONE),
+        [Session::Failure(Failure::DeveloperModeRequired); 2],
+    );
+    phone.reveal_error.set(Some(UsbProbeError::Timeout));
+    let (send, mut commands) = mpsc::channel(4);
+    let mut inputs = rig(&mut commands, (), None);
+    let (events, mut statuses) = mpsc::unbounded_channel();
+    let emit = collect_status(events);
+    let verify = async {
+        status(&mut statuses, ConnState::Connecting).await;
+        status(&mut statuses, ConnState::Hold).await;
+        assert!(timeout(RETRY_DELAY * 2, statuses.recv()).await.is_err());
+        phone.reveal_error.set(None);
+        send.send(DeviceCommand::Retry).await.unwrap();
+        status(&mut statuses, ConnState::Connecting).await;
+        status(&mut statuses, ConnState::Developer).await;
+        send.send(DeviceCommand::Shutdown).await.unwrap();
+    };
+    tokio::join!(run(&phone, &mut inputs, &emit), verify);
+    let expected = Call::Reveal(PHONE.to_owned(), USB_ID);
+    assert_eq!(
+        phone
+            .calls
+            .borrow()
+            .iter()
+            .filter(|(_, call)| call == &expected)
+            .count(),
+        2
+    );
 }
 
 async fn status(events: &mut mpsc::UnboundedReceiver<ConnState>, expected: ConnState) {
@@ -446,6 +529,135 @@ async fn setup_and_developer_failures_stay_visible_until_user_retry() {
         };
         tokio::join!(run(&phone, &mut inputs, &emit), verify);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn first_usb_timeout_retries_once_then_shows_the_actual_problem() {
+    let timed_out = Failure::Usb(UsbProbeError::Timeout);
+    let phone = FakePhone::new(
+        Some(PHONE),
+        [OFFLINE, timed_out, timed_out].map(Session::Failure),
+    );
+    let (_send, mut commands) = mpsc::channel(4);
+    let mut inputs = rig(&mut commands, (), None);
+    let mut state = DeviceState {
+        first_setup: true,
+        ..DeviceState::default()
+    };
+    let error = connect_cycle(
+        &phone,
+        &mut inputs,
+        &|_| ControlFlow::Continue(()),
+        &mut state,
+        &record(PHONE),
+    )
+    .await;
+    let Ok(error) = error else { panic!("setup interrupted") };
+    assert_eq!(
+        phone.attempts(),
+        [Transport::Wifi, Transport::Usb(USB_ID), Transport::Usb(USB_ID)]
+    );
+    assert_eq!(
+        error.wait(true).message,
+        message!("USB 连接超时。请将 iPhone 直接接到电脑的 USB 口，然后点「继续连接」。")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn usb_trust_recovery_is_scoped_to_the_first_setup_and_the_same_phone() {
+    let stale = Failure::Usb(UsbProbeError::TrustRequired);
+    for (first_setup, renewal, replacement) in [
+        (true, Ok(()), PHONE),
+        (true, Ok(()), OTHER),
+        (true, Err(PairingError::Denied), PHONE),
+        (false, Ok(()), PHONE),
+    ] {
+        let phone = FakePhone::new(Some(PHONE), [Session::Failure(stale), Session::Connected]);
+        phone.renew_result.set(renewal);
+        let (_send, mut commands) = mpsc::channel(4);
+        let mut inputs = rig(&mut commands, (), None);
+        let mut state = DeviceState {
+            first_setup,
+            ..DeviceState::default()
+        };
+        let connected = Cell::new(false);
+        let emit = |event| {
+            if let DeviceEvent::Status(status, detail) = event {
+                if detail == message!("正在重新请求 USB 信任。请在这台 iPhone 上点「信任」并输入锁屏密码。") {
+                    phone.attached.set(Some(replacement));
+                }
+                if status == (ConnState::Connected { wireless: false }) {
+                    connected.set(true);
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        };
+        let mut id = USB_ID;
+        let result = attempt_usb(
+            &phone, &mut inputs, &emit, &mut state, &record(PHONE), &mut id,
+        )
+        .await;
+        let should_connect = first_setup && renewal.is_ok() && replacement == PHONE;
+        assert_eq!(connected.get(), should_connect);
+        assert_eq!(phone.attempts().len(), if should_connect { 2 } else { 1 });
+        let calls = phone.calls.borrow();
+        assert_eq!(
+            calls.iter()
+                .filter(|(_, call)| matches!(call, Call::RenewTrust(serial) if serial == PHONE))
+                .count(),
+            if first_setup { 1 } else { 0 },
+        );
+        assert!(!calls.iter().any(|(_, call)| matches!(call, Call::Forget | Call::Pair)));
+        if !first_setup {
+            assert_eq!(result.ok(), Some(stale));
+        } else if renewal.is_err() {
+            assert_eq!(result.ok(), Some(Failure::Trust(PairingError::Denied)));
+        } else if replacement != PHONE {
+            assert_eq!(result.ok(), Some(Failure::Usb(UsbProbeError::NoUsbDevice)));
+        }
+    }
+}
+
+#[test]
+fn first_setup_keeps_actionable_causes() {
+    for (error, expected) in [
+        (Failure::Usb(UsbProbeError::DeviceLocked), "iPhone 已锁定。请解锁并停留在主屏幕，然后点「继续连接」。"),
+        (Failure::Usb(UsbProbeError::Usbmuxd), "等待 Apple 设备连接服务或 iPhone…"),
+        (OFFLINE, "无线未找到这台 iPhone，USB 也未检测到它。请重新插紧数据线或换一个电脑 USB 口。"),
+    ] {
+        assert_eq!(error.wait(true).message, Message::new(expected));
+    }
+    assert_eq!(Failure::DeveloperModeRequired.after_usb(Failure::Usb(UsbProbeError::Timeout)), Failure::DeveloperModeRequired);
+}
+
+#[tokio::test(start_paused = true)]
+async fn explicit_retry_recovers_an_unfinished_pairing_after_restart() {
+    let stale = Session::Failure(Failure::Usb(UsbProbeError::TrustRequired));
+    let phone = FakePhone::new(
+        Some(PHONE),
+        [Session::Failure(OFFLINE), stale, Session::Failure(OFFLINE), stale, Session::Connected],
+    );
+    let (send, mut commands) = mpsc::channel(4);
+    let mut inputs = rig(&mut commands, (), None);
+    let requested_retry = Cell::new(false);
+    let connected = Cell::new(false);
+    let emit = |event| {
+        if let DeviceEvent::Status(status, _) = event {
+            if status == ConnState::Waiting {
+                assert!(!requested_retry.replace(true), "retry was ignored");
+                send.try_send(DeviceCommand::Retry).unwrap();
+            }
+            if status == (ConnState::Connected { wireless: false }) {
+                connected.set(true);
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    };
+    run(&phone, &mut inputs, &emit).await;
+    assert!(connected.get());
+    assert!(requested_retry.get());
 }
 
 #[tokio::test(start_paused = true)]

@@ -14,7 +14,7 @@ const STEPS: [(&str, &str); 4] = [
         "手机弹出提示时点「信任」，并输入锁屏密码。",
     ),
     (
-        "准备开发者服务",
+        "连接并检查 iPhone 服务",
         "请保持电脑联网、iPhone 解锁和数据线连接。",
     ),
     (
@@ -23,10 +23,11 @@ const STEPS: [(&str, &str); 4] = [
     ),
 ];
 const DEVELOPER_HELP: &str = concat!(
-    "开发者模式未开启。在 iPhone「设置 → 隐私与安全性 → 开发者模式」中打开开关，",
-    "按提示重启手机；重启后解锁，在弹窗中点「打开」，然后点下方按钮。"
+    "在 iPhone 上重新进入「设置 → 隐私与安全性」，打开「开发者模式」并按提示重启。",
+    "重启后解锁，在弹窗中确认开启，再点下方按钮。"
 );
 const DRIVER_HELP: &str = "需要先安装 Apple 设备连接组件。将通过 Windows 包管理器安装 Apple Mobile Device Support，并代表你接受其许可协议。";
+const SERVICE_HELP: &str = "Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务，可能暂时中断其他 Apple 软件的设备连接。";
 
 impl Builder<'_> {
     pub(super) fn guide(&mut self, complete: bool) -> Result<f32> {
@@ -275,7 +276,11 @@ impl Builder<'_> {
     fn driver_box(&mut self, driver: DriverState) -> Result<()> {
         let (scene, language) = (self.scene, self.language);
         let note = scene.wrapped_text(
-            &tr!(language, DRIVER_HELP),
+            &tr!(language, if driver == DriverState::ServiceUnavailable {
+                SERVICE_HELP
+            } else {
+                DRIVER_HELP
+            }),
             TextStyle {
                 font: Font::Regular,
                 size: 12.0,
@@ -299,7 +304,9 @@ impl Builder<'_> {
         let name = tr!(
             language,
             if driver == DriverState::Installing {
-                "正在安装…"
+                "正在处理…"
+            } else if driver == DriverState::ServiceUnavailable {
+                "修复连接服务"
             } else {
                 "安装连接组件"
             },
@@ -319,7 +326,7 @@ impl Builder<'_> {
             false,
             ControlRole::Button,
         )?;
-        if driver == DriverState::Failed {
+        if matches!(driver, DriverState::Failed | DriverState::ServiceUnavailable) {
             let name = tr!(language, "在 Microsoft Store 中查找").into_owned();
             let store = Button::text(
                 scene,

@@ -137,7 +137,7 @@ impl Builder<'_> {
         let (scene, language) = (self.scene, self.language);
         let (title, summary) = device_strings(device);
         let phase = self.state.connection().phase;
-        let retry = phase.can_continue();
+        let retry = self.state.connection().can_retry();
         let detail_y = y + if retry { 54.0 } else { 38.0 };
         let detail_height = if retry { 74.0 } else { 38.0 };
         let summary_y = detail_y + detail_height;

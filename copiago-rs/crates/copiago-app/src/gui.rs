@@ -272,9 +272,12 @@ impl Host<'_> {
         {
             let mut connection = self.settings.connection().clone();
             let driver = driver::detect();
-            if driver == copiago_ui::settings_page::DriverState::Ready
-                || connection.driver != copiago_ui::settings_page::DriverState::Failed
-            {
+            // A port can listen while enumeration fails. Keep that diagnosis
+            // until a connection succeeds or an explicit repair is verified.
+            if !matches!(connection.driver,
+                copiago_ui::settings_page::DriverState::Failed
+                    | copiago_ui::settings_page::DriverState::ServiceUnavailable
+            ) {
                 connection.driver = driver;
                 self.settings.set_connection(connection);
             }

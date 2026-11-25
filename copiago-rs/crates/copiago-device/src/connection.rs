@@ -81,7 +81,8 @@ pub struct DeviceRunOptions {
     /// Allows pairing, forgetting, saving device details and migrating existing records.
     /// Set false for a read-only probe.
     pub persist_device_data: bool,
-    /// Allows automatic image downloads and mounting when persistent device data is enabled.
+    /// Allows revealing the Developer Mode setting and preparing developer images
+    /// when persistent device data is enabled.
     pub allow_developer_setup: bool,
 }
 
@@ -144,6 +145,8 @@ trait Backend {
         prompt: impl Fn(Message) -> ControlFlow<()>,
     ) -> Result<DeviceInfo, PairingError>;
     fn forget(&self) -> std::io::Result<()>;
+    /// Request USB trust from this paired phone without replacing its wireless record.
+    async fn renew_usb_trust(&self, device: &PairedDevice) -> Result<(), PairingError>;
     async fn usb_id(&self, device: &PairedDevice) -> Result<Option<u32>, UsbProbeError>;
     /// Told before each Wi-Fi attempt whether the paired phone is also on USB.
     fn set_cable_attached(&self, _attached: bool) {}
@@ -151,6 +154,11 @@ trait Backend {
     async fn advertisement(&self, _device: &PairedDevice) {
         pending::<()>().await;
     }
+    async fn reveal_developer_menu(
+        &self,
+        device: &PairedDevice,
+        id: u32,
+    ) -> Result<(), UsbProbeError>;
     async fn session(
         &self,
         device: &PairedDevice,
@@ -166,11 +174,20 @@ enum Failure {
     Wifi(WifiProbeError),
     Usb(UsbProbeError),
     Session,
+    Trust(PairingError),
     DeveloperModeRequired,
+    DeveloperMenuUnavailable,
     Setup { stage: DdiStage, timed_out: bool },
 }
 
 impl Failure {
+    fn requires_developer_mode(self) -> bool {
+        matches!(
+            self,
+            Self::DeveloperModeRequired | Self::Usb(UsbProbeError::DeveloperModeRequired)
+        )
+    }
+
     const fn setup(stage: DdiStage) -> Self {
         Self::Setup {
             stage,
@@ -191,10 +208,11 @@ impl Failure {
     fn after_usb(self, usb: Self) -> Self {
         if matches!(
             self,
-            Self::Setup {
-                stage: DdiStage::Install,
-                ..
-            }
+            Self::DeveloperModeRequired
+                | Self::Setup {
+                    stage: DdiStage::Install,
+                    ..
+                }
         ) && !matches!(
             usb,
             Self::Setup { .. }
@@ -206,8 +224,58 @@ impl Failure {
         usb
     }
 
+    /// Used after dedicated developer-mode and image errors have been handled.
+    /// A Wi-Fi failure reaches this branch only when no matching USB phone was found.
+    fn first_connection_hint(self) -> &'static str {
+        match self {
+            // This status also activates the host's Apple service repair controls.
+            Self::Usb(UsbProbeError::Usbmuxd) => "等待 Apple 设备连接服务或 iPhone…",
+            Self::Usb(UsbProbeError::DeviceLocked) => {
+                "iPhone 已锁定。请解锁并停留在主屏幕，然后点「继续连接」。"
+            }
+            Self::Usb(UsbProbeError::Timeout) => {
+                "USB 连接超时。请将 iPhone 直接接到电脑的 USB 口，然后点「继续连接」。"
+            }
+            Self::Usb(UsbProbeError::CoreDeviceProxy) => {
+                "已找到 iPhone，但开发者通道未能打开。请解锁手机，重新插拔数据线后重试。"
+            }
+            Self::Usb(UsbProbeError::Rsd) => {
+                "已连到 iPhone，但未能确认手机提供的服务。请保持解锁，重新插拔数据线后重试。"
+            }
+            Self::Usb(UsbProbeError::Lockdown) => {
+                "已找到 iPhone，但 USB 会话未能建立。请重新插拔数据线并保持手机解锁。"
+            }
+            Self::Usb(UsbProbeError::NoUsbDevice) => {
+                "USB 已检测不到这台 iPhone。请重新接好数据线，再点「继续连接」。"
+            }
+            Self::Usb(UsbProbeError::MultipleUsbDevices(_)) => "请暂时只连接一台 iPhone",
+            Self::Trust(PairingError::Denied) => {
+                "iPhone 拒绝了信任请求。请重新插拔数据线，点「继续连接」，在手机上点「信任」。"
+            }
+            Self::Trust(PairingError::Pending) => {
+                "手机尚未确认信任。请在 iPhone 上点「信任」并输入密码，然后点「继续连接」。"
+            }
+            Self::Trust(_)
+            | Self::Usb(UsbProbeError::PairingRecordUnavailable | UsbProbeError::TrustRequired) => {
+                "USB 信任未能恢复。请解锁 iPhone，重新插拔数据线，再点「继续连接」。"
+            }
+            Self::Wifi(WifiProbeError::NoEndpoint | WifiProbeError::Discovery) => {
+                "无线未找到这台 iPhone，USB 也未检测到它。请重新插紧数据线或换一个电脑 USB 口。"
+            }
+            Self::Wifi(_) => {
+                "无线连接失败，USB 也未检测到这台 iPhone。请将手机直接接到电脑后重试。"
+            }
+            _ => "与 iPhone 的连接中断。请接好数据线并解锁手机，再点「继续连接」。",
+        }
+    }
+
     fn wait(self, first_setup: bool) -> Wait {
         let (mode, state, message) = match self {
+            Self::DeveloperMenuUnavailable => (
+                WaitMode::User,
+                ConnState::Hold,
+                Message::new(crate::usb::DEVELOPER_MENU_RETRY),
+            ),
             Self::DeveloperModeRequired | Self::Usb(UsbProbeError::DeveloperModeRequired) => (
                 WaitMode::User,
                 ConnState::Developer,
@@ -235,10 +303,10 @@ impl Failure {
                     }
                 }),
             ),
-            _ if first_setup => (
+            error if first_setup => (
                 WaitMode::User,
                 ConnState::Hold,
-                message!("连接未完成：请保持 iPhone 解锁并连着数据线，然后点「继续连接」"),
+                Message::new(error.first_connection_hint()),
             ),
             _ => (
                 WaitMode::Reconnect,
@@ -288,6 +356,7 @@ enum Interrupted {
     Stop,
     Forget,
     Pair,
+    UserRetry,
     Reconnect,
     UsbDetached,
 }
@@ -326,6 +395,9 @@ async fn run(
     loop {
         match connect_or_wait(backend, inputs, emit, &mut state).await {
             Ok(()) | Err(Interrupted::Reconnect) => {}
+            // Legacy records do not distinguish a completed first connection.
+            // An explicit retry opts into USB recovery even after restarting the app.
+            Err(Interrupted::UserRetry) => state.first_setup = true,
             Err(Interrupted::Forget) => {
                 let success = backend.forget().is_ok();
                 if success {
@@ -476,14 +548,93 @@ async fn connect_cycle(
                 .await?
         }
     };
-    match cable {
-        Ok(Some(id)) => {
-            let usb = attempt(backend, inputs, emit, state, device, Transport::Usb(id)).await?;
-            Ok(wifi.after_usb(usb))
+    let mut id = match cable {
+        Ok(Some(id)) => id,
+        _ if wifi.requires_developer_mode() => return Ok(Failure::DeveloperMenuUnavailable),
+        Ok(None) => return Ok(wifi),
+        Err(error) => return Ok(wifi.after_usb(Failure::Usb(error))),
+    };
+    // Developer Mode is device-wide. Its USB settings service works without
+    // bringing up another developer tunnel or attempting to mount an image.
+    let failure = if wifi.requires_developer_mode() {
+        wifi
+    } else {
+        let usb = attempt_usb(backend, inputs, emit, state, device, &mut id).await?;
+        wifi.after_usb(usb)
+    };
+    if failure.requires_developer_mode() {
+        let reveal = backend.reveal_developer_menu(device, id);
+        if inputs.drive(reveal, Phase::Lookup, emit).await?.is_err() {
+            return Ok(Failure::DeveloperMenuUnavailable);
         }
-        Ok(None) => Ok(wifi),
-        Err(error) => Ok(wifi.after_usb(Failure::Usb(error))),
     }
+    Ok(failure)
+}
+
+/// During first setup, recover once from stale USB trust or a transient tunnel
+/// error. Return the current handle for any subsequent device-specific work.
+async fn attempt_usb(
+    backend: &impl Backend,
+    inputs: &mut Inputs<'_, impl HostSignals>,
+    emit: &impl Fn(DeviceEvent) -> ControlFlow<()>,
+    state: &mut DeviceState,
+    device: &PairedDevice,
+    id: &mut u32,
+) -> Result<Failure, Interrupted> {
+    let failure = attempt(backend, inputs, emit, state, device, Transport::Usb(*id)).await?;
+    // A background reconnect must never create a trust prompt. A session that
+    // already became ready cleared first_setup, even if it has since disconnected.
+    if !state.first_setup {
+        return Ok(failure);
+    }
+    match failure {
+        Failure::Usb(UsbProbeError::TrustRequired | UsbProbeError::PairingRecordUnavailable) => {
+            emit_event(
+                emit,
+                DeviceEvent::Status(
+                    ConnState::Connecting,
+                    message!("正在重新请求 USB 信任。请在这台 iPhone 上点「信任」并输入锁屏密码。"),
+                ),
+            )?;
+            let result = inputs
+                .drive(
+                    timeout(PAIRING_TIMEOUT, backend.renew_usb_trust(device)),
+                    Phase::Pairing,
+                    emit,
+                )
+                .await?
+                .unwrap_or(Err(PairingError::Pending));
+            match result {
+                Ok(()) => {}
+                Err(PairingError::Usb(error)) => return Ok(Failure::Usb(error)),
+                Err(error) => return Ok(Failure::Trust(error)),
+            }
+        }
+        Failure::Usb(
+            UsbProbeError::Timeout
+            | UsbProbeError::CoreDeviceProxy
+            | UsbProbeError::Rsd
+            | UsbProbeError::Lockdown,
+        ) => {
+            emit_event(
+                emit,
+                DeviceEvent::Status(ConnState::Connecting, message!("正在通过 USB 自动重试一次…")),
+            )?;
+            inputs.drive(sleep(RETRY_DELAY), Phase::Lookup, emit).await?;
+        }
+        _ => return Ok(failure),
+    }
+    // A reconnect may assign a new USB handle. Resolve the same phone again,
+    // then make exactly one attempt even when the second failure is transient.
+    *id = match inputs
+        .drive(backend.usb_id(device), Phase::Lookup, emit)
+        .await?
+    {
+        Ok(Some(current)) => current,
+        Ok(None) => return Ok(Failure::Usb(UsbProbeError::NoUsbDevice)),
+        Err(error) => return Ok(Failure::Usb(error)),
+    };
+    attempt(backend, inputs, emit, state, device, Transport::Usb(*id)).await
 }
 
 async fn attempt(
@@ -664,6 +815,12 @@ impl Phase<'_> {
         match input {
             Input::Command(DeviceCommand::Shutdown) => return Err(Interrupted::Stop),
             Input::Command(DeviceCommand::Forget) => return Err(Interrupted::Forget),
+            Input::Command(DeviceCommand::Retry)
+                if matches!(self, Self::Waiting(WaitMode::Reconnect | WaitMode::User) | Self::Lookup)
+                    || matches!(self, Self::Session(active) if !active.ready.get()) =>
+            {
+                return Err(Interrupted::UserRetry);
+            }
             Input::Command(DeviceCommand::RequestPair)
                 if matches!(self, Self::Waiting(WaitMode::Setup)) =>
             {

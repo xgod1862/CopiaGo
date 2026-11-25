@@ -15,7 +15,7 @@ use tracing::{Dispatch, instrument::WithSubscriber};
 use super::{
     IdeviceError, IdeviceProvider, IdeviceService, LockdownClient, LockdownRecord,
     USBMUX_PAIR_RECORD_TIMEOUT, UsbProbeError, UsbmuxdAddr, UsbmuxdProvider, local_record_path,
-    single_usb_provider, trusted_lockdown,
+    reveal_developer_menu, single_usb_provider, trusted_lockdown,
 };
 use crate::{
     device_info,
@@ -44,6 +44,7 @@ impl PairingError {
             Self::Usb(UsbProbeError::DeveloperModeRequired) => {
                 "需要开启开发者模式：在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启并重启手机，解锁后点「继续连接」"
             }
+            Self::Usb(UsbProbeError::DeveloperMenu) => super::DEVELOPER_MENU_RETRY,
             Self::Denied => {
                 "iPhone 上选择了「不信任」。请重新插拔数据线，在提示时点「信任」，再点「连接 iPhone」"
             }
@@ -83,20 +84,33 @@ impl From<IdeviceError> for PairingError {
 pub(crate) async fn pair_over_usb(
     addr: &UsbmuxdAddr,
     data_dir: &Path,
+    allow_developer_setup: bool,
     prompt: impl Fn(Message) -> ControlFlow<()>,
 ) -> Result<DeviceInfo, PairingError> {
     // idevice diagnostics include the underlying pairing payloads.
-    pair(addr, data_dir, prompt)
-        .with_subscriber(Dispatch::none())
-        .await
+    async {
+        let provider = single_usb_provider(addr).await.map_err(PairingError::Usb)?;
+        let result = pair(&provider, data_dir, prompt).await;
+        if allow_developer_setup
+            && matches!(
+                result,
+                Err(PairingError::Usb(UsbProbeError::DeveloperModeRequired))
+            )
+            && reveal_developer_menu(&provider, data_dir).await.is_err()
+        {
+            return Err(PairingError::Usb(UsbProbeError::DeveloperMenu));
+        }
+        result
+    }
+    .with_subscriber(Dispatch::none())
+    .await
 }
 
 async fn pair(
-    addr: &UsbmuxdAddr,
+    provider: &UsbmuxdProvider,
     data_dir: &Path,
     prompt: impl Fn(Message) -> ControlFlow<()>,
 ) -> Result<DeviceInfo, PairingError> {
-    let provider = single_usb_provider(addr).await.map_err(PairingError::Usb)?;
     let local_path = local_record_path(data_dir, &provider.udid).ok_or(PairingError::Failed)?;
     let remote_path = local_path.with_file_name(format!("remote_{}.plist", provider.udid));
     ensure_data_dir(data_dir).map_err(|_| PairingError::Failed)?;
@@ -111,13 +125,8 @@ async fn pair(
     }
     let hostname = windows_hostname().map_err(|_| PairingError::Failed)?;
     let host_id = host_identifier(&hostname);
-    let (mut lockdown, record, legacy_tls) = match trusted_lockdown(&provider, data_dir).await {
-        Ok((lockdown, record, legacy_tls, _)) => (lockdown, record, legacy_tls),
-        Err(UsbProbeError::PairingRecordUnavailable | UsbProbeError::TrustRequired) => {
-            create_lockdown_pairing(&provider, &local_path, &hostname, &host_id).await?
-        }
-        Err(error) => return Err(PairingError::Usb(error)),
-    };
+    let (mut lockdown, record, legacy_tls) =
+        ensure_usb_trust(provider, data_dir, &local_path, &hostname, &host_id).await?;
     if prompt(message!("已确认 iPhone 信任，正在准备无线配对…")).is_break() {
         return Err(PairingError::Stopped);
     }
@@ -159,6 +168,44 @@ async fn pair(
     .unwrap_or_default();
     save_remote_record(&remote_path, pairing, unlock_key).map_err(|_| PairingError::Failed)?;
     Ok(info)
+}
+
+/// Recover only USB trust. A cable swap or multiple attached phones must not
+/// cause a trust request for a different device. Keep the wireless key intact.
+pub(crate) async fn renew_usb_trust(
+    addr: &UsbmuxdAddr,
+    data_dir: &Path,
+    serial: &str,
+) -> Result<(), PairingError> {
+    async {
+        let provider = single_usb_provider(addr).await.map_err(PairingError::Usb)?;
+        if provider.udid != serial {
+            return Err(PairingError::Usb(UsbProbeError::NoUsbDevice));
+        }
+        let path = local_record_path(data_dir, serial).ok_or(PairingError::Failed)?;
+        let hostname = windows_hostname().map_err(|_| PairingError::Failed)?;
+        let host_id = host_identifier(&hostname);
+        ensure_usb_trust(&provider, data_dir, &path, &hostname, &host_id).await?;
+        Ok(())
+    }
+    .with_subscriber(Dispatch::none())
+    .await
+}
+
+async fn ensure_usb_trust(
+    provider: &UsbmuxdProvider,
+    data_dir: &Path,
+    local_path: &Path,
+    hostname: &str,
+    host_id: &str,
+) -> Result<(LockdownClient, LockdownRecord, bool), PairingError> {
+    match trusted_lockdown(provider, data_dir).await {
+        Ok((lockdown, record, legacy_tls, _)) => Ok((lockdown, record, legacy_tls)),
+        Err(UsbProbeError::PairingRecordUnavailable | UsbProbeError::TrustRequired) => {
+            create_lockdown_pairing(provider, local_path, hostname, host_id).await
+        }
+        Err(error) => Err(PairingError::Usb(error)),
+    }
 }
 
 async fn create_lockdown_pairing(

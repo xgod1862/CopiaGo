@@ -41,6 +41,7 @@ iPhone 剪贴板历史未开启	iPhone clipboard history is off
 点「连接 iPhone」并信任此电脑	Connect and trust this PC
 手机弹出提示时点「信任」，并输入锁屏密码。	Tap Trust on your iPhone when prompted and enter your passcode.
 准备开发者服务	Prepare developer services
+连接并检查 iPhone 服务	Connect and check iPhone services
 请保持电脑联网、iPhone 解锁和数据线连接。	Keep your PC online and your iPhone connected and unlocked.
 拔掉数据线，开始使用	Unplug the cable
 之后 iPhone 和电脑在同一 Wi-Fi 下会自动连接。	Your iPhone and PC will connect automatically on the same local network.
@@ -152,6 +153,20 @@ iPhone 上选择了「不信任」。请重新插拔数据线，在提示时点�
 已确认 iPhone 信任，正在准备无线配对…	iPhone trust confirmed. Preparing Wi-Fi pairing…
 已配对多台 iPhone。请在设置中点「忘记此 iPhone」后重新配对	More than one iPhone is paired. Select Forget this iPhone in Settings, then pair again.
 连接未完成：请保持 iPhone 解锁并连着数据线，然后点「继续连接」	Connection did not finish. Keep your iPhone connected and unlocked, then select Continue.
+iPhone 已锁定。请解锁并停留在主屏幕，然后点「继续连接」。	Unlock your iPhone, stay on its Home Screen, then select Continue.
+USB 连接超时。请将 iPhone 直接接到电脑的 USB 口，然后点「继续连接」。	USB timed out. Plug your iPhone directly into the PC, then select Continue.
+已找到 iPhone，但开发者通道未能打开。请解锁手机，重新插拔数据线后重试。	iPhone found. The developer connection could not open. Unlock your iPhone, reconnect the cable, and retry.
+已连到 iPhone，但未能确认手机提供的服务。请保持解锁，重新插拔数据线后重试。	Connected to iPhone, but its services could not be verified. Keep it unlocked, reconnect the cable, and retry.
+已找到 iPhone，但 USB 会话未能建立。请重新插拔数据线并保持手机解锁。	iPhone found. The USB session could not open. Reconnect the cable and keep your iPhone unlocked.
+USB 已检测不到这台 iPhone。请重新接好数据线，再点「继续连接」。	This iPhone is no longer visible over USB. Reconnect the cable, then select Continue.
+iPhone 拒绝了信任请求。请重新插拔数据线，点「继续连接」，在手机上点「信任」。	Trust was declined. Reconnect the cable, select Continue, then tap Trust on your iPhone.
+手机尚未确认信任。请在 iPhone 上点「信任」并输入密码，然后点「继续连接」。	Trust is pending. Tap Trust on your iPhone, enter its passcode, then select Continue.
+USB 信任未能恢复。请解锁 iPhone，重新插拔数据线，再点「继续连接」。	USB trust could not be restored. Unlock your iPhone, reconnect the cable, then select Continue.
+无线未找到这台 iPhone，USB 也未检测到它。请重新插紧数据线或换一个电脑 USB 口。	This iPhone was not found on Wi-Fi or USB. Reconnect the cable or try another USB port on the PC.
+无线连接失败，USB 也未检测到这台 iPhone。请将手机直接接到电脑后重试。	Wi-Fi failed and this iPhone was not found over USB. Plug it directly into the PC and retry.
+与 iPhone 的连接中断。请接好数据线并解锁手机，再点「继续连接」。	The iPhone connection ended. Reconnect the cable, unlock the phone, then select Continue.
+正在通过 USB 自动重试一次…	Retrying the USB connection once…
+正在重新请求 USB 信任。请在这台 iPhone 上点「信任」并输入锁屏密码。	Requesting USB trust again. Tap Trust on this iPhone and enter its passcode.
 正在建立无线连接…	Connecting over Wi-Fi…
 正在建立USB连接…	Connecting over USB…
 正在检查 iPhone 开发者服务…	Checking iPhone developer services…
@@ -179,3 +194,14 @@ iPhone 文件 {timestamp}.{extension}	iPhone file {timestamp}.{extension}
 删除	Delete
 发送到 iPhone	Send to iPhone
 {count} 字	{count} chars
+Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务，可能暂时中断其他 Apple 软件的设备连接。	The Apple connection service is unavailable or cannot list devices. Repair requires administrator permission and starts or restarts the service, which may briefly interrupt other Apple apps connected to your device.
+正在处理…	Working…
+修复连接服务	Repair connection service
+正在修复 Apple 连接服务，请完成 Windows 管理员授权。	Repairing the Apple connection service. Approve the Windows administrator prompt.
+Apple 连接服务仍不可用。请重新启动电脑，或在 Microsoft Store 中修复或重新安装 Apple Devices。	The Apple connection service is still unavailable. Restart your PC, or repair or reinstall Apple Devices through Microsoft Store.
+尚未发现 Apple 连接组件，请先安装。	Apple connection components were not found. Install them first.
+Apple 连接服务不可用，请先点「修复连接服务」。	The Apple connection service is unavailable. Select Repair connection service first.
+已取消管理员授权，未修复 Apple 连接服务。	Administrator permission was cancelled. The Apple connection service was not repaired.
+无法启动服务修复。请在 Windows 服务中启动 Apple Mobile Device Service，或修复 Apple Devices。	Could not start the repair. Start Apple Mobile Device Service in Windows Services, or repair Apple Devices.
+请在 iPhone「设置 → 隐私与安全性」开启开发者模式并按提示重启。如果没有这个选项，请用数据线连接并解锁这台 iPhone，然后重试。	Open Settings → Privacy & Security on your iPhone, turn on Developer Mode, and follow the restart prompts. If the option is missing, connect this iPhone by USB, unlock it, and retry.
+在 iPhone 上重新进入「设置 → 隐私与安全性」，打开「开发者模式」并按提示重启。重启后解锁，在弹窗中确认开启，再点下方按钮。	Reopen Settings → Privacy & Security on your iPhone. Turn on Developer Mode and restart when prompted. Unlock the phone, confirm Turn On, then continue below.

@@ -125,14 +125,11 @@ impl RemoteRecord {
     }
 }
 
-pub(crate) fn save_remote_record(
-    path: &Path,
-    mut pairing: RpPairingFile,
-    unlock_key: String,
-) -> io::Result<()> {
+/// Seals a new wireless pairing record. It holds only what reconnecting needs: CopiaGo
+/// never asks the phone for a remote unlock key, so none is stored.
+pub(crate) fn save_remote_record(path: &Path, mut pairing: RpPairingFile) -> io::Result<()> {
     // idevice names the value alt_irk. CopiaGo and Python match ads using peer_alt_irk.
     let mut irk = Zeroizing::new(pairing.alt_irk.take().unwrap_or_default());
-    let mut unlock_key = Zeroizing::new(unlock_key);
     if irk.len() != 16 {
         return Err(io::Error::new(ErrorKind::InvalidData, "missing peer IRK"));
     }
@@ -141,10 +138,6 @@ pub(crate) fn save_remote_record(
         ("public_key", Value::Data(pairing.public_key_bytes())),
         ("identifier", Value::String(pairing.identifier)),
         ("peer_alt_irk", Value::Data(std::mem::take(&mut *irk))),
-        (
-            "remote_unlock_host_key",
-            Value::String(std::mem::take(&mut *unlock_key)),
-        ),
     ])));
     atomic::write(path, &fields.seal()?)
 }

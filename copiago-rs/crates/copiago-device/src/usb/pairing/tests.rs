@@ -1,5 +1,6 @@
 use copiago_core::i18n::Language;
 use idevice::Idevice;
+use plist::{Dictionary, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
 
 use super::*;

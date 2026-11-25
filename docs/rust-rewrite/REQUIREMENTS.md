@@ -40,7 +40,7 @@ Python 版瘦身后：安装包 25 MB、安装后 74 MB、连上手机空闲约 
 | TLS 后端 | `default-features = false` + `ring`，比默认的 aws‑lc 小 | `poc-rust/Cargo.toml` |
 | 异步运行时 | tokio `current_thread`，进程 2–4 个线程 | 原型实测 |
 | Wi‑Fi 发现 | `_remotepairing._tcp` mDNS。原型用的 `mdns-sd` 占约 0.5 MB，**正式版改用 Windows `DnsServiceBrowse`（dnsapi.dll）**，需同时兼容 Python 版 `windows_discovery.py` 解决的多网卡/VPN 问题 | REPORT 体积细节 |
-| 配对记录复用 | `remote_<udid>.plist` = `b"ICB-DPAPI1\0"` + `CryptProtectData`；键 `public_key`/`private_key`/`remote_unlock_host_key`/`peer_alt_irk`；缺 `identifier`，按 `uuid3(NAMESPACE_DNS, hostname).upper()` 推导后 pair‑verify 通过 | `poc-rust/src/main.rs::load_rp_record` |
+| 配对记录复用 | `remote_<udid>.plist` = `b"ICB-DPAPI1\0"` + `CryptProtectData`；键 `public_key`/`private_key`/`remote_unlock_host_key`/`peer_alt_irk`（Rust 版新配对不再向手机申请远程解锁密钥，新记录不含 `remote_unlock_host_key`；旧记录中的该键保持原样且不被读取）；缺 `identifier`，按 `uuid3(NAMESPACE_DNS, hostname).upper()` 推导后 pair‑verify 通过 | `poc-rust/src/main.rs::load_rp_record` |
 | 剪贴板变化检测 | 订阅 Darwin 通知 `com.apple.pasteboard.notify.changed`，收到后 `PULL promiseSecondary`；**不要用 AUTONOTIFY**（Notes 复制会让守护进程卡 ~64 s） | Python `device.py::_watch`、pymobiledevice3 模块说明（仅参考协议） |
 | 开发者镜像 | idevice 支持 personalized（`mobile_image_mounter::mount_personalized_rsd` + TSS）和 Cryptex1（`cryptexd` + `tss`）| REPORT 第 5 步 |
 | UI 技术栈 | Win32 窗口（`WS_EX_NOREDIRECTIONBITMAP`）+ Windows.UI.Composition（desktop interop）+ Direct2D/DirectWrite 画进合成表面；动画全部交给 DWM | `poc-rust/anim-demo/` |

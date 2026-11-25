@@ -9,7 +9,6 @@ use idevice::remote_pairing::{
     RemotePairingLockdownService, RpPairingFile, errors::RemotePairingError,
 };
 use idevice::usbmuxd::errors::UsbmuxdError;
-use plist::{Dictionary, Value};
 use tracing::{Dispatch, instrument::WithSubscriber};
 
 use super::{
@@ -160,24 +159,9 @@ async fn pair(
         .connect(&mut pairing, || async { "000000".into() })
         .await?;
 
-    // The post-pairing unlock key is optional for the tunnel. Some peers close the pair stream.
-    let command = Dictionary::from_iter([("createRemoteUnlockKey", Dictionary::new())]);
-    let body = Dictionary::from_iter([("_0", command)]);
-    let unlock_request = Value::Dictionary(Dictionary::from_iter([("request", body)]));
-    let unlock_key = tokio::time::timeout(
-        USBMUX_PAIR_RECORD_TIMEOUT,
-        client.send_receive_encrypted_request(unlock_request),
-    )
-    .await
-    .ok()
-    .and_then(Result::ok)
-    .and_then(Value::into_dictionary)
-    .and_then(|mut fields| fields.remove("createRemoteUnlockKey"))
-    .and_then(Value::into_dictionary)
-    .and_then(|mut fields| fields.remove("hostKey"))
-    .and_then(Value::into_string)
-    .unwrap_or_default();
-    save_remote_record(&remote_path, pairing, unlock_key).map_err(|_| PairingError::Failed)?;
+    // Do not request createRemoteUnlockKey: reconnecting never uses it, and a stored
+    // remote unlock credential would only add risk to this PC's data.
+    save_remote_record(&remote_path, pairing).map_err(|_| PairingError::Failed)?;
     Ok(info)
 }
 

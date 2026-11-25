@@ -265,10 +265,13 @@ pub(crate) async fn open_paired_usb_tunnel(
     let provider = paired_usb_provider(addr, paired, id);
     let step = Cell::new(TunnelStep::Lockdown);
     let started = Instant::now();
-    let opened = timeout(USB_TUNNEL_TIMEOUT, open_usb_tunnel_traced(&provider, data_dir, &step))
-        .with_subscriber(Dispatch::none())
-        .await
-        .unwrap_or(Err(UsbProbeError::Timeout));
+    let opened = timeout(
+        USB_TUNNEL_TIMEOUT,
+        open_usb_tunnel_traced(&provider, data_dir, &step),
+    )
+    .with_subscriber(Dispatch::none())
+    .await
+    .unwrap_or(Err(UsbProbeError::Timeout));
     let (tunnel, _) = opened.inspect_err(|error| {
         diagnostic::event(format_args!(
             "event=usb_tunnel_failed step={:?} error={error:?} ms={}",
@@ -476,7 +479,9 @@ pub(crate) async fn reveal_developer_menu(
             UsbProbeError::DeveloperMenu,
         )
         .await?;
-        let socket = connection.get_socket().ok_or(UsbProbeError::DeveloperMenu)?;
+        let socket = connection
+            .get_socket()
+            .ok_or(UsbProbeError::DeveloperMenu)?;
         request_developer_menu(socket).await
     };
     let result = timeout(PROBE_TIMEOUT, request)

@@ -265,7 +265,9 @@ impl Failure {
             Self::Wifi(_) => {
                 "无线连接失败，USB 也未检测到这台 iPhone。请将手机直接接到电脑后重试。"
             }
-            _ => "与 iPhone 的连接中断。请插紧数据线并保持手机解锁，再点「继续连接」；反复断开时请换一个 USB 口或数据线。",
+            _ => {
+                "与 iPhone 的连接中断。请插紧数据线并保持手机解锁，再点「继续连接」；反复断开时请换一个 USB 口或数据线。"
+            }
         }
     }
 
@@ -620,9 +622,14 @@ async fn attempt_usb(
             diagnostic::event(format_args!("event=usb_retry failure={failure:?}"));
             emit_event(
                 emit,
-                DeviceEvent::Status(ConnState::Connecting, message!("正在通过 USB 自动重试一次…")),
+                DeviceEvent::Status(
+                    ConnState::Connecting,
+                    message!("正在通过 USB 自动重试一次…"),
+                ),
             )?;
-            inputs.drive(sleep(RETRY_DELAY), Phase::Lookup, emit).await?;
+            inputs
+                .drive(sleep(RETRY_DELAY), Phase::Lookup, emit)
+                .await?;
         }
         _ => return Ok(failure),
     }
@@ -818,8 +825,10 @@ impl Phase<'_> {
             Input::Command(DeviceCommand::Shutdown) => return Err(Interrupted::Stop),
             Input::Command(DeviceCommand::Forget) => return Err(Interrupted::Forget),
             Input::Command(DeviceCommand::Retry)
-                if matches!(self, Self::Waiting(WaitMode::Reconnect | WaitMode::User) | Self::Lookup)
-                    || matches!(self, Self::Session(active) if !active.ready.get()) =>
+                if matches!(
+                    self,
+                    Self::Waiting(WaitMode::Reconnect | WaitMode::User) | Self::Lookup
+                ) || matches!(self, Self::Session(active) if !active.ready.get()) =>
             {
                 return Err(Interrupted::UserRetry);
             }

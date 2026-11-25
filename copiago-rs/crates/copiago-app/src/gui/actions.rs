@@ -85,10 +85,9 @@ impl Host<'_> {
                     self.request_connection(DeviceCommand::Retry, connection, now)
                 }
                 SettingsEffect::ForgetDevice => self.begin_forget(),
-                SettingsEffect::InstallDriver => self.install_driver(
-                    now,
-                    connection.driver == DriverState::ServiceUnavailable,
-                ),
+                SettingsEffect::InstallDriver => {
+                    self.install_driver(now, connection.driver == DriverState::ServiceUnavailable)
+                }
                 SettingsEffect::OpenAppleDevicesStore => {
                     if driver::open_store().is_err() {
                         self.settings
@@ -249,7 +248,9 @@ impl Host<'_> {
                 let (state, message) = if repair {
                     (
                         DriverState::ServiceUnavailable,
-                        message!("无法启动服务修复。请重启电脑；仍不行请在 Microsoft Store 中修复 Apple Devices。"),
+                        message!(
+                            "无法启动服务修复。请重启电脑；仍不行请在 Microsoft Store 中修复 Apple Devices。"
+                        ),
                     )
                 } else {
                     driver::failed_to_run()

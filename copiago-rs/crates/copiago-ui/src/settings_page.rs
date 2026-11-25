@@ -162,7 +162,8 @@ impl ConnectionState {
     /// A saved pairing can have an unfinished first connection after an upgrade.
     /// Let the user start interactive recovery while ordinary reconnects continue.
     pub fn can_retry(&self) -> bool {
-        self.phase.can_continue() || (self.device.is_some() && self.phase == ConnectionPhase::Waiting)
+        self.phase.can_continue()
+            || (self.device.is_some() && self.phase == ConnectionPhase::Waiting)
     }
 
     /// Stuck states in which the guide offers to copy diagnostics or report an issue.
@@ -413,7 +414,9 @@ impl SettingsState {
                     && !self.connection.phase.busy()
                     && matches!(
                         self.connection.driver,
-                        DriverState::Missing | DriverState::ServiceUnavailable | DriverState::Failed
+                        DriverState::Missing
+                            | DriverState::ServiceUnavailable
+                            | DriverState::Failed
                     )
             }
             SettingsAction::OpenAppleDevicesStore => matches!(

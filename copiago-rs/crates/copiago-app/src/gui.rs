@@ -279,7 +279,8 @@ impl Host<'_> {
             let driver = driver::detect();
             // A port can listen while enumeration fails. Keep that diagnosis
             // until a connection succeeds or an explicit repair is verified.
-            if !matches!(connection.driver,
+            if !matches!(
+                connection.driver,
                 copiago_ui::settings_page::DriverState::Failed
                     | copiago_ui::settings_page::DriverState::ServiceUnavailable
             ) {

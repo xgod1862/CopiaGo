@@ -304,11 +304,14 @@ impl Builder<'_> {
     fn driver_box(&mut self, driver: DriverState) -> Result<()> {
         let (scene, language) = (self.scene, self.language);
         let note = scene.wrapped_text(
-            &tr!(language, if driver == DriverState::ServiceUnavailable {
-                SERVICE_HELP
-            } else {
-                DRIVER_HELP
-            }),
+            &tr!(
+                language,
+                if driver == DriverState::ServiceUnavailable {
+                    SERVICE_HELP
+                } else {
+                    DRIVER_HELP
+                }
+            ),
             TextStyle {
                 font: Font::Regular,
                 size: 12.0,
@@ -354,7 +357,10 @@ impl Builder<'_> {
             false,
             ControlRole::Button,
         )?;
-        if matches!(driver, DriverState::Failed | DriverState::ServiceUnavailable) {
+        if matches!(
+            driver,
+            DriverState::Failed | DriverState::ServiceUnavailable
+        ) {
             let name = tr!(language, "在 Microsoft Store 中查找").into_owned();
             let store = Button::text(
                 scene,

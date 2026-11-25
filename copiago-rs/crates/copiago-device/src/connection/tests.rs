@@ -552,14 +552,22 @@ async fn first_usb_timeout_retries_once_then_shows_the_actual_problem() {
         &record(PHONE),
     )
     .await;
-    let Ok(error) = error else { panic!("setup interrupted") };
+    let Ok(error) = error else {
+        panic!("setup interrupted")
+    };
     assert_eq!(
         phone.attempts(),
-        [Transport::Wifi, Transport::Usb(USB_ID), Transport::Usb(USB_ID)]
+        [
+            Transport::Wifi,
+            Transport::Usb(USB_ID),
+            Transport::Usb(USB_ID)
+        ]
     );
     assert_eq!(
         error.wait(true).message,
-        message!("USB 连接超时。请把 iPhone 直接插在电脑机身的 USB 口（不要经过扩展坞或延长线），保持解锁，再点「继续连接」。")
+        message!(
+            "USB 连接超时。请把 iPhone 直接插在电脑机身的 USB 口（不要经过扩展坞或延长线），保持解锁，再点「继续连接」。"
+        )
     );
 }
 
@@ -583,7 +591,11 @@ async fn usb_trust_recovery_is_scoped_to_the_first_setup_and_the_same_phone() {
         let connected = Cell::new(false);
         let emit = |event| {
             if let DeviceEvent::Status(status, detail) = event {
-                if detail == message!("正在重新请求 USB 信任。请在这台 iPhone 上点「信任」并输入锁屏密码。") {
+                if detail
+                    == message!(
+                        "正在重新请求 USB 信任。请在这台 iPhone 上点「信任」并输入锁屏密码。"
+                    )
+                {
                     phone.attached.set(Some(replacement));
                 }
                 if status == (ConnState::Connected { wireless: false }) {
@@ -595,7 +607,12 @@ async fn usb_trust_recovery_is_scoped_to_the_first_setup_and_the_same_phone() {
         };
         let mut id = USB_ID;
         let result = attempt_usb(
-            &phone, &mut inputs, &emit, &mut state, &record(PHONE), &mut id,
+            &phone,
+            &mut inputs,
+            &emit,
+            &mut state,
+            &record(PHONE),
+            &mut id,
         )
         .await;
         let should_connect = first_setup && renewal.is_ok() && replacement == PHONE;
@@ -603,12 +620,17 @@ async fn usb_trust_recovery_is_scoped_to_the_first_setup_and_the_same_phone() {
         assert_eq!(phone.attempts().len(), if should_connect { 2 } else { 1 });
         let calls = phone.calls.borrow();
         assert_eq!(
-            calls.iter()
+            calls
+                .iter()
                 .filter(|(_, call)| matches!(call, Call::RenewTrust(serial) if serial == PHONE))
                 .count(),
             if first_setup { 1 } else { 0 },
         );
-        assert!(!calls.iter().any(|(_, call)| matches!(call, Call::Forget | Call::Pair)));
+        assert!(
+            !calls
+                .iter()
+                .any(|(_, call)| matches!(call, Call::Forget | Call::Pair))
+        );
         if !first_setup {
             assert_eq!(result.ok(), Some(stale));
         } else if renewal.is_err() {
@@ -622,13 +644,25 @@ async fn usb_trust_recovery_is_scoped_to_the_first_setup_and_the_same_phone() {
 #[test]
 fn first_setup_keeps_actionable_causes() {
     for (error, expected) in [
-        (Failure::Usb(UsbProbeError::DeviceLocked), "iPhone 已锁定。请解锁并停留在主屏幕，然后点「继续连接」。"),
-        (Failure::Usb(UsbProbeError::Usbmuxd), crate::usb::APPLE_SERVICE_UNAVAILABLE),
-        (OFFLINE, "无线未找到这台 iPhone，USB 也未检测到它。请重新插紧数据线或换一个电脑 USB 口。"),
+        (
+            Failure::Usb(UsbProbeError::DeviceLocked),
+            "iPhone 已锁定。请解锁并停留在主屏幕，然后点「继续连接」。",
+        ),
+        (
+            Failure::Usb(UsbProbeError::Usbmuxd),
+            crate::usb::APPLE_SERVICE_UNAVAILABLE,
+        ),
+        (
+            OFFLINE,
+            "无线未找到这台 iPhone，USB 也未检测到它。请重新插紧数据线或换一个电脑 USB 口。",
+        ),
     ] {
         assert_eq!(error.wait(true).message, Message::new(expected));
     }
-    assert_eq!(Failure::DeveloperModeRequired.after_usb(Failure::Usb(UsbProbeError::Timeout)), Failure::DeveloperModeRequired);
+    assert_eq!(
+        Failure::DeveloperModeRequired.after_usb(Failure::Usb(UsbProbeError::Timeout)),
+        Failure::DeveloperModeRequired
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -636,7 +670,13 @@ async fn explicit_retry_recovers_an_unfinished_pairing_after_restart() {
     let stale = Session::Failure(Failure::Usb(UsbProbeError::TrustRequired));
     let phone = FakePhone::new(
         Some(PHONE),
-        [Session::Failure(OFFLINE), stale, Session::Failure(OFFLINE), stale, Session::Connected],
+        [
+            Session::Failure(OFFLINE),
+            stale,
+            Session::Failure(OFFLINE),
+            stale,
+            Session::Connected,
+        ],
     );
     let (send, mut commands) = mpsc::channel(4);
     let mut inputs = rig(&mut commands, (), None);

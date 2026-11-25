@@ -41,9 +41,9 @@ impl Host<'_> {
             "event=report_issue copied={copied} opened={opened}"
         ));
         let notice: Message = match (opened, copied) {
-            (true, true) => message!(
-                "已复制诊断信息并打开 GitHub。登录后在问题描述里按 Ctrl+V 粘贴即可提交。"
-            ),
+            (true, true) => {
+                message!("已复制诊断信息并打开 GitHub。登录后在问题描述里按 Ctrl+V 粘贴即可提交。")
+            }
             (true, false) => message!(
                 "已打开 GitHub，但诊断信息复制失败。请先点「复制诊断信息」，再粘贴到问题描述里。"
             ),

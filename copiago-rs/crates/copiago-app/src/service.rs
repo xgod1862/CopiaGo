@@ -28,15 +28,13 @@ use windows_sys::{
             Services::{
                 ChangeServiceConfigW, CloseServiceHandle, ControlService, OpenSCManagerW,
                 OpenServiceW, QueryServiceStatus, SC_HANDLE, SC_MANAGER_CONNECT,
-                SERVICE_AUTO_START, SERVICE_CHANGE_CONFIG, SERVICE_CONTROL_STOP,
-                SERVICE_NO_CHANGE, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START,
-                SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STOP, SERVICE_STOP_PENDING,
-                SERVICE_STOPPED, StartServiceW,
+                SERVICE_AUTO_START, SERVICE_CHANGE_CONFIG, SERVICE_CONTROL_STOP, SERVICE_NO_CHANGE,
+                SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING,
+                SERVICE_STATUS, SERVICE_STOP, SERVICE_STOP_PENDING, SERVICE_STOPPED, StartServiceW,
             },
             Threading::{
                 GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32,
-                PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
-                WaitForSingleObject,
+                PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, WaitForSingleObject,
             },
         },
         UI::{
@@ -460,18 +458,33 @@ mod tests {
     fn explains_why_nothing_listens() {
         let missing = report(Some(false), None, None);
         assert_eq!(missing.diagnose(false), Diagnosis::NotInstalled);
-        let disabled = report(Some(true), Some(RunState::Stopped), Some(StartType::Disabled));
+        let disabled = report(
+            Some(true),
+            Some(RunState::Stopped),
+            Some(StartType::Disabled),
+        );
         assert_eq!(disabled.diagnose(false), Diagnosis::Disabled);
         let stopped = report(Some(true), Some(RunState::Stopped), Some(StartType::Manual));
         assert_eq!(stopped.diagnose(false), Diagnosis::Stopped);
-        let silent = report(Some(true), Some(RunState::Running), Some(StartType::Automatic));
+        let silent = report(
+            Some(true),
+            Some(RunState::Running),
+            Some(StartType::Automatic),
+        );
         assert_eq!(silent.diagnose(false), Diagnosis::Unresponsive);
-        assert_eq!(report(None, None, None).diagnose(false), Diagnosis::Unresponsive);
+        assert_eq!(
+            report(None, None, None).diagnose(false),
+            Diagnosis::Unresponsive
+        );
     }
 
     #[test]
     fn a_listener_is_enough_until_enumeration_fails() {
-        let mut running = report(Some(true), Some(RunState::Running), Some(StartType::Automatic));
+        let mut running = report(
+            Some(true),
+            Some(RunState::Running),
+            Some(StartType::Automatic),
+        );
         running.listening = true;
         running.port_owner = Some("AppleMobileDeviceService.exe".into());
         assert_eq!(running.diagnose(false), Diagnosis::Listening);
@@ -484,7 +497,11 @@ mod tests {
 
     #[test]
     fn names_a_foreign_port_owner() {
-        let mut taken = report(Some(true), Some(RunState::Stopped), Some(StartType::Automatic));
+        let mut taken = report(
+            Some(true),
+            Some(RunState::Stopped),
+            Some(StartType::Automatic),
+        );
         taken.listening = true;
         taken.port_owner = Some("srcds.exe".into());
         assert_eq!(taken.diagnose(false), Diagnosis::PortTaken);

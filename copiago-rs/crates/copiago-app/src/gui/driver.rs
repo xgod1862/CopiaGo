@@ -191,7 +191,10 @@ impl DriverInstall {
     pub fn start(now: Instant, repair: bool) -> io::Result<Self> {
         let (process, timeout) = if repair {
             diagnostic::event(format_args!("event=service_repair_started"));
-            (Process::Repair(Some(service::spawn_repair())), REPAIR_TIMEOUT)
+            (
+                Process::Repair(Some(service::spawn_repair())),
+                REPAIR_TIMEOUT,
+            )
         } else {
             let child = Command::new("winget.exe")
                 .args([
@@ -263,7 +266,9 @@ impl DriverInstall {
         if matches!(self.process, Process::Repair(_)) || state == DriverState::ServiceUnavailable {
             (
                 DriverState::ServiceUnavailable,
-                message!("Apple 连接服务仍不可用。请重启电脑后再试；仍不行请在 Microsoft Store 中修复或重新安装 Apple Devices。"),
+                message!(
+                    "Apple 连接服务仍不可用。请重启电脑后再试；仍不行请在 Microsoft Store 中修复或重新安装 Apple Devices。"
+                ),
             )
         } else {
             (
@@ -301,17 +306,23 @@ impl Process {
                     return Finish::Running;
                 }
                 let result = handle.take().map(JoinHandle::join);
-                diagnostic::event(format_args!("event=service_repair_finished result={result:?}"));
+                diagnostic::event(format_args!(
+                    "event=service_repair_finished result={result:?}"
+                ));
                 match result {
                     Some(Ok(Ok(0))) => Finish::Succeeded,
                     Some(Ok(Ok(REPAIR_NOT_INSTALLED))) => Finish::Failed((
                         DriverState::Missing,
-                        message!("未找到 Apple Mobile Device Service。请点「安装连接组件」重新安装。"),
+                        message!(
+                            "未找到 Apple Mobile Device Service。请点「安装连接组件」重新安装。"
+                        ),
                     )),
                     Some(Ok(Err(error))) if error.raw_os_error() == Some(ERROR_CANCELLED) => {
                         Finish::Failed((
                             DriverState::ServiceUnavailable,
-                            message!("已取消管理员授权，未修复 Apple 连接服务。需要时请再点「修复连接服务」，并在 Windows 弹窗中点「是」。"),
+                            message!(
+                                "已取消管理员授权，未修复 Apple 连接服务。需要时请再点「修复连接服务」，并在 Windows 弹窗中点「是」。"
+                            ),
                         ))
                     }
                     _ => Finish::Unsuccessful,

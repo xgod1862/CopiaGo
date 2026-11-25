@@ -1,13 +1,14 @@
 //! USB discovery and the CoreDevice tunnel.
 
+use std::cell::Cell;
 use std::fmt;
 use std::fs;
 use std::future::pending;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use copiago_core::{dpapi, i18n::Language, paths::DEVICE_DATA_DIR};
+use copiago_core::{diagnostic, dpapi, i18n::Language, paths::DEVICE_DATA_DIR};
 use futures_util::StreamExt;
 use idevice::{
     Idevice, IdeviceError, IdeviceService,
@@ -33,9 +34,18 @@ use crate::{
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Opening the CoreDevice tunnel of a paired phone. The Python release had no limit here
+/// and slow ports, hubs and some cables need well over 10 s right after a trust prompt.
+const USB_TUNNEL_TIMEOUT: Duration = Duration::from_secs(25);
 const USBMUX_PAIR_RECORD_TIMEOUT: Duration = Duration::from_secs(3);
 const LISTEN_RETRY: Duration = Duration::from_secs(4);
-pub(crate) const DEVELOPER_MENU_RETRY: &str = "请在 iPhone「设置 → 隐私与安全性」开启开发者模式并按提示重启。如果没有这个选项，请用数据线连接并解锁这台 iPhone，然后重试。";
+/// Status when the Apple Mobile Device Service (usbmuxd) cannot be reached or cannot list
+/// devices. The host recognizes it to show the service diagnosis and repair controls.
+pub const APPLE_SERVICE_UNAVAILABLE: &str =
+    "无法连接电脑上的 Apple 设备连接服务（与手机和数据线无关），正在检查原因…";
+/// Developer Mode is off and the Settings switch could not be revealed, usually because
+/// the phone is not on USB. Revealing needs the trusted USB connection.
+pub(crate) const DEVELOPER_MENU_RETRY: &str = "iPhone 需要开启开发者模式，但「设置」里还没有这个开关。请用数据线连接并解锁 iPhone，再点「继续连接」，CopiaGo 会让这个开关出现。";
 
 mod pairing;
 pub(crate) use pairing::{PairingError, pair_over_usb, renew_usb_trust};
@@ -253,14 +263,60 @@ pub(crate) async fn open_paired_usb_tunnel(
     id: u32,
 ) -> Result<RsdTunnel, UsbProbeError> {
     let provider = paired_usb_provider(addr, paired, id);
-    let (tunnel, _) = timeout(PROBE_TIMEOUT, open_usb_tunnel(&provider, data_dir))
+    let step = Cell::new(TunnelStep::Lockdown);
+    let started = Instant::now();
+    let opened = timeout(USB_TUNNEL_TIMEOUT, open_usb_tunnel_traced(&provider, data_dir, &step))
         .with_subscriber(Dispatch::none())
         .await
-        .map_err(|_| UsbProbeError::Timeout)??;
+        .unwrap_or(Err(UsbProbeError::Timeout));
+    let (tunnel, _) = opened.inspect_err(|error| {
+        diagnostic::event(format_args!(
+            "event=usb_tunnel_failed step={:?} error={error:?} ms={}",
+            step.get(),
+            started.elapsed().as_millis()
+        ));
+    })?;
     if !paired.matches_rsd(&tunnel.rsd) {
+        diagnostic::event(format_args!("event=usb_tunnel_failed step=identity"));
         return Err(UsbProbeError::Rsd);
     }
     Ok(tunnel)
+}
+
+/// Furthest step reached while opening a USB tunnel, for the diagnostic log.
+#[derive(Clone, Copy, Debug)]
+enum TunnelStep {
+    Lockdown,
+    CoreDeviceProxy,
+    SoftwareTunnel,
+    RsdConnect,
+    RsdHandshake,
+}
+
+/// Logs a library error before it is reduced to a coarse category. Long hexadecimal
+/// runs such as identifiers are masked, because users paste the log into public issues.
+fn traced(error: impl fmt::Debug, mapped: UsbProbeError) -> UsbProbeError {
+    diagnostic::event(format_args!(
+        "event=usb_step_error step={mapped:?} detail={}",
+        sanitize(&format!("{error:?}"))
+    ));
+    mapped
+}
+
+fn sanitize(detail: &str) -> String {
+    let mut output = String::with_capacity(detail.len().min(160));
+    let mut run = String::new();
+    for character in detail.chars().chain(Some(' ')) {
+        if character.is_ascii_hexdigit() || character == '-' {
+            run.push(character);
+            continue;
+        }
+        output.push_str(if run.len() >= 12 { "<id>" } else { &run });
+        run.clear();
+        output.push(character);
+    }
+    output.pop();
+    output.chars().take(160).collect()
 }
 
 /// UsbMux attach eligibility is read at fallback time. A detach can also end
@@ -391,12 +447,15 @@ async fn connect_lockdown_service(
         .start_service(service)
         .await
         .map_err(|error| device_error(error, step))?;
-    let mut connection = provider.connect(port).await.map_err(|_| step)?;
+    let mut connection = provider
+        .connect(port)
+        .await
+        .map_err(|error| traced(error, step))?;
     if use_tls {
         connection
             .start_session(&record.0, legacy_tls)
             .await
-            .map_err(|_| step)?;
+            .map_err(|error| traced(error, step))?;
     }
     Ok(connection)
 }
@@ -465,7 +524,17 @@ async fn open_usb_tunnel(
     provider: &UsbmuxdProvider,
     data_dir: &Path,
 ) -> Result<(RsdTunnel, PairingRecordSource), UsbProbeError> {
+    open_usb_tunnel_traced(provider, data_dir, &Cell::new(TunnelStep::Lockdown)).await
+}
+
+async fn open_usb_tunnel_traced(
+    provider: &UsbmuxdProvider,
+    data_dir: &Path,
+    step: &Cell<TunnelStep>,
+) -> Result<(RsdTunnel, PairingRecordSource), UsbProbeError> {
+    step.set(TunnelStep::Lockdown);
     let (mut lockdown, record, legacy_tls, source) = trusted_lockdown(provider, data_dir).await?;
+    step.set(TunnelStep::CoreDeviceProxy);
     let connection = connect_lockdown_service(
         provider,
         &mut lockdown,
@@ -479,20 +548,23 @@ async fn open_usb_tunnel(
 
     let proxy = CoreDeviceProxy::new(connection)
         .await
-        .map_err(|_| UsbProbeError::CoreDeviceProxy)?;
+        .map_err(|error| traced(error, UsbProbeError::CoreDeviceProxy))?;
     drop(lockdown);
     let rsd_port = proxy.tunnel_info().server_rsd_port;
+    step.set(TunnelStep::SoftwareTunnel);
     let mut adapter = proxy
         .create_software_tunnel()
-        .map_err(|_| UsbProbeError::CoreDeviceProxy)?
+        .map_err(|error| traced(error, UsbProbeError::CoreDeviceProxy))?
         .to_async_handle();
+    step.set(TunnelStep::RsdConnect);
     let stream = adapter
         .connect(rsd_port)
         .await
-        .map_err(|_| UsbProbeError::Rsd)?;
+        .map_err(|error| traced(error, UsbProbeError::Rsd))?;
+    step.set(TunnelStep::RsdHandshake);
     let rsd = RsdHandshake::new(stream)
         .await
-        .map_err(|_| UsbProbeError::Rsd)?;
+        .map_err(|error| traced(error, UsbProbeError::Rsd))?;
     Ok((RsdTunnel { adapter, rsd }, source))
 }
 
@@ -506,7 +578,7 @@ fn device_error(error: IdeviceError, step: UsbProbeError) -> UsbProbeError {
         IdeviceError::InvalidHostID => UsbProbeError::TrustRequired,
         IdeviceError::DeviceLocked | IdeviceError::PasswordProtected => UsbProbeError::DeviceLocked,
         IdeviceError::DeveloperModeNotEnabled => UsbProbeError::DeveloperModeRequired,
-        _ => step,
+        error => traced(error, step),
     }
 }
 

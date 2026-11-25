@@ -141,7 +141,6 @@ iPhone 已连接成功。现在可以拔掉数据线，之后在同一 Wi-Fi 下
 请暂时只连接一台 iPhone	Connect only one iPhone to continue.
 视频	Video
 文件或其他内容	File or other content
-等待 Apple 设备连接服务或 iPhone…	Waiting for the Apple device service or your iPhone…
 需要开启开发者模式：在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启并重启手机，解锁后点「继续连接」	Enable Developer Mode in Settings → Privacy & Security on your iPhone. Restart and unlock the phone, then select Continue.
 iPhone 上选择了「不信任」。请重新插拔数据线，在提示时点「信任」，再点「连接 iPhone」	Trust was declined on the iPhone. Reconnect the USB cable, tap Trust when asked, then select Connect iPhone.
 请先解锁 iPhone，再点「连接 iPhone」	Unlock your iPhone, then select Connect iPhone.
@@ -154,7 +153,6 @@ iPhone 上选择了「不信任」。请重新插拔数据线，在提示时点�
 已配对多台 iPhone。请在设置中点「忘记此 iPhone」后重新配对	More than one iPhone is paired. Select Forget this iPhone in Settings, then pair again.
 连接未完成：请保持 iPhone 解锁并连着数据线，然后点「继续连接」	Connection did not finish. Keep your iPhone connected and unlocked, then select Continue.
 iPhone 已锁定。请解锁并停留在主屏幕，然后点「继续连接」。	Unlock your iPhone, stay on its Home Screen, then select Continue.
-USB 连接超时。请将 iPhone 直接接到电脑的 USB 口，然后点「继续连接」。	USB timed out. Plug your iPhone directly into the PC, then select Continue.
 已找到 iPhone，但开发者通道未能打开。请解锁手机，重新插拔数据线后重试。	iPhone found. The developer connection could not open. Unlock your iPhone, reconnect the cable, and retry.
 已连到 iPhone，但未能确认手机提供的服务。请保持解锁，重新插拔数据线后重试。	Connected to iPhone, but its services could not be verified. Keep it unlocked, reconnect the cable, and retry.
 已找到 iPhone，但 USB 会话未能建立。请重新插拔数据线并保持手机解锁。	iPhone found. The USB session could not open. Reconnect the cable and keep your iPhone unlocked.
@@ -164,7 +162,6 @@ iPhone 拒绝了信任请求。请重新插拔数据线，点「继续连接」�
 USB 信任未能恢复。请解锁 iPhone，重新插拔数据线，再点「继续连接」。	USB trust could not be restored. Unlock your iPhone, reconnect the cable, then select Continue.
 无线未找到这台 iPhone，USB 也未检测到它。请重新插紧数据线或换一个电脑 USB 口。	This iPhone was not found on Wi-Fi or USB. Reconnect the cable or try another USB port on the PC.
 无线连接失败，USB 也未检测到这台 iPhone。请将手机直接接到电脑后重试。	Wi-Fi failed and this iPhone was not found over USB. Plug it directly into the PC and retry.
-与 iPhone 的连接中断。请接好数据线并解锁手机，再点「继续连接」。	The iPhone connection ended. Reconnect the cable, unlock the phone, then select Continue.
 正在通过 USB 自动重试一次…	Retrying the USB connection once…
 正在重新请求 USB 信任。请在这台 iPhone 上点「信任」并输入锁屏密码。	Requesting USB trust again. Tap Trust on this iPhone and enter its passcode.
 正在建立无线连接…	Connecting over Wi-Fi…
@@ -198,10 +195,26 @@ Apple 连接服务不可用或无法读取设备。修复将请求管理员权�
 正在处理…	Working…
 修复连接服务	Repair connection service
 正在修复 Apple 连接服务，请完成 Windows 管理员授权。	Repairing the Apple connection service. Approve the Windows administrator prompt.
-Apple 连接服务仍不可用。请重新启动电脑，或在 Microsoft Store 中修复或重新安装 Apple Devices。	The Apple connection service is still unavailable. Restart your PC, or repair or reinstall Apple Devices through Microsoft Store.
-尚未发现 Apple 连接组件，请先安装。	Apple connection components were not found. Install them first.
-Apple 连接服务不可用，请先点「修复连接服务」。	The Apple connection service is unavailable. Select Repair connection service first.
-已取消管理员授权，未修复 Apple 连接服务。	Administrator permission was cancelled. The Apple connection service was not repaired.
-无法启动服务修复。请在 Windows 服务中启动 Apple Mobile Device Service，或修复 Apple Devices。	Could not start the repair. Start Apple Mobile Device Service in Windows Services, or repair Apple Devices.
-请在 iPhone「设置 → 隐私与安全性」开启开发者模式并按提示重启。如果没有这个选项，请用数据线连接并解锁这台 iPhone，然后重试。	Open Settings → Privacy & Security on your iPhone, turn on Developer Mode, and follow the restart prompts. If the option is missing, connect this iPhone by USB, unlock it, and retry.
-在 iPhone 上重新进入「设置 → 隐私与安全性」，打开「开发者模式」并按提示重启。重启后解锁，在弹窗中确认开启，再点下方按钮。	Reopen Settings → Privacy & Security on your iPhone. Turn on Developer Mode and restart when prompted. Unlock the phone, confirm Turn On, then continue below.
+复制诊断信息	Copy diagnostics
+反馈问题	Report a problem
+遇到问题	Need help?
+诊断信息已复制。可以直接粘贴发给开发者，或点「反馈问题」提交到 GitHub。	Diagnostics copied. Paste them to the developer, or select Report a problem to open a GitHub issue.
+无法复制诊断信息，请稍后重试。	Could not copy diagnostics. Try again later.
+已复制诊断信息并打开 GitHub。登录后在问题描述里按 Ctrl+V 粘贴即可提交。	Diagnostics copied and GitHub opened. Sign in, then press Ctrl+V in the description to paste them.
+已打开 GitHub，但诊断信息复制失败。请先点「复制诊断信息」，再粘贴到问题描述里。	GitHub opened, but diagnostics could not be copied. Select Copy diagnostics, then paste them into the description.
+无法打开浏览器。诊断信息已复制，可以直接粘贴发给开发者。	Could not open the browser. Diagnostics are copied; paste them to the developer.
+无法打开浏览器，也无法复制诊断信息，请稍后重试。	Could not open the browser or copy diagnostics. Try again later.
+未找到 Apple 设备连接组件。点「安装连接组件」即可自动安装。	Apple connection components were not found. Select Install components to install them.
+Apple Mobile Device Service 已被禁用，常见于系统优化软件。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会把它改回自动启动并启动它。	Apple Mobile Device Service is disabled, often by a system optimizer. Select Repair connection service and choose Yes in the Windows prompt. CopiaGo sets it back to automatic and starts it.
+Apple Mobile Device Service 没有运行。点「修复连接服务」并在 Windows 弹窗中点「是」即可启动。	Apple Mobile Device Service is not running. Select Repair connection service and choose Yes in the Windows prompt to start it.
+端口 27015 被「{program}」占用，Apple 连接服务无法工作。请退出该程序（或在任务管理器中结束它），然后点「修复连接服务」。	Port 27015 is used by {program}, so the Apple connection service cannot work. Quit that program (or end it in Task Manager), then select Repair connection service.
+Apple Mobile Device Service 没有响应。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会重启它；仍不行请重启电脑。	Apple Mobile Device Service is not responding. Select Repair connection service and choose Yes in the Windows prompt to restart it. If that fails, restart your PC.
+Apple 连接服务仍不可用。请重启电脑后再试；仍不行请在 Microsoft Store 中修复或重新安装 Apple Devices。	The Apple connection service is still unavailable. Restart your PC and try again. If that fails, repair or reinstall Apple Devices through Microsoft Store.
+未找到 Apple Mobile Device Service。请点「安装连接组件」重新安装。	Apple Mobile Device Service was not found. Select Install components to reinstall it.
+已取消管理员授权，未修复 Apple 连接服务。需要时请再点「修复连接服务」，并在 Windows 弹窗中点「是」。	Administrator permission was cancelled, so the service was not repaired. Select Repair connection service again and choose Yes in the Windows prompt.
+无法启动服务修复。请重启电脑；仍不行请在 Microsoft Store 中修复 Apple Devices。	Could not start the repair. Restart your PC. If that fails, repair Apple Devices through Microsoft Store.
+无法连接电脑上的 Apple 设备连接服务（与手机和数据线无关），正在检查原因…	Cannot reach the Apple connection service on this PC (not a phone or cable problem). Checking why…
+USB 连接超时。请把 iPhone 直接插在电脑机身的 USB 口（不要经过扩展坞或延长线），保持解锁，再点「继续连接」。	USB timed out. Plug your iPhone directly into a USB port on the PC (no hub or extension), keep it unlocked, then select Continue.
+与 iPhone 的连接中断。请插紧数据线并保持手机解锁，再点「继续连接」；反复断开时请换一个 USB 口或数据线。	The iPhone connection ended. Seat the cable firmly, keep the phone unlocked, then select Continue. If it keeps dropping, try another USB port or cable.
+iPhone 需要开启开发者模式，但「设置」里还没有这个开关。请用数据线连接并解锁 iPhone，再点「继续连接」，CopiaGo 会让这个开关出现。	Your iPhone needs Developer Mode, but the switch is not in Settings yet. Connect it by USB, unlock it, and select Continue. CopiaGo will make the switch appear.
+打开 iPhone「设置 → 隐私与安全性」，在底部找到「开发者模式」并打开，按提示重启。重启后解锁，在弹窗中点「打开」，再点下方按钮。若仍没有该开关，可能是公司或学校管理的设备。	Open Settings → Privacy & Security on your iPhone, turn on Developer Mode near the bottom, and restart when prompted. Unlock it, tap Turn On, then continue below. If the switch is missing, the phone may be managed by a company or school.

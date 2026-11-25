@@ -114,9 +114,13 @@ impl Host<'_> {
         connection.phase = phase;
         connection.progress = None;
         let mut show_guide = false;
+        let service_failed = detail == Message::new(copiago_device::APPLE_SERVICE_UNAVAILABLE);
+        // Diagnose once per failure: the check can take 300 ms on the UI thread.
+        let repeated = connection.detail.as_ref() == Some(&detail);
         if self.driver_install.is_none()
             && (connection.device.is_none() || state == ConnState::Hold)
-            && detail == message!("等待 Apple 设备连接服务或 iPhone…")
+            && service_failed
+            && !repeated
         {
             // An explicit retry of a saved phone can land here after upgrading.
             // Use the same repair controls; restore the device card on connection.
@@ -125,14 +129,11 @@ impl Host<'_> {
                 connection.first_connection = false;
                 show_guide = self.popup.visible() && self.popup.screen() != Screen::Guide;
             }
-            let detected = super::driver::detect();
-            // A listening socket is insufficient when the actual device-list
-            // request failed. Preserve a repair action for protocol failures too.
-            connection.driver = if detected == copiago_ui::settings_page::DriverState::Missing {
-                detected
-            } else {
-                copiago_ui::settings_page::DriverState::ServiceUnavailable
-            };
+            // The worker reached this state because the device list could not be read,
+            // so a listening port alone is not a pass.
+            let check = super::driver::diagnose(true);
+            connection.driver = check.state;
+            self.settings.set_notice(check.notice);
         }
         if self.connection.just_forgot && state == ConnState::Setup {
             connection.detail = Some(message!("已忘记 iPhone。请用数据线连接后重新配对"));

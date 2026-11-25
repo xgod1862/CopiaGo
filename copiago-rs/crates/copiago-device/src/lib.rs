@@ -25,7 +25,8 @@ pub use contract::{ConnState, DeviceCommand, DeviceEvent, FileProgress};
 pub use pasteboard::{FileTransferError, PasteboardError};
 #[cfg(windows)]
 pub use usb::{
-    PairingRecordSource, UsbProbe, UsbProbeError, UsbWatchError, probe_usb, sync_usb, watch_usb,
+    APPLE_SERVICE_UNAVAILABLE, PairingRecordSource, UsbProbe, UsbProbeError, UsbWatchError,
+    probe_usb, sync_usb, watch_usb,
 };
 #[cfg(windows)]
 pub use wifi::{

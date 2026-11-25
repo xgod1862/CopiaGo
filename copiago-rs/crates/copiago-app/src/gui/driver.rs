@@ -1,95 +1,180 @@
-//! Apple device support on Windows. Installation runs only after activating its button.
+//! Apple device support on Windows. Installation and repair run only after the user
+//! activates their button; diagnosis is read-only.
 
 use std::{
     io,
-    net::{Ipv4Addr, SocketAddrV4, TcpStream},
     os::windows::process::CommandExt,
     process::{Child, Command, Stdio},
-    ptr::null_mut,
+    ptr::{null, null_mut},
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-use copiago_core::i18n::{Message, message};
+use copiago_core::{
+    diagnostic,
+    i18n::{Message, message},
+};
 use copiago_ui::settings_page::DriverState;
 use windows_sys::{
     Win32::{
-        Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::ERROR_SUCCESS,
         System::{
-            Registry::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, RegCloseKey, RegOpenKeyExW},
-            SystemInformation::GetSystemDirectoryW,
-            Threading::{CREATE_NO_WINDOW, GetExitCodeProcess, WaitForSingleObject},
+            Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW},
+            Threading::CREATE_NO_WINDOW,
         },
-        UI::{
-            Shell::{
-                SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
-                ShellExecuteExW, ShellExecuteW,
-            },
-            WindowsAndMessaging::{SW_HIDE, SW_SHOWNORMAL},
-        },
+        UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
     },
+    core::PCWSTR,
     w,
 };
 
+use crate::service::{self, Diagnosis, REPAIR_NOT_INSTALLED};
+
+/// Raw OS error when the user answers "No" in the UAC prompt.
+const ERROR_CANCELLED: i32 = 1223;
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// Covers the UAC prompt, stopping and starting the service, and the port coming up.
+const REPAIR_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Quick state for the pairing guide. Prefer [`diagnose`] when a precise reason is shown.
 pub(super) fn detect() -> DriverState {
-    classify(registered(), reachable())
+    driver_state(service::inspect().diagnose(false))
 }
 
-fn classify(registered: bool, reachable: bool) -> DriverState {
-    if reachable {
-        DriverState::Ready
-    } else if registered {
-        DriverState::ServiceUnavailable
-    } else {
-        DriverState::Missing
+/// Result of [`diagnose`].
+pub(super) struct ServiceCheck {
+    pub state: DriverState,
+    /// Precise reason and next step; `None` when nothing looks wrong.
+    pub notice: Option<Message>,
+    /// Starting or restarting the service is likely to fix it. A port held by another
+    /// program or a missing installation needs a different action first.
+    pub repairable: bool,
+}
+
+/// Explains why the Apple service cannot be used and logs the facts behind it.
+/// `enumeration_failed` is true when the worker reached the port but could not list
+/// devices.
+pub(super) fn diagnose(enumeration_failed: bool) -> ServiceCheck {
+    let report = service::inspect();
+    let diagnosis = report.diagnose(enumeration_failed);
+    diagnostic::event(format_args!(
+        "event=service_check enumeration_failed={enumeration_failed} diagnosis={diagnosis:?} {}",
+        report.log_fields()
+    ));
+    let notice = match diagnosis {
+        Diagnosis::Listening => None,
+        Diagnosis::NotInstalled => Some(message!(
+            "未找到 Apple 设备连接组件。点「安装连接组件」即可自动安装。"
+        )),
+        Diagnosis::Disabled => Some(message!(
+            "Apple Mobile Device Service 已被禁用，常见于系统优化软件。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会把它改回自动启动并启动它。"
+        )),
+        Diagnosis::Stopped => Some(message!(
+            "Apple Mobile Device Service 没有运行。点「修复连接服务」并在 Windows 弹窗中点「是」即可启动。"
+        )),
+        Diagnosis::PortTaken => Some(message!(
+            "端口 27015 被「{program}」占用，Apple 连接服务无法工作。请退出该程序（或在任务管理器中结束它），然后点「修复连接服务」。",
+            program = report.foreign_owner().unwrap_or_default().to_owned(),
+        )),
+        Diagnosis::Unresponsive => Some(message!(
+            "Apple Mobile Device Service 没有响应。点「修复连接服务」并在 Windows 弹窗中点「是」，CopiaGo 会重启它；仍不行请重启电脑。"
+        )),
+    };
+    ServiceCheck {
+        state: driver_state(diagnosis),
+        notice,
+        repairable: matches!(
+            diagnosis,
+            Diagnosis::Disabled | Diagnosis::Stopped | Diagnosis::Unresponsive
+        ),
     }
 }
 
-fn registered() -> bool {
-    let mut key = null_mut();
-    // SAFETY: The registry location is a static, terminated string and the handle output is writable.
+fn driver_state(diagnosis: Diagnosis) -> DriverState {
+    match diagnosis {
+        Diagnosis::Listening => DriverState::Ready,
+        Diagnosis::NotInstalled => DriverState::Missing,
+        Diagnosis::Disabled
+        | Diagnosis::Stopped
+        | Diagnosis::PortTaken
+        | Diagnosis::Unresponsive => DriverState::ServiceUnavailable,
+    }
+}
+
+/// Fixed-format Windows version fields for the diagnostic log and reports.
+pub(super) fn system_summary() -> String {
+    const KEY: PCWSTR = w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
+    let build = read_string(KEY, w!("CurrentBuild")).unwrap_or_else(|| "?".into());
+    let revision = read_dword(KEY, w!("UBR")).map_or_else(|| "?".into(), |ubr| ubr.to_string());
+    let release = read_string(KEY, w!("DisplayVersion")).unwrap_or_else(|| "?".into());
+    let arch = std::env::var("PROCESSOR_ARCHITECTURE").unwrap_or_else(|_| "?".into());
+    format!("os_build={build}.{revision} os_release={release} arch={arch}")
+}
+
+fn read_string(key: PCWSTR, value: PCWSTR) -> Option<String> {
+    let mut buffer = [0u16; 128];
+    let mut bytes = size_of_val(&buffer) as u32;
+    // SAFETY: Key and value are static NUL-terminated strings; the buffer is writable for
+    // `bytes` bytes and RegGetValueW terminates the string it writes.
     let status = unsafe {
-        RegOpenKeyExW(
+        RegGetValueW(
             HKEY_LOCAL_MACHINE,
-            w!("SYSTEM\\CurrentControlSet\\Services\\Apple Mobile Device Service"),
-            0,
-            KEY_QUERY_VALUE,
-            &mut key,
+            key,
+            value,
+            RRF_RT_REG_SZ,
+            null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut bytes,
         )
     };
-    if status == ERROR_SUCCESS {
-        // SAFETY: RegOpenKeyExW returned a newly opened handle.
-        unsafe { RegCloseKey(key) };
-        return true;
+    if status != ERROR_SUCCESS {
+        return None;
     }
-    false
+    let length = buffer.iter().position(|&unit| unit == 0).unwrap_or(0);
+    Some(String::from_utf16_lossy(&buffer[..length]))
 }
 
-fn reachable() -> bool {
-    // A registered service can be stopped. A TCP listener is necessary, but device
-    // enumeration in the worker remains the final protocol-level check.
-    TcpStream::connect_timeout(
-        &SocketAddrV4::new(Ipv4Addr::LOCALHOST, 27015).into(),
-        Duration::from_millis(300),
-    )
-    .is_ok()
+fn read_dword(key: PCWSTR, value: PCWSTR) -> Option<u32> {
+    let mut data = 0u32;
+    let mut bytes = size_of::<u32>() as u32;
+    // SAFETY: Key and value are static NUL-terminated strings; data and bytes are writable.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key,
+            value,
+            RRF_RT_REG_DWORD,
+            null_mut(),
+            (&mut data as *mut u32).cast(),
+            &mut bytes,
+        )
+    };
+    (status == ERROR_SUCCESS).then_some(data)
 }
 
 pub(super) fn open_store() -> io::Result<()> {
-    // SAFETY: This is a fixed, NUL-terminated Store URI. The unused arguments are optional.
+    open_url("ms-windows-store://search/?query=Apple%20Devices")
+}
+
+/// Opens a fixed or percent-encoded URL with the default handler.
+pub(super) fn open_url(url: &str) -> io::Result<()> {
+    let url: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: Both strings are NUL-terminated and live through the call. Other arguments
+    // are optional.
     let result = unsafe {
         ShellExecuteW(
             null_mut(),
             w!("open"),
-            w!("ms-windows-store://search/?query=Apple%20Devices"),
-            std::ptr::null(),
-            std::ptr::null(),
+            url.as_ptr(),
+            null(),
+            null(),
             SW_SHOWNORMAL,
         )
     } as isize;
     if result > 32 {
         Ok(())
     } else {
-        Err(io::Error::from_raw_os_error(result as i32))
+        Err(io::Error::other(format!("ShellExecuteW returned {result}")))
     }
 }
 
@@ -98,46 +183,41 @@ pub(super) struct DriverInstall {
     next_poll: Instant,
     timeout: Instant,
     exited: bool,
-    repair: bool,
 }
 
 impl DriverInstall {
-    /// Runs a user-requested install or an elevated repair of the Apple service.
-    /// A successful process exit is followed by a separate reachability check.
+    /// Runs a user-requested install, or an elevated repair of the Apple service on a
+    /// background thread. A successful exit is followed by a separate reachability check.
     pub fn start(now: Instant, repair: bool) -> io::Result<Self> {
-        if repair {
-            return Ok(Self {
-                process: Process::Repair(start_service_repair()?),
-                next_poll: Instant::now(),
-                timeout: Instant::now() + Duration::from_secs(60),
-                exited: false,
-                repair: true,
-            });
-        }
-        let child = Command::new("winget.exe")
-            .args([
-                "install",
-                "--id",
-                "Apple.AppleMobileDeviceSupport",
-                "--exact",
-                "--source",
-                "winget",
-                "--silent",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-                "--disable-interactivity",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
+        let (process, timeout) = if repair {
+            diagnostic::event(format_args!("event=service_repair_started"));
+            (Process::Repair(Some(service::spawn_repair())), REPAIR_TIMEOUT)
+        } else {
+            let child = Command::new("winget.exe")
+                .args([
+                    "install",
+                    "--id",
+                    "Apple.AppleMobileDeviceSupport",
+                    "--exact",
+                    "--source",
+                    "winget",
+                    "--silent",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                    "--disable-interactivity",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()?;
+            (Process::Install(child), INSTALL_TIMEOUT)
+        };
         Ok(Self {
-            process: Process::Install(child),
+            process,
             next_poll: now + Duration::from_millis(300),
-            timeout: now + Duration::from_secs(300),
+            timeout: now + timeout,
             exited: false,
-            repair: false,
         })
     }
 
@@ -151,16 +231,18 @@ impl DriverInstall {
         }
         self.next_poll = now + Duration::from_millis(300);
         if !self.exited {
-            match self.process.try_wait() {
-                Ok(Some(true)) => self.exited = true,
-                Ok(Some(false)) | Err(_) => return Some(self.failed()),
-                Ok(None) if now < self.timeout => return None,
-                Ok(None) => return Some(self.failed()),
+            match self.process.finish() {
+                Finish::Running if now < self.timeout => return None,
+                Finish::Running => return Some(self.failed()),
+                Finish::Succeeded => self.exited = true,
+                Finish::Failed(result) => return Some(result),
+                Finish::Unsuccessful => return Some(self.failed()),
             }
         }
-        // Neither a successful installer nor a registry entry proves the service
-        // is listening. Allow startup to finish before reporting success.
+        // Neither a successful installer nor a started service proves the port is
+        // listening yet. Allow startup to finish before reporting success.
         if detect() == DriverState::Ready {
+            diagnostic::event(format_args!("event=driver_ready"));
             Some((
                 DriverState::Ready,
                 message!("连接组件已就绪，可以连接 iPhone。"),
@@ -173,10 +255,15 @@ impl DriverInstall {
     }
 
     fn failed(&self) -> (DriverState, Message) {
-        if self.repair || registered() {
+        let state = diagnose(false).state;
+        diagnostic::event(format_args!(
+            "event=driver_failed repair={} state={state:?}",
+            matches!(self.process, Process::Repair(_))
+        ));
+        if matches!(self.process, Process::Repair(_)) || state == DriverState::ServiceUnavailable {
             (
                 DriverState::ServiceUnavailable,
-                message!("Apple 连接服务仍不可用。请重新启动电脑，或在 Microsoft Store 中修复或重新安装 Apple Devices。"),
+                message!("Apple 连接服务仍不可用。请重启电脑后再试；仍不行请在 Microsoft Store 中修复或重新安装 Apple Devices。"),
             )
         } else {
             (
@@ -187,31 +274,47 @@ impl DriverInstall {
     }
 }
 
+enum Finish {
+    Running,
+    Succeeded,
+    Unsuccessful,
+    Failed((DriverState, Message)),
+}
+
 enum Process {
     Install(Child),
-    Repair(HANDLE),
+    /// Taken when joined. Dropping an unjoined handle detaches the thread, so closing
+    /// the app never interrupts a service operation in progress.
+    Repair(Option<JoinHandle<io::Result<u32>>>),
 }
 
 impl Process {
-    fn try_wait(&mut self) -> io::Result<Option<bool>> {
+    fn finish(&mut self) -> Finish {
         match self {
-            Self::Install(child) => child
-                .try_wait()
-                .map(|status| status.map(|status| status.success())),
+            Self::Install(child) => match child.try_wait() {
+                Ok(None) => Finish::Running,
+                Ok(Some(status)) if status.success() => Finish::Succeeded,
+                Ok(Some(_)) | Err(_) => Finish::Unsuccessful,
+            },
             Self::Repair(handle) => {
-                // SAFETY: The owned process handle is kept open until Process is dropped.
-                match unsafe { WaitForSingleObject(*handle, 0) } {
-                    WAIT_TIMEOUT => Ok(None),
-                    WAIT_OBJECT_0 => {
-                        let mut code = 0;
-                        // SAFETY: The handle is valid and the output points to initialized storage.
-                        if unsafe { GetExitCodeProcess(*handle, &mut code) } == 0 {
-                            Err(io::Error::last_os_error())
-                        } else {
-                            Ok(Some(code == 0))
-                        }
+                if handle.as_ref().is_some_and(|thread| !thread.is_finished()) {
+                    return Finish::Running;
+                }
+                let result = handle.take().map(JoinHandle::join);
+                diagnostic::event(format_args!("event=service_repair_finished result={result:?}"));
+                match result {
+                    Some(Ok(Ok(0))) => Finish::Succeeded,
+                    Some(Ok(Ok(REPAIR_NOT_INSTALLED))) => Finish::Failed((
+                        DriverState::Missing,
+                        message!("未找到 Apple Mobile Device Service。请点「安装连接组件」重新安装。"),
+                    )),
+                    Some(Ok(Err(error))) if error.raw_os_error() == Some(ERROR_CANCELLED) => {
+                        Finish::Failed((
+                            DriverState::ServiceUnavailable,
+                            message!("已取消管理员授权，未修复 Apple 连接服务。需要时请再点「修复连接服务」，并在 Windows 弹窗中点「是」。"),
+                        ))
                     }
-                    _ => Err(io::Error::last_os_error()),
+                    _ => Finish::Unsuccessful,
                 }
             }
         }
@@ -220,82 +323,12 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        match self {
-            Self::Install(child) => {
-                if !matches!(child.try_wait(), Ok(Some(_))) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-            }
-            Self::Repair(handle) => {
-                // Do not terminate a service operation if the app closes during repair.
-                // SAFETY: ShellExecuteExW transferred ownership of this handle to us.
-                unsafe { CloseHandle(*handle) };
-            }
+        if let Self::Install(child) = self
+            && !matches!(child.try_wait(), Ok(Some(_)))
+        {
+            let _ = child.kill();
+            let _ = child.wait();
         }
-    }
-}
-
-fn start_service_repair() -> io::Result<HANDLE> {
-    let mut directory = [0u16; 32768];
-    // SAFETY: The supplied UTF-16 buffer is writable for its stated length.
-    let length =
-        unsafe { GetSystemDirectoryW(directory.as_mut_ptr(), directory.len() as u32) } as usize;
-    if length == 0 || length >= directory.len() {
-        return Err(io::Error::last_os_error());
-    }
-    // Use the system executable, never a PowerShell found through PATH. No user
-    // input enters the command; elevation applies only to this fixed service.
-    let executable: Vec<u16> = directory[..length]
-        .iter()
-        .copied()
-        .chain("\\WindowsPowerShell\\v1.0\\powershell.exe".encode_utf16())
-        .chain(Some(0))
-        .collect();
-    let parameters: Vec<u16> = concat!(
-        "-NoProfile -NonInteractive -Command \"try { ",
-        "$ErrorActionPreference = 'Stop'; ",
-        "$s = Get-Service -Name 'Apple Mobile Device Service'; ",
-        "if ($s.Status -eq 'Running') { Restart-Service -Name 'Apple Mobile Device Service' } ",
-        "else { Start-Service -Name 'Apple Mobile Device Service' }; ",
-        "(Get-Service -Name 'Apple Mobile Device Service').WaitForStatus('Running', [TimeSpan]::FromSeconds(15)); ",
-        "exit 0 } catch { exit 1 }\""
-    )
-    .encode_utf16()
-    .chain(Some(0))
-        .collect();
-    // SAFETY: All-zero is a valid initial state for this size-tagged Win32 structure.
-    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-    info.lpVerb = w!("runas");
-    info.lpFile = executable.as_ptr();
-    info.lpParameters = parameters.as_ptr();
-    info.nShow = SW_HIDE;
-    // SAFETY: All strings remain NUL-terminated and alive throughout the call.
-    if unsafe { ShellExecuteExW(&mut info) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if info.hProcess.is_null() {
-        return Err(io::Error::other("service repair returned no process handle"));
-    }
-    Ok(info.hProcess)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn registered_but_stopped_service_is_not_ready() {
-        assert_eq!(classify(true, false), DriverState::ServiceUnavailable);
-    }
-
-    #[test]
-    fn reachable_service_does_not_require_legacy_registry_entry() {
-        assert_eq!(classify(false, true), DriverState::Ready);
-        assert_eq!(classify(true, true), DriverState::Ready);
-        assert_eq!(classify(false, false), DriverState::Missing);
     }
 }
 
@@ -304,4 +337,23 @@ pub(super) fn failed_to_run() -> (DriverState, Message) {
         DriverState::Failed,
         message!("无法运行 Windows 包管理器。可以在 Microsoft Store 安装「Apple Devices」后重试。"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_listener_counts_as_ready() {
+        assert_eq!(driver_state(Diagnosis::Listening), DriverState::Ready);
+        assert_eq!(driver_state(Diagnosis::NotInstalled), DriverState::Missing);
+        for diagnosis in [
+            Diagnosis::Disabled,
+            Diagnosis::Stopped,
+            Diagnosis::PortTaken,
+            Diagnosis::Unresponsive,
+        ] {
+            assert_eq!(driver_state(diagnosis), DriverState::ServiceUnavailable);
+        }
+    }
 }

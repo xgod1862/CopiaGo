@@ -419,6 +419,12 @@ impl Host<'_> {
         }
     }
 
+    /// Writes text such as a diagnostic report. Marked as our own write, so it is
+    /// neither synced to the iPhone nor recorded in the PC history.
+    pub(super) fn write_local_text(&mut self, text: String) -> Result<(), ClipboardError> {
+        self.write_clip(&Clip::Text(text))
+    }
+
     fn write_clip(&mut self, clip: &Clip) -> Result<(), ClipboardError> {
         match clip {
             Clip::Text(text) => self.clipboard.write_text(text),

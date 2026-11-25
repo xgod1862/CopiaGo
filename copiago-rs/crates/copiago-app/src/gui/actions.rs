@@ -79,9 +79,11 @@ impl Host<'_> {
                     self.settings.complete_startup(result);
                 }
                 SettingsEffect::RequestPair => {
-                    self.request_connection(DeviceCommand::RequestPair, connection)
+                    self.request_connection(DeviceCommand::RequestPair, connection, now)
                 }
-                SettingsEffect::Retry => self.request_connection(DeviceCommand::Retry, connection),
+                SettingsEffect::Retry => {
+                    self.request_connection(DeviceCommand::Retry, connection, now)
+                }
                 SettingsEffect::ForgetDevice => self.begin_forget(),
                 SettingsEffect::InstallDriver => self.install_driver(
                     now,
@@ -106,6 +108,8 @@ impl Host<'_> {
                     return;
                 }
                 SettingsEffect::OpenUpdate => self.open_update(),
+                SettingsEffect::CopyDiagnostics => self.copy_diagnostics(),
+                SettingsEffect::ReportIssue => self.report_issue(),
                 SettingsEffect::Close => {
                     self.close_popup(now);
                     return;
@@ -141,20 +145,27 @@ impl Host<'_> {
         }
     }
 
-    fn request_connection(&mut self, command: DeviceCommand, previous: ConnectionState) {
+    fn request_connection(
+        &mut self,
+        command: DeviceCommand,
+        previous: ConnectionState,
+        now: Instant,
+    ) {
         // Saved RemotePairing records can connect over Wi-Fi without the USB
         // service. Only gate a fresh USB pairing on the local service check.
         if previous.device.is_none() && !copiago_device::has_pairing_records(&self.data_dir) {
-            let driver = driver::detect();
-            if driver != DriverState::Ready {
+            let check = driver::diagnose(false);
+            if check.state != DriverState::Ready {
                 let mut connection = previous;
-                connection.driver = driver;
+                connection.driver = check.state;
                 self.settings.set_connection(connection);
-                self.settings.set_notice(Some(if driver == DriverState::Missing {
-                    message!("尚未发现 Apple 连接组件，请先安装。")
-                } else {
-                    message!("Apple 连接服务不可用，请先点「修复连接服务」。")
-                }));
+                self.settings.set_notice(check.notice);
+                // The user asked to connect, and a stopped or disabled service is the
+                // only obstacle: go straight to the repair. Windows still asks for
+                // administrator approval, and success continues the connection.
+                if check.repairable && !self.isolated {
+                    self.start_service_repair(now);
+                }
                 return;
             }
         }
@@ -214,6 +225,18 @@ impl Host<'_> {
         }
     }
 
+    /// Starts the elevated repair through the settings state, which shows its progress.
+    pub(super) fn start_service_repair(&mut self, now: Instant) {
+        if self.driver_install.is_some() {
+            return;
+        }
+        if let Some(SettingsEffect::InstallDriver) =
+            self.settings.activate(SettingsAction::InstallDriver, now)
+        {
+            self.install_driver(now, true);
+        }
+    }
+
     fn install_driver(&mut self, now: Instant, repair: bool) {
         let install = if self.isolated {
             Err(std::io::ErrorKind::PermissionDenied.into())
@@ -222,15 +245,11 @@ impl Host<'_> {
         };
         match install {
             Ok(install) => self.driver_install = Some(install),
-            Err(error) => {
+            Err(_) => {
                 let (state, message) = if repair {
                     (
                         DriverState::ServiceUnavailable,
-                        if error.raw_os_error() == Some(1223) {
-                            message!("已取消管理员授权，未修复 Apple 连接服务。")
-                        } else {
-                            message!("无法启动服务修复。请在 Windows 服务中启动 Apple Mobile Device Service，或修复 Apple Devices。")
-                        },
+                        message!("无法启动服务修复。请重启电脑；仍不行请在 Microsoft Store 中修复 Apple Devices。"),
                     )
                 } else {
                     driver::failed_to_run()
@@ -264,7 +283,7 @@ impl Host<'_> {
                 _ => None,
             };
             if let Some(command) = command {
-                self.request_connection(command, previous);
+                self.request_connection(command, previous, Instant::now());
             }
         }
     }

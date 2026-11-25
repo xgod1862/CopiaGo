@@ -559,7 +559,7 @@ async fn first_usb_timeout_retries_once_then_shows_the_actual_problem() {
     );
     assert_eq!(
         error.wait(true).message,
-        message!("USB 连接超时。请将 iPhone 直接接到电脑的 USB 口，然后点「继续连接」。")
+        message!("USB 连接超时。请把 iPhone 直接插在电脑机身的 USB 口（不要经过扩展坞或延长线），保持解锁，再点「继续连接」。")
     );
 }
 
@@ -623,7 +623,7 @@ async fn usb_trust_recovery_is_scoped_to_the_first_setup_and_the_same_phone() {
 fn first_setup_keeps_actionable_causes() {
     for (error, expected) in [
         (Failure::Usb(UsbProbeError::DeviceLocked), "iPhone 已锁定。请解锁并停留在主屏幕，然后点「继续连接」。"),
-        (Failure::Usb(UsbProbeError::Usbmuxd), "等待 Apple 设备连接服务或 iPhone…"),
+        (Failure::Usb(UsbProbeError::Usbmuxd), crate::usb::APPLE_SERVICE_UNAVAILABLE),
         (OFFLINE, "无线未找到这台 iPhone，USB 也未检测到它。请重新插紧数据线或换一个电脑 USB 口。"),
     ] {
         assert_eq!(error.wait(true).message, Message::new(expected));

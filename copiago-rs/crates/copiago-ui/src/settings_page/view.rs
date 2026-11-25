@@ -291,6 +291,7 @@ enum ContentKey {
         complete: bool,
         detail_visible: bool,
         driver: DriverState,
+        help: bool,
     },
 }
 
@@ -317,6 +318,7 @@ impl LayoutKey {
                 complete: connection.pairing_complete(),
                 detail_visible: guide_detail_visible(state),
                 driver: connection.driver,
+                help: connection.needs_help(),
             },
         };
         Self {

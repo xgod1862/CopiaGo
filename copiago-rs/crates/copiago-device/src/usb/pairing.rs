@@ -39,7 +39,7 @@ impl PairingError {
                 "未找到 USB 连接的 iPhone。请用数据线连接并解锁后重试"
             }
             Self::Usb(UsbProbeError::MultipleUsbDevices(_)) => "请暂时只连接一台 iPhone",
-            Self::Usb(UsbProbeError::Usbmuxd) => "等待 Apple 设备连接服务或 iPhone…",
+            Self::Usb(UsbProbeError::Usbmuxd) => super::APPLE_SERVICE_UNAVAILABLE,
             Self::Usb(UsbProbeError::DeviceLocked) => "请先解锁 iPhone，再点「连接 iPhone」",
             Self::Usb(UsbProbeError::DeveloperModeRequired) => {
                 "需要开启开发者模式：在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启并重启手机，解锁后点「继续连接」"

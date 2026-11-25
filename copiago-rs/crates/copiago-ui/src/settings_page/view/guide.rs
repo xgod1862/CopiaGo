@@ -22,9 +22,11 @@ const STEPS: [(&str, &str); 4] = [
         "之后 iPhone 和电脑在同一 Wi-Fi 下会自动连接。",
     ),
 ];
+/// Shown after CopiaGo asked the phone to reveal the switch, which iOS hides until a
+/// developer tool requests it.
 const DEVELOPER_HELP: &str = concat!(
-    "在 iPhone 上重新进入「设置 → 隐私与安全性」，打开「开发者模式」并按提示重启。",
-    "重启后解锁，在弹窗中确认开启，再点下方按钮。"
+    "打开 iPhone「设置 → 隐私与安全性」，在底部找到「开发者模式」并打开，按提示重启。",
+    "重启后解锁，在弹窗中点「打开」，再点下方按钮。若仍没有该开关，可能是公司或学校管理的设备。"
 );
 const DRIVER_HELP: &str = "需要先安装 Apple 设备连接组件。将通过 Windows 包管理器安装 Apple Mobile Device Support，并代表你接受其许可协议。";
 const SERVICE_HELP: &str = "Apple 连接服务不可用或无法读取设备。修复将请求管理员权限，启动或重启该服务，可能暂时中断其他 Apple 软件的设备连接。";
@@ -217,7 +219,33 @@ impl Builder<'_> {
             self.add_progress(y)?;
             y += 17.0;
         }
+        if self.state.connection().needs_help() {
+            y = self.help_row(y + 4.0)? + 4.0;
+        }
         Ok(y)
+    }
+
+    /// Two equal buttons: copy a diagnostic report, or copy it and open a GitHub issue.
+    /// Returns the bottom of the row.
+    pub(super) fn help_row(&mut self, y: f32) -> Result<f32> {
+        let (scene, language) = (self.scene, self.language);
+        let width = (INNER - 8.0) / 2.0;
+        let buttons = [
+            ("复制诊断信息", SettingsAction::CopyDiagnostics),
+            ("反馈问题", SettingsAction::ReportIssue),
+        ];
+        for (index, (source, action)) in buttons.into_iter().enumerate() {
+            let name = tr!(language, source).into_owned();
+            let button = Button::text(
+                scene,
+                Rect::new(PAD + index as f32 * (width + 8.0), y, width, 32.0),
+                ButtonStyle::Neutral,
+                &name,
+                &THEME,
+            )?;
+            self.add_button(button, name, action, true, ControlRole::Button)?;
+        }
+        Ok(y + 32.0)
     }
 
     fn step_number(&self, index: usize, current: usize, y: f32) -> Result<()> {

@@ -46,13 +46,20 @@ impl Backend for NativeDevice<'_> {
         if !self.options.persist_device_data {
             return Err(PairingError::ReadOnly);
         }
-        pair_over_usb(
+        let result = pair_over_usb(
             self.addr,
             self.data_dir,
             self.options.allow_developer_setup,
             prompt,
         )
-        .await
+        .await;
+        match &result {
+            Ok(_) => copiago_core::diagnostic::event(format_args!("event=pair_ok")),
+            Err(error) => {
+                copiago_core::diagnostic::event(format_args!("event=pair_failed error={error:?}"))
+            }
+        }
+        result
     }
 
     fn forget(&self) -> std::io::Result<()> {

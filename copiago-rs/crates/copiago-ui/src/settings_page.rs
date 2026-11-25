@@ -66,6 +66,10 @@ pub enum SettingsAction {
     OpenAppleDevicesStore,
     FinishPairing,
     OpenUpdate,
+    /// Copy a diagnostic report to the clipboard without syncing it to the iPhone.
+    CopyDiagnostics,
+    /// Copy the report and open a prefilled GitHub issue form.
+    ReportIssue,
     OpenSettings,
     Back,
     Close,
@@ -88,6 +92,8 @@ pub enum SettingsEffect {
     ShowHistory,
     ShowPairingGuide,
     OpenUpdate,
+    CopyDiagnostics,
+    ReportIssue,
     ShowSettings,
     Close,
 }
@@ -157,6 +163,28 @@ impl ConnectionState {
     /// Let the user start interactive recovery while ordinary reconnects continue.
     pub fn can_retry(&self) -> bool {
         self.phase.can_continue() || (self.device.is_some() && self.phase == ConnectionPhase::Waiting)
+    }
+
+    /// Stuck states in which the guide offers to copy diagnostics or report an issue.
+    /// The first prompt to connect a phone is not stuck; a changed Setup detail is.
+    pub fn needs_help(&self) -> bool {
+        if self.phase.busy() || self.driver == DriverState::Installing {
+            return false;
+        }
+        let failed_setup = self.phase == ConnectionPhase::Setup
+            && self
+                .detail
+                .as_ref()
+                .is_some_and(|detail| *detail != self.default_detail());
+        failed_setup
+            || self.driver != DriverState::Ready
+            || matches!(
+                self.phase,
+                ConnectionPhase::Waiting
+                    | ConnectionPhase::DeveloperMode
+                    | ConnectionPhase::RetryRequired
+                    | ConnectionPhase::Error
+            )
     }
 
     pub fn pairing_complete(&self) -> bool {
@@ -476,6 +504,8 @@ impl SettingsState {
                 SettingsEffect::ShowHistory
             }
             SettingsAction::OpenUpdate => SettingsEffect::OpenUpdate,
+            SettingsAction::CopyDiagnostics => SettingsEffect::CopyDiagnostics,
+            SettingsAction::ReportIssue => SettingsEffect::ReportIssue,
             SettingsAction::OpenSettings => {
                 self.cancel_confirmation();
                 SettingsEffect::ShowSettings

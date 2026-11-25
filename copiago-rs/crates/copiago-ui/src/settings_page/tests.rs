@@ -399,3 +399,47 @@ fn unavailable_service_offers_repair_and_store_without_parallel_pairing() {
     assert_eq!(state.activate(SettingsAction::RequestPair, now), None);
     assert_eq!(state.activate(SettingsAction::InstallDriver, now), None);
 }
+
+#[test]
+fn help_is_offered_only_while_stuck() {
+    let fixture = Fixture::new();
+    let mut state = SettingsState::load(fixture.path(), "");
+    let now = Instant::now();
+    assert!(!state.connection().needs_help());
+    for phase in [
+        ConnectionPhase::Waiting,
+        ConnectionPhase::DeveloperMode,
+        ConnectionPhase::RetryRequired,
+        ConnectionPhase::Error,
+    ] {
+        state.set_connection(ConnectionState {
+            phase,
+            ..ConnectionState::default()
+        });
+        assert!(state.connection().needs_help(), "{phase:?}");
+    }
+    state.set_connection(ConnectionState {
+        phase: ConnectionPhase::Connecting,
+        driver: DriverState::ServiceUnavailable,
+        ..ConnectionState::default()
+    });
+    assert!(!state.connection().needs_help());
+    state.set_connection(ConnectionState {
+        driver: DriverState::ServiceUnavailable,
+        ..ConnectionState::default()
+    });
+    assert!(state.connection().needs_help());
+    state.set_connection(ConnectionState {
+        detail: Some(message!("请先解锁 iPhone，再点「连接 iPhone」")),
+        ..ConnectionState::default()
+    });
+    assert!(state.connection().needs_help());
+    assert_eq!(
+        state.activate(SettingsAction::CopyDiagnostics, now),
+        Some(SettingsEffect::CopyDiagnostics)
+    );
+    assert_eq!(
+        state.activate(SettingsAction::ReportIssue, now),
+        Some(SettingsEffect::ReportIssue)
+    );
+}

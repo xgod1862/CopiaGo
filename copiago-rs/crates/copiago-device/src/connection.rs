@@ -229,12 +229,12 @@ impl Failure {
     fn first_connection_hint(self) -> &'static str {
         match self {
             // This status also activates the host's Apple service repair controls.
-            Self::Usb(UsbProbeError::Usbmuxd) => "等待 Apple 设备连接服务或 iPhone…",
+            Self::Usb(UsbProbeError::Usbmuxd) => crate::usb::APPLE_SERVICE_UNAVAILABLE,
             Self::Usb(UsbProbeError::DeviceLocked) => {
                 "iPhone 已锁定。请解锁并停留在主屏幕，然后点「继续连接」。"
             }
             Self::Usb(UsbProbeError::Timeout) => {
-                "USB 连接超时。请将 iPhone 直接接到电脑的 USB 口，然后点「继续连接」。"
+                "USB 连接超时。请把 iPhone 直接插在电脑机身的 USB 口（不要经过扩展坞或延长线），保持解锁，再点「继续连接」。"
             }
             Self::Usb(UsbProbeError::CoreDeviceProxy) => {
                 "已找到 iPhone，但开发者通道未能打开。请解锁手机，重新插拔数据线后重试。"
@@ -265,7 +265,7 @@ impl Failure {
             Self::Wifi(_) => {
                 "无线连接失败，USB 也未检测到这台 iPhone。请将手机直接接到电脑后重试。"
             }
-            _ => "与 iPhone 的连接中断。请接好数据线并解锁手机，再点「继续连接」。",
+            _ => "与 iPhone 的连接中断。请插紧数据线并保持手机解锁，再点「继续连接」；反复断开时请换一个 USB 口或数据线。",
         }
     }
 
@@ -312,7 +312,7 @@ impl Failure {
                 WaitMode::Reconnect,
                 ConnState::Waiting,
                 Message::new(match self {
-                    Self::Usb(UsbProbeError::Usbmuxd) => "等待 Apple 设备连接服务或 iPhone…",
+                    Self::Usb(UsbProbeError::Usbmuxd) => crate::usb::APPLE_SERVICE_UNAVAILABLE,
                     Self::Usb(UsbProbeError::DeviceLocked) => {
                         "请先解锁 iPhone，再点「连接 iPhone」"
                     }
@@ -604,6 +604,7 @@ async fn attempt_usb(
                 )
                 .await?
                 .unwrap_or(Err(PairingError::Pending));
+            diagnostic::event(format_args!("event=usb_trust_renewed result={result:?}"));
             match result {
                 Ok(()) => {}
                 Err(PairingError::Usb(error)) => return Ok(Failure::Usb(error)),
@@ -616,6 +617,7 @@ async fn attempt_usb(
             | UsbProbeError::Rsd
             | UsbProbeError::Lockdown,
         ) => {
+            diagnostic::event(format_args!("event=usb_retry failure={failure:?}"));
             emit_event(
                 emit,
                 DeviceEvent::Status(ConnState::Connecting, message!("正在通过 USB 自动重试一次…")),

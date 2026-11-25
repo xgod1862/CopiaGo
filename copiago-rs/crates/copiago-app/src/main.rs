@@ -11,6 +11,8 @@ mod headless;
 #[cfg(windows)]
 mod launch;
 #[cfg(windows)]
+mod service;
+#[cfg(windows)]
 mod window;
 #[cfg(windows)]
 mod worker;
@@ -26,6 +28,12 @@ fn main() -> ExitCode {
     match (flag.as_deref().and_then(|arg| arg.to_str()), args.next()) {
         (Some("--headless"), None) => run(true, false),
         (Some("--minimized"), None) => run(false, true),
+        #[cfg(windows)]
+        (Some(service::REPAIR_FLAG), None) => {
+            // The elevated copy started by the "Repair connection service" button. It
+            // must not take the single-instance lock held by the running app.
+            ExitCode::from(service::repair().min(255) as u8)
+        }
         (Some("--help" | "-h"), None) => {
             attach_console();
             println!("{USAGE}");

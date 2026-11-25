@@ -129,6 +129,16 @@ impl Builder<'_> {
             }
             y += height + 14.0;
         }
+        label(
+            scene,
+            self.target(true),
+            &tr!(language, "遇到问题"),
+            Rect::new(PAD + 6.0, y, INNER - 12.0, 18.0),
+            Font::Semibold,
+            12.0,
+            THEME.muted,
+        )?;
+        y = self.help_row(y + 24.0)? + 14.0;
         self.settings_footer()?;
         Ok(y - 14.0)
     }

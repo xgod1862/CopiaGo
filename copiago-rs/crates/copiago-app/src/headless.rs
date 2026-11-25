@@ -47,6 +47,7 @@ fn start(launch: Launch, log: &Log) -> Result<(), HostError> {
         .data_dir(true)
         .map_err(|error| HostError::os("resolve_data_dir", error))?;
     paths::ensure_data_dir(&data_dir).map_err(|error| HostError::os("prepare_data_dir", error))?;
+    copiago_core::diagnostic::init(&data_dir, VERSION);
     copiago_core::diagnostic::install_crash_hook(&data_dir, VERSION);
     if let Err(error) = file_storage::cleanup(&data_dir) {
         log.event(

@@ -3,6 +3,7 @@
 mod actions;
 mod driver;
 mod popup;
+mod report;
 mod status;
 mod sync;
 
@@ -54,10 +55,14 @@ pub(super) fn run(launch: Launch, minimized: bool) -> bool {
 }
 
 fn start(launch: Launch, minimized: bool) -> io::Result<()> {
-    diagnostic::event(format_args!("event=start mode=tray version={VERSION}"));
     let data_dir = launch.data_dir(false)?;
     paths::ensure_data_dir(&data_dir)?;
+    diagnostic::init(&data_dir, VERSION);
     diagnostic::install_crash_hook(&data_dir, VERSION);
+    diagnostic::event(format_args!(
+        "event=start mode=tray version={VERSION} {}",
+        driver::system_summary()
+    ));
     if let Err(error) = files::cleanup(&data_dir) {
         report_error("cleanup_received", &error);
     }

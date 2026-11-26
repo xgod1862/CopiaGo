@@ -14,7 +14,7 @@ use tracing::{Dispatch, instrument::WithSubscriber};
 use super::{
     IdeviceError, IdeviceProvider, IdeviceService, LockdownClient, LockdownRecord,
     USBMUX_PAIR_RECORD_TIMEOUT, UsbProbeError, UsbmuxdAddr, UsbmuxdProvider, local_record_path,
-    reveal_developer_menu, single_usb_provider, trusted_lockdown,
+    reveal_developer_menu, single_usb_provider, trusted_lockdown, usb_provider_for,
 };
 use crate::{
     device_info,
@@ -167,16 +167,18 @@ async fn pair(
 
 /// Recover only USB trust. A cable swap or multiple attached phones must not
 /// cause a trust request for a different device. Keep the wireless key intact.
+///
+/// The phone is picked by its serial, so another Apple device on USB (an iPad that
+/// is charging, say) no longer blocks recovery with "connect only one iPhone".
 pub(crate) async fn renew_usb_trust(
     addr: &UsbmuxdAddr,
     data_dir: &Path,
     serial: &str,
 ) -> Result<(), PairingError> {
     async {
-        let provider = single_usb_provider(addr).await.map_err(PairingError::Usb)?;
-        if provider.udid != serial {
-            return Err(PairingError::Usb(UsbProbeError::NoUsbDevice));
-        }
+        let provider = usb_provider_for(addr, serial)
+            .await
+            .map_err(PairingError::Usb)?;
         let path = local_record_path(data_dir, serial).ok_or(PairingError::Failed)?;
         let hostname = windows_hostname().map_err(|_| PairingError::Failed)?;
         let host_id = host_identifier(&hostname);

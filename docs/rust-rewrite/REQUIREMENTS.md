@@ -148,16 +148,17 @@ copiago-rs/
 
 | 编号 | 需求 |
 |---|---|
-| F-DEV-1 | **USB 发现**：usbmux 列设备，只取 `Connection::Usb`。配对时有多台 USB 设备，提示"请暂时只连接一台 iPhone"。 |
+| F-DEV-1 | **USB 发现**：usbmux 列设备，只取 `Connection::Usb`。配对时有多台 USB 设备，提示"请暂时只连接一台 iPhone"。已配对手机重新请求 USB 信任时按序列号选设备，同时插着的其他 Apple 设备不影响。 |
 | F-DEV-2 | **USB 配对**（与 `device.py::pair_over_usb` 一致）：lockdown 自动配对（手机弹"信任"），读取 DeviceName/ProductType/ProductVersion 存入 device-info；若 `EnableWifiConnections` 为假则打开；通过 `RemotePairingLockdownService` 完成 RPPairing，保存 `remote_<udid>.plist`（DPAPI，含 `identifier`）。各阶段通过 `PairingPrompt` 推送提示文案。整体超时 120 s。 |
 | F-DEV-3 | lockdown 配对记录优先从 usbmuxd 取，失败时回落到 `device-data\<udid>.plist`（原型 `Provider` 已实现）。 |
-| F-DEV-4 | **连接策略**（同 `device.py` 的连接主循环）：已配对时先走 Wi‑Fi（mDNS → pair‑verify → createListener → TLS‑PSK）。无线连接失败时，若同一已配对手机在 USB 上可用，再试 CoreDeviceProxy。中止、重置或镜像流程的下载/签名错误按原状态处理。无线安装阶段错误允许尝试 USB，普通 USB 失败仍保留已知的安装错误。连接后状态文案："已连接（USB） · 可以拔掉数据线，之后将通过无线连接" / "已连接（无线）"。 |
+| F-DEV-4 | **连接策略**（同 `device.py` 的连接主循环）：已配对时先走 Wi‑Fi（mDNS → pair‑verify → createListener → TLS‑PSK）。无线连接失败时，若同一已配对手机在 USB 上可用，再试 CoreDeviceProxy。中止、重置或镜像流程的下载/签名错误按原状态处理。无线安装阶段错误允许尝试 USB，普通 USB 失败仍保留已知的安装错误。RSD 握手报告的 `UniqueDeviceID` 与配对记录序列号只比对并写入诊断日志（只记长度和连字符个数），不作为拒绝连接的条件：此时手机已由 usbmux 按序列号选定，或已通过 IRK 匹配和 pair‑verify 确认。连接后状态文案："已连接（USB） · 可以拔掉数据线，之后将通过无线连接" / "已连接（无线）"。 |
 | F-DEV-5 | **断线重连**：隧道断开、通知流结束、或连续 3 次元数据拉取失败（每 2 s 一次）时判定断线。普通连接失败等待 4 s 后重试。已配对手机暂时离线时，手动点「继续连接」后仍按后台重连策略继续查找。已配对时，开发者模式、镜像流程或首次配置的挂起错误保留提示并等待用户重试。USB 插拔更新回退资格，正常无线会话保持连接。 |
 | F-DEV-6 | **睡眠/唤醒**：收到 `WM_POWERBROADCAST(PBT_APMRESUMEAUTOMATIC)` 或网络变化（`NotifyIpInterfaceChange`）时主动重建连接。 |
 | F-DEV-7 | **RP 控制连接**必须在隧道生命周期内持有（原型用 `mem::forget` 只是权宜），隧道关闭时一并关闭。 |
 | F-DEV-8 | 服务列表中没有 `com.apple.coredevice.pasteboardservice` 时进入开发者镜像流程（F-DDI），完成后重连一次；仍没有则报"install"类错误（与 `DeveloperSetupError("install")` 对应）。 |
 | F-DEV-9 | 连接后读取设备信息：RSD 的 ProductType/ProductVersion + 隧道内 lockdown 的 DeviceName（3 s 超时，失败用已保存的名字），发出 `DeviceInfo` 事件并保存。机型名映射表从 `device_info.py::model_name` 迁移。 |
 | F-DEV-10 | **忘记设备**：删除所有 `remote_*.plist` 和 device-info，断开当前连接，回到 `Setup`。已启动的系统修复完成后须由用户重新发起配对。 |
+| F-DEV-10a | **多份配对记录**：存在多个 `remote_*.plist` 时不停在报错，优先连接当前插在 USB 上的那台，否则使用修改时间最新的记录，并记录 `event=paired_record_chosen`。无法列出记录时才提示"已配对多台 iPhone"。 |
 | F-DEV-11 | **Wi‑Fi 发现**用 `DnsServiceBrowse` + `DnsServiceResolve`，在每块 IPv4 网卡上查询（排除 127./169.254./0.），IPv4 优先。自动连接沿用 Python 的匹配顺序，用 idevice `remote_pairing::PeerDevice::validate_auth_tag` 校验配对记录的 `peer_alt_irk` 和 `_remotepairing._tcp` 广播 TXT 的 `identifier`、`authTag`，仅对命中的地址拨号并执行 `pair-verify`。没有匹配时按 F-DEV-4 尝试同一台手机的 USB。显式 `wifi_probe --addr` 用于诊断，默认只读，仍须通过 `pair-verify`。每轮发现最多等待 5 s，连接重试按 F-DEV-5。 |
 
 ### 4.6 剪贴板同步（device + win）

@@ -21,13 +21,75 @@ pub(crate) struct PairedDevice {
     pub(crate) path: PathBuf,
 }
 
+/// How the UDID a phone reports through RSD compares with the paired record's serial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RsdIdentity {
+    Same,
+    /// The handshake did not include `UniqueDeviceID`.
+    Absent,
+    /// Equal once `-` separators and letter case are ignored.
+    SeparatorOnly,
+    Different,
+}
+
 impl PairedDevice {
-    pub(crate) fn matches_rsd(&self, rsd: &idevice::rsd::RsdHandshake) -> bool {
-        rsd.properties
+    /// Diagnostic fields comparing the RSD-reported UDID with the saved serial.
+    ///
+    /// The result is for the log only and must never reject a tunnel. By the time RSD
+    /// answers, the phone was already selected by this serial (usbmux routes USB
+    /// connections by it) or proven over Wi-Fi by an IRK-matched advertisement plus
+    /// pair-verify with this PC's per-pairing key. A mismatch therefore means the two
+    /// sources format the UDID differently, as issue #21 showed: rejecting on it blocked
+    /// a working connection on every attempt and told the user to re-plug the cable.
+    ///
+    /// Only lengths and separator counts are logged, because users paste the log into
+    /// public issues.
+    pub(crate) fn rsd_identity_fields(&self, rsd: &idevice::rsd::RsdHandshake) -> String {
+        let reported = rsd
+            .properties
             .get("UniqueDeviceID")
-            .and_then(Value::as_string)
-            .is_none_or(|serial| serial.eq_ignore_ascii_case(&self.serial))
+            .and_then(Value::as_string);
+        identity_fields(&self.serial, reported)
     }
+}
+
+fn identity_fields(saved: &str, reported: Option<&str>) -> String {
+    match (compare_udid(saved, reported), reported) {
+        (identity @ (RsdIdentity::SeparatorOnly | RsdIdentity::Different), Some(reported)) => {
+            format!(
+                "identity={identity:?} saved={} reported={}",
+                udid_shape(saved),
+                udid_shape(reported)
+            )
+        }
+        (identity, _) => format!("identity={identity:?}"),
+    }
+}
+
+fn compare_udid(saved: &str, reported: Option<&str>) -> RsdIdentity {
+    let Some(reported) = reported else {
+        return RsdIdentity::Absent;
+    };
+    if reported.eq_ignore_ascii_case(saved) {
+        return RsdIdentity::Same;
+    }
+    let compact = |udid: &str| {
+        udid.chars()
+            .filter(|character| *character != '-')
+            .map(|character| character.to_ascii_uppercase())
+            .collect::<String>()
+    };
+    if compact(reported) == compact(saved) {
+        RsdIdentity::SeparatorOnly
+    } else {
+        RsdIdentity::Different
+    }
+}
+
+/// `len<N>/dash<M>`: enough to tell formats apart without exposing the identifier.
+fn udid_shape(udid: &str) -> String {
+    let dashes = udid.chars().filter(|character| *character == '-').count();
+    format!("len{}/dash{dashes}", udid.chars().count())
 }
 
 pub(super) struct RemoteRecord {
@@ -161,34 +223,64 @@ pub(crate) fn forget_remote_records(data_root: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn find_paired_device(data_root: &Path) -> Result<PairedDevice, WifiProbeError> {
-    let entries = fs::read_dir(data_root.join(DEVICE_DATA_DIR)).map_err(|error| {
-        if error.kind() == ErrorKind::NotFound {
-            WifiProbeError::NoPairingRecord
-        } else {
-            WifiProbeError::ReadPairingRecord
-        }
-    })?;
-    let mut paired = None;
+    let mut paired = paired_devices(data_root)?;
+    match paired.len() {
+        0 => Err(WifiProbeError::NoPairingRecord),
+        1 => Ok(paired.remove(0)),
+        _ => Err(WifiProbeError::MultiplePairingRecords),
+    }
+}
+
+/// Every wireless pairing record, most recently written first.
+pub(crate) fn paired_devices(data_root: &Path) -> Result<Vec<PairedDevice>, WifiProbeError> {
+    let entries = match fs::read_dir(data_root.join(DEVICE_DATA_DIR)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(WifiProbeError::ReadPairingRecord),
+    };
+    let mut paired = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|_| WifiProbeError::ReadPairingRecord)?;
         let name = entry.file_name();
         let serial = remote_record_serial(&name).filter(|id| !id.is_empty());
-        if let Some(serial) = serial
-            && entry
-                .file_type()
-                .map_err(|_| WifiProbeError::ReadPairingRecord)?
-                .is_file()
-        {
-            if paired.is_some() {
-                return Err(WifiProbeError::MultiplePairingRecords);
+        if let Some(serial) = serial {
+            let metadata = entry
+                .metadata()
+                .map_err(|_| WifiProbeError::ReadPairingRecord)?;
+            if metadata.is_file() {
+                let written = metadata.modified().ok();
+                let device = PairedDevice {
+                    serial: serial.to_owned(),
+                    path: entry.path(),
+                };
+                paired.push((written, device));
             }
-            paired = Some(PairedDevice {
-                serial: serial.to_owned(),
-                path: entry.path(),
-            });
         }
     }
-    paired.ok_or(WifiProbeError::NoPairingRecord)
+    // Newest first; an unreadable time sorts last.
+    paired.sort_by(|(left, _), (right, _)| right.cmp(left));
+    Ok(paired.into_iter().map(|(_, device)| device).collect())
+}
+
+/// Picks one of several pairing records instead of stopping until the user forgets
+/// them all. The phone on USB is the one the user is trying to connect, so it wins;
+/// otherwise the most recent pairing, which is what the user last set up.
+///
+/// `records` must be newest first, as [`paired_devices`] returns them. Returns the
+/// reason for the diagnostic log.
+pub(crate) fn choose_paired_device(
+    records: Vec<PairedDevice>,
+    usb_serials: &[String],
+) -> Option<(PairedDevice, &'static str)> {
+    let on_usb = records
+        .iter()
+        .position(|record| usb_serials.contains(&record.serial));
+    let mut records = records;
+    match on_usb {
+        Some(index) => Some((records.swap_remove(index), "usb")),
+        None if records.is_empty() => None,
+        None => Some((records.swap_remove(0), "newest")),
+    }
 }
 
 fn remote_record_serial(name: &OsStr) -> Option<&str> {

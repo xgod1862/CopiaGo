@@ -234,6 +234,27 @@ async fn single_usb_provider(addr: &UsbmuxdAddr) -> Result<UsbmuxdProvider, UsbP
     }
 }
 
+/// The attached USB device whose usbmux serial is `serial`, ignoring any others.
+async fn usb_provider_for(
+    addr: &UsbmuxdAddr,
+    serial: &str,
+) -> Result<UsbmuxdProvider, UsbProbeError> {
+    list_usb_devices(addr)
+        .await?
+        .into_iter()
+        .find(|device| device.udid == serial)
+        .map(|device| device.to_provider(addr.clone(), "CopiaGo"))
+        .ok_or(UsbProbeError::NoUsbDevice)
+}
+
+/// Serials of the devices attached over USB, for choosing among pairing records.
+pub(crate) async fn usb_serials(addr: &UsbmuxdAddr) -> Result<Vec<String>, UsbProbeError> {
+    let devices = list_usb_devices(addr)
+        .with_subscriber(Dispatch::none())
+        .await?;
+    Ok(devices.into_iter().map(|device| device.udid).collect())
+}
+
 pub(crate) async fn paired_usb_id(
     addr: &UsbmuxdAddr,
     device: &PairedDevice,
@@ -284,10 +305,15 @@ pub(crate) async fn open_paired_usb_tunnel(
             started.elapsed().as_millis()
         ));
     })?;
-    if !paired.matches_rsd(&tunnel.rsd) {
-        diagnostic::event(format_args!("event=usb_tunnel_failed step=identity"));
-        return Err(UsbProbeError::Rsd);
-    }
+    // Logged, not enforced: see `PairedDevice::rsd_identity_fields`. The service fields
+    // show whether a later pasteboard failure is the phone not offering the service.
+    diagnostic::event(format_args!(
+        "event=usb_tunnel_opened ms={} services={} pasteboard={} {}",
+        started.elapsed().as_millis(),
+        tunnel.rsd.services.len(),
+        tunnel.rsd.services.contains_key(PASTEBOARD_SERVICE),
+        paired.rsd_identity_fields(&tunnel.rsd)
+    ));
     Ok(tunnel)
 }
 

@@ -237,3 +237,76 @@ impl Drop for TestRecord {
         let _ = fs::remove_dir(&self.root);
     }
 }
+
+#[test]
+fn rsd_identity_never_exposes_the_udid_and_names_format_differences() {
+    const SAVED: &str = "00008030-001234567890ABCD";
+    assert_eq!(identity_fields(SAVED, Some(SAVED)), "identity=Same");
+    assert_eq!(
+        identity_fields(SAVED, Some("00008030-001234567890abcd")),
+        "identity=Same"
+    );
+    assert_eq!(identity_fields(SAVED, None), "identity=Absent");
+    assert_eq!(
+        identity_fields(SAVED, Some("00008030001234567890ABCD")),
+        "identity=SeparatorOnly saved=len25/dash1 reported=len24/dash0"
+    );
+    let different = identity_fields(SAVED, Some("00008110-000000000000FFFF"));
+    assert_eq!(
+        different,
+        "identity=Different saved=len25/dash1 reported=len25/dash1"
+    );
+    assert!(!different.contains("0000803"));
+}
+
+#[test]
+fn several_records_prefer_the_phone_on_usb_then_the_newest() {
+    let record = |serial: &str| PairedDevice {
+        serial: serial.into(),
+        path: PathBuf::from(format!("remote_{serial}.plist")),
+    };
+    let newest_first = || vec![record("NEW"), record("OLD")];
+
+    let (chosen, reason) = choose_paired_device(newest_first(), &["OLD".into()]).unwrap();
+    assert_eq!((chosen.serial.as_str(), reason), ("OLD", "usb"));
+
+    let (chosen, reason) = choose_paired_device(newest_first(), &["IPAD".into()]).unwrap();
+    assert_eq!((chosen.serial.as_str(), reason), ("NEW", "newest"));
+
+    let (chosen, reason) = choose_paired_device(newest_first(), &[]).unwrap();
+    assert_eq!((chosen.serial.as_str(), reason), ("NEW", "newest"));
+
+    assert!(choose_paired_device(Vec::new(), &[]).is_none());
+}
+
+#[test]
+fn paired_devices_lists_records_newest_first() {
+    let fixture = TestRecord::new();
+    let directory = fixture.path.parent().unwrap().to_owned();
+    let older = directory.join("remote_OLDER.plist");
+    let newer = directory.join("remote_NEWER.plist");
+    fs::write(&older, b"older").unwrap();
+    fs::write(&newer, b"newer").unwrap();
+    let base = std::time::SystemTime::now();
+    fs::File::options()
+        .write(true)
+        .open(&older)
+        .unwrap()
+        .set_modified(base - std::time::Duration::from_secs(60))
+        .unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&newer)
+        .unwrap()
+        .set_modified(base)
+        .unwrap();
+
+    let serials: Vec<_> = paired_devices(&fixture.root)
+        .unwrap()
+        .into_iter()
+        .map(|device| device.serial)
+        .collect();
+    assert_eq!(serials, ["NEWER", "OLDER"]);
+    fs::remove_file(older).unwrap();
+    fs::remove_file(newer).unwrap();
+}

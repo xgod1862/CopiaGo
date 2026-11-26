@@ -143,6 +143,11 @@ enum Transport {
 
 trait Backend {
     fn paired_device(&self) -> Result<PairedDevice, WifiProbeError>;
+    /// Picks one record when [`Backend::paired_device`] finds several. `None` keeps
+    /// the multiple-records error, which the user resolves by forgetting the phone.
+    async fn choose_paired_device(&self) -> Option<PairedDevice> {
+        None
+    }
     async fn pair(
         &self,
         prompt: impl Fn(Message) -> ControlFlow<()>,
@@ -439,7 +444,7 @@ async fn connect_or_wait(
     emit: &impl Fn(DeviceEvent) -> ControlFlow<()>,
     state: &mut DeviceState,
 ) -> Result<(), Interrupted> {
-    let pairing = backend.paired_device();
+    let mut pairing = backend.paired_device();
     let records = match &pairing {
         Ok(_) => "1",
         Err(WifiProbeError::NoPairingRecord) => "0",
@@ -447,6 +452,13 @@ async fn connect_or_wait(
         Err(_) => "unavailable",
     };
     diagnostic::event(format_args!("paired_records={records}"));
+    // Several records used to stop here until the user forgot the phone and paired
+    // again. Connecting with the most likely one keeps a working phone usable.
+    if matches!(pairing, Err(WifiProbeError::MultiplePairingRecords))
+        && let Some(device) = backend.choose_paired_device().await
+    {
+        pairing = Ok(device);
+    }
     let mut paired = None;
     let wait = match pairing {
         Ok(device) => {

@@ -5,6 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::time::Duration;
 
+use copiago_core::diagnostic;
 use idevice::{
     remote_pairing::{
         RemotePairingClient, RpPairingFile, RpPairingSocket, connect_tls_psk_tunnel_native,
@@ -25,8 +26,8 @@ mod record;
 mod transport;
 
 pub(crate) use record::{
-    PairedDevice, find_paired_device, forget_remote_records, host_identifier, save_remote_record,
-    windows_hostname,
+    PairedDevice, choose_paired_device, find_paired_device, forget_remote_records, host_identifier,
+    paired_devices, save_remote_record, windows_hostname,
 };
 /// Whether there are saved records to show in the desktop connection settings.
 pub fn has_pairing_records(data_dir: &Path) -> bool {
@@ -190,7 +191,16 @@ async fn open(
             let candidates = discovery::discover_within(Some(irk), budget)
                 .await
                 .map_err(|_| WifiProbeError::Discovery)?;
-            discovery::matched_addresses(&candidates)
+            let matched = discovery::matched_addresses(&candidates);
+            if matched.is_empty() {
+                // Tells "phone not advertising on this network" (0) apart from
+                // "advertisements seen, none from the paired phone" (>0).
+                diagnostic::event(format_args!(
+                    "event=wifi_no_endpoint advertisements={}",
+                    candidates.len()
+                ));
+            }
+            matched
         }
     };
 
@@ -207,16 +217,32 @@ async fn open(
         )
         .await
         {
-            Ok(Ok(tunnel)) if device.matches_rsd(&tunnel.rsd) => {
+            Ok(Ok(tunnel)) => {
+                // Logged, not enforced: see `PairedDevice::rsd_identity_fields`.
+                diagnostic::event(format_args!(
+                    "event=wifi_tunnel_opened services={} pasteboard={} {}",
+                    tunnel.rsd.services.len(),
+                    tunnel.rsd.services.contains_key(PASTEBOARD_SERVICE),
+                    device.rsd_identity_fields(&tunnel.rsd)
+                ));
                 let migration = record.persist_identifier(options.write_identifier);
                 return Ok((tunnel, migration));
             }
-            Ok(Ok(_)) => last_error = WifiProbeError::Rsd,
             Ok(Err(error)) => last_error = error,
             Err(_) => last_error = WifiProbeError::Timeout,
         }
+        diagnostic::event(format_args!(
+            "event=wifi_endpoint_failed family={} error={last_error:?}",
+            if endpoint.is_ipv4() { "v4" } else { "v6" }
+        ));
     }
     Err(last_error)
+}
+
+/// Records which RSD step failed; both map to [`WifiProbeError::Rsd`].
+fn rsd_failed(step: &str) -> WifiProbeError {
+    diagnostic::event(format_args!("event=wifi_rsd_failed step={step}"));
+    WifiProbeError::Rsd
 }
 
 async fn open_at(
@@ -273,10 +299,10 @@ async fn open_at(
     let stream = adapter
         .connect(rsd_port)
         .await
-        .map_err(|_| WifiProbeError::Rsd)?;
+        .map_err(|_| rsd_failed("connect"))?;
     let rsd = RsdHandshake::new(stream)
         .await
-        .map_err(|_| WifiProbeError::Rsd)?;
+        .map_err(|_| rsd_failed("handshake"))?;
     Ok(WifiTunnel {
         rsd,
         adapter,

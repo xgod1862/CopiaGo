@@ -7,7 +7,7 @@
 use std::fmt::Write as _;
 
 use copiago_core::{
-    diagnostic,
+    DeviceInfo, diagnostic,
     i18n::{Message, message},
 };
 use copiago_ui::settings_page::{ConnectionPhase, ConnectionState};
@@ -16,9 +16,10 @@ use super::{Host, driver};
 use crate::{VERSION, service};
 
 const ISSUE_URL: &str = "https://github.com/xgod1862/CopiaGo/issues/new";
-/// Enough to cover a pairing attempt and its retries while staying pasteable.
-const LOG_LINES: usize = 150;
-const LOG_BYTES: u64 = 32 * 1024;
+/// Enough to cover a pairing attempt and its retries while staying pasteable: GitHub
+/// rejects issue bodies over 65,536 characters.
+const LOG_LINES: usize = 300;
+const LOG_BYTES: u64 = 48 * 1024;
 
 impl Host<'_> {
     /// Copies the report to the clipboard and tells the user how to send it.
@@ -67,6 +68,17 @@ impl Host<'_> {
         let _ = writeln!(text, "CopiaGo 诊断信息");
         let _ = writeln!(text, "version={VERSION} {}", driver::system_summary());
         write_connection(&mut text, connection, self.connection.vpn_adapter_active);
+        // `iphone=` appears only once a phone connected in this run. A phone paired in
+        // this run that never connected (issue #21) otherwise leaves no model or iOS.
+        if connection.device.is_none() && copiago_device::has_pairing_records(&self.data_dir) {
+            let saved = DeviceInfo::load(&self.data_dir);
+            let _ = writeln!(
+                text,
+                "saved_iphone={} ios={}",
+                or_dash(&saved.model),
+                or_dash(&saved.os_version)
+            );
+        }
         if let Some(notice) = self
             .settings
             .repair_error()
@@ -83,6 +95,10 @@ impl Host<'_> {
         }
         text
     }
+}
+
+fn or_dash(value: &str) -> &str {
+    if value.is_empty() { "-" } else { value }
 }
 
 /// Keeps the program that holds the port out of past log lines: only the current owner,

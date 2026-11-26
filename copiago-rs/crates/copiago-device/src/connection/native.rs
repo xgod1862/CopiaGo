@@ -13,11 +13,11 @@ use crate::{
     pasteboard::{PASTEBOARD_SERVICE, PasteboardState, WatchOptions, watch_rsd},
     usb::{
         PairingError, RsdTunnel, open_paired_usb_tunnel, pair_over_usb, paired_usb_id,
-        paired_usb_provider, reveal_developer_menu,
+        paired_usb_provider, reveal_developer_menu, usb_serials,
     },
     wifi::{
-        PairedDevice, WifiProbeOptions, WifiTunnel, find_paired_device, forget_remote_records,
-        open_wifi_tunnel, wait_for_advertisement,
+        PairedDevice, WifiProbeOptions, WifiTunnel, choose_paired_device, find_paired_device,
+        forget_remote_records, open_wifi_tunnel, paired_devices, wait_for_advertisement,
     },
 };
 
@@ -37,6 +37,18 @@ pub(super) struct NativeDevice<'a> {
 impl Backend for NativeDevice<'_> {
     fn paired_device(&self) -> Result<PairedDevice, WifiProbeError> {
         find_paired_device(self.data_dir)
+    }
+
+    async fn choose_paired_device(&self) -> Option<PairedDevice> {
+        let records = paired_devices(self.data_dir).ok()?;
+        let count = records.len();
+        // Without the Apple service the choice falls back to the newest record.
+        let attached = usb_serials(self.addr).await.unwrap_or_default();
+        let (device, reason) = choose_paired_device(records, &attached)?;
+        copiago_core::diagnostic::event(format_args!(
+            "event=paired_record_chosen count={count} by={reason}"
+        ));
+        Some(device)
     }
 
     async fn pair(

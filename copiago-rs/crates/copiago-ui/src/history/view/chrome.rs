@@ -262,14 +262,14 @@ impl Chrome {
             )?;
         }
         if let Some(width) = style.retry_width {
-            let mut button = Button::text(
+            let button = Button::text(
                 scene,
                 Rect::new(WIDTH - PAD - width, top - 3.0, width, 26.0),
                 ButtonStyle::Neutral,
                 &tr!(language, "继续连接"),
                 &LIGHT_THEME,
-            )?;
-            button.set_enabled(animator, style.retry_enabled)?;
+            )?
+            .with_enabled(style.retry_enabled)?;
             chrome.button(
                 button,
                 style

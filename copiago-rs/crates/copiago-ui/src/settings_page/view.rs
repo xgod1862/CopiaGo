@@ -397,13 +397,13 @@ impl Builder<'_> {
 
     fn add_button(
         &mut self,
-        mut button: Button,
+        button: Button,
         label: String,
         action: SettingsAction,
         scrolled: bool,
         role: ControlRole,
     ) -> Result<()> {
-        button.set_enabled(self.animator, self.state.can_activate(action))?;
+        let button = button.with_enabled(self.state.can_activate(action))?;
         self.target(scrolled)
             .Children()?
             .InsertAtTop(button.visual())?;

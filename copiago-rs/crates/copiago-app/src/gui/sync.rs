@@ -38,6 +38,10 @@ struct Transfer {
     id: u64,
     name: String,
     progress: Option<TransferProgress>,
+    /// Windows clipboard sequence when the download began. Reads run beside
+    /// downloads, so a newer copy can reach the clipboard first; a changed
+    /// sequence means the finished file must not replace it.
+    sequence: u32,
 }
 
 struct TransferProgress {
@@ -625,7 +629,13 @@ impl Host<'_> {
                 size = human_size(bytes)
             )
         };
-        self.offer.active = Some(Transfer { id, name, progress });
+        let sequence = self.clipboard.sequence_number();
+        self.offer.active = Some(Transfer {
+            id,
+            name,
+            progress,
+            sequence,
+        });
         self.set_status(notice, StatusTone::Muted);
         diagnostic::event(format_args!("event=file_requested bytes={bytes}"));
     }
@@ -646,6 +656,36 @@ impl Host<'_> {
         };
         let name = short_name(&active.name);
         let result = match result {
+            Ok(received) if superseded(active.sequence, self.clipboard.sequence_number()) => {
+                diagnostic::event(format_args!(
+                    "event=file_superseded bytes={}",
+                    received.bytes()
+                ));
+                let settings = self.settings.settings();
+                let notice = if settings.history
+                    && settings.pull_types.contains(&SyncKind::File)
+                    && matches!(self.history.add_received(active.name, &received), Ok(true))
+                {
+                    received.keep();
+                    if self.popup.visible() {
+                        self.refresh_entries();
+                    }
+                    message!(
+                        "「{name}」已下载，但电脑剪贴板里已有更新的内容，为避免覆盖未放入剪贴板。需要时可在历史中复制它",
+                        name = &name
+                    )
+                } else {
+                    message!(
+                        "「{name}」已下载，但电脑剪贴板里已有更新的内容，为避免覆盖未放入剪贴板。如仍需要，请在手机上重新复制该文件",
+                        name = &name
+                    )
+                };
+                if !self.popup.visible() {
+                    self.notify(&notice, false, NotificationKind::Standard);
+                }
+                self.set_status(notice, StatusTone::Muted);
+                Ok(())
+            }
             Ok(received) => {
                 let bytes = received.bytes();
                 if self.publish_file(&received).is_ok() {
@@ -750,6 +790,12 @@ pub(super) fn retire_forgotten_session(
     if success {
         clipboard.forget();
     }
+}
+
+/// Whether the Windows clipboard changed since a download began. A zero sequence
+/// means Windows could not report one, so nothing is known to be newer.
+fn superseded(started: u32, now: u32) -> bool {
+    started != 0 && now != started
 }
 
 fn payload_bytes(clip: &Clip) -> usize {
@@ -884,6 +930,7 @@ mod tests {
                     received: 0,
                     total: None,
                 }),
+                sequence: 0,
             }),
             next_id: 2,
             ..FileUi::default()
@@ -942,6 +989,7 @@ mod tests {
                     received: 0,
                     total: Some(1),
                 }),
+                sequence: 0,
             }),
             next_id: 2,
         };
@@ -959,5 +1007,13 @@ mod tests {
 
         retire_forgotten_session(&mut clipboard, &mut file, &mut pushes, true);
         assert!(!clipboard.has_pending());
+    }
+
+    #[test]
+    fn a_download_yields_to_any_newer_clipboard_content() {
+        assert!(!superseded(7, 7));
+        assert!(superseded(7, 8));
+        // Windows reported no sequence: nothing is known to be newer.
+        assert!(!superseded(0, 8));
     }
 }

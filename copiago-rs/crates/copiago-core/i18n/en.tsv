@@ -299,3 +299,5 @@ iPhone 复制了{kind}，但没有提供可读取的数据，未同步到电脑�
 正在发送到 iPhone…	Sending to iPhone…
 发送失败	Send failed
 iPhone 上的图片读取超时，未同步到电脑。请保持手机解锁后重新复制；相册照片若存储在 iCloud，请先在「照片」中打开原图等待加载完成，或改用截图	Reading the image from iPhone timed out, so it was not synced. Keep the phone unlocked and copy it again. If the photo is stored in iCloud, open it in Photos and wait for the original to load, or use a screenshot instead.
+「{name}」已下载，但电脑剪贴板里已有更新的内容，为避免覆盖未放入剪贴板。需要时可在历史中复制它	Downloaded {name}, but the PC clipboard already holds newer content, so it was not replaced. Copy the file from history when you need it.
+「{name}」已下载，但电脑剪贴板里已有更新的内容，为避免覆盖未放入剪贴板。如仍需要，请在手机上重新复制该文件	Downloaded {name}, but the PC clipboard already holds newer content, so it was not replaced. If you still need it, copy the file on the phone again.

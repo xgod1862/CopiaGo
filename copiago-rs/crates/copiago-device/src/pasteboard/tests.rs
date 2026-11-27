@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use std::future::pending;
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use copiago_core::clip::{Clip, FileOffer};
@@ -9,7 +9,7 @@ use tokio::{
     time::{advance, sleep},
 };
 
-use super::content::Snapshot;
+use super::content::{ALTERNATE_TIMEOUT, RESOLVE_TIMEOUT, Snapshot};
 use super::file_offer::FILE_DESCRIPTOR;
 use super::*;
 
@@ -49,51 +49,60 @@ enum Request {
     },
     Fetch {
         offer: FileOffer,
+        delay: Duration,
         error: FileTransferError,
     },
 }
 
-struct FakeBackend(VecDeque<Request>);
+/// Scripted pasteboard. Forks share one script, so requests from concurrent lanes
+/// must arrive in the scripted order; a test that overlaps lanes scripts the order
+/// the lanes reach the phone.
+struct FakeBackend(Rc<RefCell<VecDeque<Request>>>);
 
 impl FakeBackend {
     fn new() -> Self {
-        Self(VecDeque::new())
+        Self(Rc::default())
     }
 
-    fn answer(mut self, policy: PullPolicy, snapshot: Snapshot) -> Self {
-        self.0.push_back(Request::Pull {
-            policy,
-            delay: Duration::ZERO,
-            result: Ok(snapshot),
-        });
+    fn push_back(self, request: Request) -> Self {
+        self.0.borrow_mut().push_back(request);
         self
     }
 
-    fn delay(mut self, policy: PullPolicy, seconds: u64, snapshot: Snapshot) -> Self {
-        self.0.push_back(Request::Pull {
+    fn pop_front(&self) -> Option<Request> {
+        self.0.borrow_mut().pop_front()
+    }
+
+    fn answer(self, policy: PullPolicy, snapshot: Snapshot) -> Self {
+        self.push_back(Request::Pull {
+            policy,
+            delay: Duration::ZERO,
+            result: Ok(snapshot),
+        })
+    }
+
+    fn delay(self, policy: PullPolicy, seconds: u64, snapshot: Snapshot) -> Self {
+        self.push_back(Request::Pull {
             policy,
             delay: Duration::from_secs(seconds),
             result: Ok(snapshot),
-        });
-        self
+        })
     }
 
-    fn error(mut self, policy: PullPolicy) -> Self {
-        self.0.push_back(Request::Pull {
+    fn error(self, policy: PullPolicy) -> Self {
+        self.push_back(Request::Pull {
             policy,
             delay: Duration::ZERO,
             result: Err(PasteboardError::RequestFailed),
-        });
-        self
+        })
     }
 
     fn alternate_listing(self, reply: Snapshot) -> Self {
         self.delay_alternate_listing(Duration::ZERO, reply)
     }
 
-    fn delay_alternate_listing(mut self, delay: Duration, reply: Snapshot) -> Self {
-        self.0.push_back(Request::AlternateListing { delay, reply });
-        self
+    fn delay_alternate_listing(self, delay: Duration, reply: Snapshot) -> Self {
+        self.push_back(Request::AlternateListing { delay, reply })
     }
 
     fn resolve(self, index: usize, uti: &'static str, data: Option<&[u8]>) -> Self {
@@ -101,47 +110,57 @@ impl FakeBackend {
     }
 
     fn delay_resolve(
-        mut self,
+        self,
         index: usize,
         uti: &'static str,
         delay: Duration,
         data: Option<&[u8]>,
     ) -> Self {
-        self.0.push_back(Request::Resolve {
+        self.push_back(Request::Resolve {
             index,
             uti,
             delay,
             data: data.map(<[u8]>::to_vec),
-        });
-        self
+        })
     }
 
     fn expect_set(
-        mut self,
+        self,
         item: SetItem,
         delay: Duration,
         result: Result<Option<PasteboardChange>, PasteboardError>,
     ) -> Self {
-        self.0.push_back(Request::Set {
+        self.push_back(Request::Set {
             item,
             delay,
             result,
-        });
-        self
+        })
+    }
+
+    fn expect_fetch(self, offer: FileOffer, delay: Duration, error: FileTransferError) -> Self {
+        self.push_back(Request::Fetch {
+            offer,
+            delay,
+            error,
+        })
     }
 
     fn verify(&self) {
-        assert!(self.0.is_empty(), "expected more requests");
+        assert!(self.0.borrow().is_empty(), "expected more requests");
     }
 }
 
 impl PasteboardBackend for FakeBackend {
+    fn fork(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+
     async fn pull(&mut self, policy: PullPolicy) -> Result<Snapshot, PasteboardError> {
         let Some(Request::Pull {
             policy: expected,
             delay,
             result,
-        }) = self.0.pop_front()
+        }) = self.pop_front()
         else {
             panic!("unexpected PULL");
         };
@@ -153,7 +172,7 @@ impl PasteboardBackend for FakeBackend {
     }
 
     async fn alternate_listing(&mut self) -> Result<Snapshot, PasteboardError> {
-        let Some(Request::AlternateListing { delay, reply }) = self.0.pop_front() else {
+        let Some(Request::AlternateListing { delay, reply }) = self.pop_front() else {
             panic!("unexpected alternate metadata request");
         };
         if !delay.is_zero() {
@@ -172,7 +191,7 @@ impl PasteboardBackend for FakeBackend {
             uti: expected,
             delay,
             data,
-        }) = self.0.pop_front()
+        }) = self.pop_front()
         else {
             panic!("unexpected RESOLVE");
         };
@@ -188,7 +207,7 @@ impl PasteboardBackend for FakeBackend {
             item: expected,
             delay,
             result,
-        }) = self.0.pop_front()
+        }) = self.pop_front()
         else {
             panic!("unexpected SET");
         };
@@ -206,12 +225,16 @@ impl PasteboardBackend for FakeBackend {
     ) -> Result<ReceivedFile, FileTransferError> {
         let Some(Request::Fetch {
             offer: expected,
+            delay,
             error,
-        }) = self.0.pop_front()
+        }) = self.pop_front()
         else {
             panic!("unexpected fetch");
         };
         assert!(offer == expected, "unexpected offer");
+        if !delay.is_zero() {
+            sleep(delay).await;
+        }
         Err(error)
     }
 }
@@ -448,7 +471,7 @@ async fn heic_only_skips_the_alternative_request() {
 const JPEG_DATA: &[u8] = b"\xff\xd8\xff\xe0synthetic bytes";
 
 #[tokio::test]
-async fn resolves_png_first_at_the_original_wire_index() {
+async fn resolves_jpeg_first_at_the_original_wire_index() {
     let image_types = &[HEIC, JPEG, PNG];
     let secondary = board(
         metadata("nonce".into(), 1),
@@ -466,68 +489,68 @@ async fn resolves_png_first_at_the_original_wire_index() {
             ],
         )
     };
-    let png = push_png();
     let update = next_update(
         FakeBackend::new()
             .answer(PullPolicy::AllPromised, listed())
             .answer(PullPolicy::PromiseSecondary, secondary)
             .alternate_listing(listed())
-            .resolve(1, PNG, Some(&png))
+            .resolve(1, JPEG, Some(JPEG_DATA))
             .alternate_listing(listed()),
-    )
-    .await;
-    assert_clip(update.event, test_image(PNG, &png));
-}
-
-#[tokio::test(start_paused = true)]
-async fn unavailable_wrong_format_or_slow_png_falls_back_to_jpeg() {
-    for (data, delay) in [
-        (None, Duration::ZERO),
-        (Some(JPEG_DATA), Duration::ZERO),
-        (None, Duration::from_secs(3)),
-    ] {
-        let update = next_update(
-            heic_with_promised_alternatives()
-                .alternate_listing(heic_listing(128))
-                .delay_resolve(0, PNG, delay, data)
-                .alternate_listing(heic_listing(128))
-                .resolve(0, JPEG, Some(JPEG_DATA))
-                .alternate_listing(heic_listing(128)),
-        )
-        .await;
-        assert_clip(update.event, test_image(JPEG, JPEG_DATA));
-    }
-}
-
-#[tokio::test]
-async fn skips_png_advertised_as_oversized() {
-    let listing = || heic_listing(MAX_ALTERNATE_IMAGE_BYTES as i64 + 1);
-    let update = next_update(
-        heic_with_promised_alternatives()
-            .alternate_listing(listing())
-            .resolve(0, JPEG, Some(JPEG_DATA))
-            .alternate_listing(listing()),
     )
     .await;
     assert_clip(update.event, test_image(JPEG, JPEG_DATA));
 }
 
 #[tokio::test(start_paused = true)]
+async fn unavailable_wrong_format_or_slow_jpeg_falls_back_to_png() {
+    let png = push_png();
+    for (data, delay) in [
+        (None, Duration::ZERO),
+        (Some(png.as_slice()), Duration::ZERO),
+        (None, RESOLVE_TIMEOUT + Duration::from_secs(1)),
+    ] {
+        let update = next_update(
+            heic_with_promised_alternatives()
+                .alternate_listing(heic_listing(128))
+                .delay_resolve(0, JPEG, delay, data)
+                .alternate_listing(heic_listing(128))
+                .resolve(0, PNG, Some(&png))
+                .alternate_listing(heic_listing(128)),
+        )
+        .await;
+        assert_clip(update.event, test_image(PNG, &png));
+    }
+}
+
+#[tokio::test]
+async fn skips_png_advertised_as_oversized() {
+    let listing = || heic_listing(MAX_ALTERNATE_IMAGE_BYTES as i64 + 1);
+    // JPEG is unavailable; the oversized PNG is never requested, so HEIC stays.
+    let update = next_update(
+        heic_with_promised_alternatives()
+            .alternate_listing(listing())
+            .resolve(0, JPEG, None)
+            .alternate_listing(listing()),
+    )
+    .await;
+    assert_clip(update.event, test_image(HEIC, b"heic"));
+}
+
+#[tokio::test(start_paused = true)]
 async fn preserves_original_heic_after_both_attempts_or_at_the_total_deadline() {
     let unavailable = heic_with_promised_alternatives()
         .alternate_listing(heic_listing(128))
-        .resolve(0, PNG, None)
+        .resolve(0, JPEG, None)
         .alternate_listing(heic_listing(128))
-        .resolve(0, JPEG, None);
+        .resolve(0, PNG, None);
+    // Each resolve runs past its own limit, so the total budget ends the second one.
+    let stalled = RESOLVE_TIMEOUT + Duration::from_secs(2);
     let slow = heic_with_promised_alternatives()
         .delay_alternate_listing(Duration::from_millis(1_500), heic_listing(128))
-        .delay_resolve(0, PNG, Duration::from_secs(3), None)
+        .delay_resolve(0, JPEG, stalled, None)
         .delay_alternate_listing(Duration::from_millis(1_500), heic_listing(128))
-        .delay_resolve(0, JPEG, Duration::from_secs(3), None);
-    for (backend, elapsed) in [
-        (unavailable, Duration::ZERO),
-        (slow, Duration::from_secs(6)),
-    ] {
+        .delay_resolve(0, PNG, stalled, None);
+    for (backend, elapsed) in [(unavailable, Duration::ZERO), (slow, ALTERNATE_TIMEOUT)] {
         let started = Instant::now();
         let update = next_update(backend).await;
         assert_eq!(started.elapsed(), elapsed);
@@ -564,12 +587,11 @@ async fn confirms_change_and_item_before_trying_alternatives() {
 
 #[tokio::test]
 async fn drops_resolved_bytes_when_the_change_cannot_be_confirmed() {
-    let png = push_png();
     for after in [snapshot(2, &[HEIC, JPEG, PNG], []), Snapshot::default()] {
         let update = next_update(
             heic_with_promised_alternatives()
                 .alternate_listing(heic_listing(128))
-                .resolve(0, PNG, Some(&png))
+                .resolve(0, JPEG, Some(JPEG_DATA))
                 .alternate_listing(after),
         )
         .await;
@@ -819,11 +841,13 @@ async fn watcher_dispatches_fetch_offer_and_emits_the_result() {
         change: None,
         data: None,
     };
-    let mut backend = FakeBackend::new().answer(PullPolicy::AllPromised, snapshot(1, &[], []));
-    backend.0.push_back(Request::Fetch {
-        offer: offer.clone(),
-        error: FileTransferError::OfferExpired,
-    });
+    let mut backend = FakeBackend::new()
+        .answer(PullPolicy::AllPromised, snapshot(1, &[], []))
+        .expect_fetch(
+            offer.clone(),
+            Duration::ZERO,
+            FileTransferError::OfferExpired,
+        );
     let mut command = Some(DeviceCommand::FetchOffer(offer, 1));
     let mut expired = false;
     watch(
@@ -832,7 +856,11 @@ async fn watcher_dispatches_fetch_offer_and_emits_the_result() {
         true,
         || Language::ZhCn,
         &mut PasteboardState::default(),
-        async || command.take(),
+        // A real queue waits for the next command; `None` would mean it closed.
+        async || match command.take() {
+            Some(command) => Some(command),
+            None => pending().await,
+        },
         |event| {
             if matches!(
                 event,
@@ -1053,7 +1081,9 @@ async fn notes_64_second_response_times_out_and_next_copy_arrives() {
         |event| {
             match event {
                 DeviceEvent::Status(..) => {}
-                DeviceEvent::Unsupported { .. } => {
+                DeviceEvent::ReadFailed {
+                    timed_out: true, ..
+                } => {
                     assert!(!saw_timeout);
                     assert!(started.elapsed() >= Duration::from_secs(30));
                     assert!(started.elapsed() < Duration::from_secs(31));
@@ -1075,7 +1105,7 @@ async fn notes_64_second_response_times_out_and_next_copy_arrives() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn lightweight_timeout_keeps_listing_id_and_skips_without_clip() {
+async fn lightweight_timeout_keeps_listing_id_and_reports_the_timeout() {
     let listing = snapshot(1, &[TEXT], []);
     let change = listing.change.clone();
     let started = Instant::now();
@@ -1086,7 +1116,16 @@ async fn lightweight_timeout_keeps_listing_id_and_skips_without_clip() {
     )
     .await;
     assert!(update.change == change);
-    assert!(update.event.is_none());
+    assert!(update.skipped);
+    let Some(DeviceEvent::ReadFailed {
+        kind,
+        image: false,
+        timed_out: true,
+    }) = update.event
+    else {
+        panic!("expected a timed-out read");
+    };
+    assert_eq!(kind.render(Language::ZhCn), "文本");
     assert!(started.elapsed() >= Duration::from_secs(15));
     assert!(started.elapsed() < Duration::from_secs(16));
 }
@@ -1319,7 +1358,13 @@ async fn push_and_pull_round_trip_while_suppressing_both_kinds_of_echo() {
                 Duration::from_millis(200),
                 Ok(snapshot(2, &[uti], []).change),
             )
+            // Reading runs beside the SET: the phone's copy of the pushed item is
+            // read while the SET still awaits its reply, and dropped as an echo.
             .answer(PullPolicy::AllPromised, snapshot(2, &[uti], []))
+            .answer(
+                PullPolicy::PromiseSecondary,
+                snapshot(2, &[uti], [(uti, inline(&bytes))]),
+            )
             .answer(PullPolicy::AllPromised, snapshot(3, &[uti], []))
             .answer(PullPolicy::PromiseSecondary, read_back())
             .answer(PullPolicy::AllPromised, different_nonce(dictionary([])))
@@ -1504,5 +1549,147 @@ async fn an_offer_and_unprepared_images_never_reach_set() {
         );
     }
     assert!(state.last_push.is_none());
+    backend.verify();
+}
+
+/// Commands delivered at fixed times after `started`, then none. Never reports a
+/// closed queue. Like the real queue it is cancellation-safe: a command leaves the
+/// list only when it is returned, so a dropped wait loses nothing.
+fn timed_commands(
+    started: Instant,
+    commands: Vec<(u64, DeviceCommand)>,
+) -> impl AsyncFnMut() -> Option<DeviceCommand> {
+    let mut commands = VecDeque::from(commands);
+    async move || {
+        let Some(&(millis, _)) = commands.front() else {
+            return pending().await;
+        };
+        sleep_until(started + Duration::from_millis(millis)).await;
+        commands.pop_front().map(|(_, command)| command)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_read_does_not_hold_up_a_push_and_is_dropped_once_superseded() {
+    let mut backend = FakeBackend::new()
+        .answer(PullPolicy::AllPromised, text_at(1, "before"))
+        // A phone change whose content takes ten seconds to arrive.
+        .answer(PullPolicy::AllPromised, snapshot(2, &[TEXT], []))
+        .delay(
+            PullPolicy::PromiseSecondary,
+            10,
+            text_at(2, "slow phone copy"),
+        )
+        .expect_set(
+            SetItem::Text(PUSH_TEXT.to_owned()),
+            Duration::ZERO,
+            Ok(snapshot(3, &[TEXT], []).change),
+        )
+        // The overdue poll after the slow read sees the push as the latest change.
+        .answer(PullPolicy::AllPromised, snapshot(3, &[TEXT], []))
+        // A later phone copy still syncs.
+        .answer(PullPolicy::AllPromised, snapshot(4, &[TEXT], []))
+        .answer(PullPolicy::PromiseSecondary, text_at(4, "newer phone copy"));
+    let started = Instant::now();
+    let mut signals = VecDeque::from([500, 12_000]);
+    let mut pushed_at = None;
+    watch(
+        &mut backend,
+        async || match signals.pop_front() {
+            Some(millis) => {
+                sleep_until(started + Duration::from_millis(millis)).await;
+                Ok(NOTIFICATIONS[0].to_owned())
+            }
+            None => pending().await,
+        },
+        true,
+        || Language::ZhCn,
+        &mut PasteboardState::default(),
+        timed_commands(
+            started,
+            vec![(
+                1_000,
+                DeviceCommand::Push(Clip::Text(PUSH_TEXT.to_owned()), Some(7)),
+            )],
+        ),
+        |event| {
+            match event {
+                DeviceEvent::Status(..) => {}
+                DeviceEvent::PushResult(Some(7), Ok(())) => pushed_at = Some(started.elapsed()),
+                event => {
+                    // The slow read began before the push replaced the phone's
+                    // clipboard, so writing it to the PC would undo the user's copy.
+                    assert_clip(Some(event), Clip::Text("newer phone copy".to_owned()));
+                    assert_eq!(started.elapsed(), Duration::from_secs(12));
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(pushed_at, Some(Duration::from_secs(1)));
+    backend.verify();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_download_does_not_hold_up_polls_or_pushes() {
+    let offer = FileOffer {
+        name: "large.zip".to_owned(),
+        uti: "public.zip-archive".to_owned(),
+        size: 1,
+        change: None,
+        data: None,
+    };
+    let mut backend = FakeBackend::new()
+        .answer(PullPolicy::AllPromised, text_at(1, "before"))
+        .expect_fetch(
+            offer.clone(),
+            Duration::from_secs(5),
+            FileTransferError::OfferExpired,
+        )
+        .expect_set(
+            SetItem::Text(PUSH_TEXT.to_owned()),
+            Duration::ZERO,
+            Ok(None),
+        )
+        // Periodic polls keep running at 2 s and 4 s during the download.
+        .answer(PullPolicy::AllPromised, text_at(1, "before"))
+        .answer(PullPolicy::AllPromised, text_at(1, "before"));
+    let started = Instant::now();
+    let mut pushed_at = None;
+    watch(
+        &mut backend,
+        async || pending().await,
+        true,
+        || Language::ZhCn,
+        &mut PasteboardState::default(),
+        timed_commands(
+            started,
+            vec![
+                (0, DeviceCommand::FetchOffer(offer, 3)),
+                (
+                    1_000,
+                    DeviceCommand::Push(Clip::Text(PUSH_TEXT.to_owned()), None),
+                ),
+            ],
+        ),
+        |event| {
+            match event {
+                DeviceEvent::Status(..) => {}
+                DeviceEvent::PushResult(None, Ok(())) => pushed_at = Some(started.elapsed()),
+                DeviceEvent::FileResult(3, Err(FileTransferError::OfferExpired)) => {
+                    assert_eq!(started.elapsed(), Duration::from_secs(5));
+                    return ControlFlow::Break(());
+                }
+                _ => panic!("unexpected event"),
+            }
+            ControlFlow::Continue(())
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(pushed_at, Some(Duration::from_secs(1)));
     backend.verify();
 }

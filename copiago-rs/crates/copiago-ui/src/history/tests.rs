@@ -172,3 +172,59 @@ fn time_uses_local_calendar_dates_and_bilingual_yesterday() {
     assert_eq!(human_size(1536), "2 KB");
     assert_eq!(human_size(19 * 1024 * 1024), "19.0 MB");
 }
+
+#[test]
+fn a_row_cannot_be_sent_again_until_the_phone_answers() {
+    let start = Instant::now();
+    let mut page = HistoryPage::new(Language::ZhCn);
+    page.set_entries(history(&[], true), history(&[12, 11], true));
+    page.activate(HistoryTarget::Tab(Source::Pc), start);
+    let row = |id| HistoryRowId {
+        source: Source::Pc,
+        id,
+    };
+    let send = |id| HistoryTarget::Action(HistoryAction::Send(row(id)));
+    let revision = |page: &HistoryPage, id| page.record(row(id)).unwrap().revision;
+
+    page.sending(row(12));
+    assert_eq!(
+        page.send_mark(row(12), revision(&page, 12)),
+        Some(SendMark::Sending)
+    );
+    assert_eq!(page.activate(send(12), start), None);
+    // Another row stays available.
+    assert_eq!(
+        page.activate(send(11), start),
+        Some(HistoryAction::Send(row(11)))
+    );
+
+    for finished in [SendMark::Failed, SendMark::Sent] {
+        page.sending(row(12));
+        if finished == SendMark::Failed {
+            page.send_failed(row(12));
+        } else {
+            page.sent(row(12));
+        }
+        assert_eq!(page.send_mark(row(12), revision(&page, 12)), Some(finished));
+        assert_eq!(
+            page.activate(send(12), start),
+            Some(HistoryAction::Send(row(12)))
+        );
+    }
+
+    // A send interrupted by forgetting the phone never gets a result.
+    page.sending(row(12));
+    page.cancel_sending();
+    assert_eq!(page.send_mark(row(12), revision(&page, 12)), None);
+    assert_eq!(
+        page.activate(send(12), start),
+        Some(HistoryAction::Send(row(12)))
+    );
+    // A finished mark stays.
+    page.sent(row(11));
+    page.cancel_sending();
+    assert_eq!(
+        page.send_mark(row(11), revision(&page, 11)),
+        Some(SendMark::Sent)
+    );
+}

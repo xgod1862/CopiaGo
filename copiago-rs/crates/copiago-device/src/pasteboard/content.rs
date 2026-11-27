@@ -19,9 +19,13 @@ pub(super) const INLINE_TEXT: [&str; 3] =
 pub(super) const PNG_UTI: &str = "public.png";
 const JPEG_UTI: &str = "public.jpeg";
 const HEIC_UTI: &str = "public.heic";
-const HEIC_ALTERNATIVES: [&str; 2] = [PNG_UTI, JPEG_UTI];
-const ALTERNATE_TIMEOUT: Duration = Duration::from_secs(6);
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
+// JPEG first: converting a camera photo to PNG on the phone takes far longer and
+// yields several times the bytes (a 12 MP photo is roughly 20-35 MB as PNG).
+const HEIC_ALTERNATIVES: [&str; 2] = [JPEG_UTI, PNG_UTI];
+// The phone transcodes a HEIC photo on request. Two seconds was too short for a
+// full-resolution camera photo; these budgets are estimates pending device timing.
+pub(super) const ALTERNATE_TIMEOUT: Duration = Duration::from_secs(12);
+pub(super) const RESOLVE_TIMEOUT: Duration = Duration::from_secs(8);
 // These also justify the lightweight content request. The current Python
 // reader still extracts text only from the inline UTF-8 representations.
 const DECLARED_TEXT: [&str; 3] = [
@@ -171,6 +175,33 @@ impl Snapshot {
         }
     }
 
+    /// What the user copied, for a failure message. Declared types are enough here;
+    /// the data itself may be missing.
+    fn copied_kind(&self) -> Message {
+        Message::new(if self.declares_image() {
+            "图片"
+        } else if self.types().any(is_file_like) || file_offer::content_type(self).is_some() {
+            "文件"
+        } else if self.declares_text() {
+            "文本"
+        } else {
+            "内容"
+        })
+    }
+
+    fn read_failed(self, stage: &str, timed_out: bool) -> Update {
+        self.log_types(stage);
+        Update {
+            event: Some(DeviceEvent::ReadFailed {
+                kind: self.copied_kind(),
+                image: self.declares_image(),
+                timed_out,
+            }),
+            change: self.change,
+            skipped: true,
+        }
+    }
+
     fn log_types(&self, stage: &str) {
         // UTI strings come from the peer. Only emit fixed categories and counts.
         let mut counts = [0_u32; 5];
@@ -213,9 +244,9 @@ impl Snapshot {
         }
     }
 
+    /// Abandons this change but tells the user, instead of dropping it silently.
     fn timed_out(self) -> Update {
-        self.log_types("pull timeout");
-        self.skip()
+        self.read_failed("pull timeout", true)
     }
 
     fn skip(self) -> Update {
@@ -415,14 +446,12 @@ pub(super) async fn read_clip(
     // fails, keep the previous Windows clipboard even if text was inline.
     if secondary.declares_image() {
         return match pull(backend, PullPolicy::AllResolved).await {
-            Ok(mut resolved) => {
-                let image = resolved.take_image().map(|(_, image)| image);
-                Ok(resolved.into_update(image))
-            }
-            Err(PasteboardError::RequestTimeout) => {
-                secondary.log_types("pull timeout");
-                Ok(secondary.into_update(None))
-            }
+            Ok(mut resolved) => match resolved.take_image() {
+                Some((_, image)) => Ok(resolved.into_update(Some(image))),
+                // Declared as an image but no bytes: not an unsupported format.
+                None => Ok(resolved.read_failed("image unavailable", false)),
+            },
+            Err(PasteboardError::RequestTimeout) => Ok(secondary.timed_out()),
             Err(error) => Err(error),
         };
     }

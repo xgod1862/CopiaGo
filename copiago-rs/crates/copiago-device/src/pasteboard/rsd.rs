@@ -41,7 +41,7 @@ pub(crate) async fn read_rsd_types(
 ) -> Result<Vec<Vec<String>>, PasteboardError> {
     let port = pasteboard_port(rsd)?;
     let mut backend = RsdPasteboard {
-        adapter,
+        adapter: adapter.clone(),
         port,
         data_dir,
     };
@@ -81,7 +81,7 @@ pub(crate) async fn watch_rsd(
         .map_err(|_| PasteboardError::NotificationsUnavailable)??;
 
     let mut backend = RsdPasteboard {
-        adapter,
+        adapter: adapter.clone(),
         port,
         data_dir: options.data_dir,
     };
@@ -127,8 +127,10 @@ async fn subscribe(
     Ok(notifications)
 }
 
+/// One lane of pasteboard I/O. Each request opens its own service connection, and
+/// the tunnel adapter multiplexes connections, so forks can run requests at once.
 struct RsdPasteboard<'a> {
-    adapter: &'a mut AdapterHandle,
+    adapter: AdapterHandle,
     port: u16,
     data_dir: &'a Path,
 }
@@ -152,9 +154,17 @@ impl RsdPasteboard<'_> {
 }
 
 impl PasteboardBackend for RsdPasteboard<'_> {
+    fn fork(&self) -> Self {
+        Self {
+            adapter: self.adapter.clone(),
+            port: self.port,
+            data_dir: self.data_dir,
+        }
+    }
+
     async fn pull(&mut self, policy: PullPolicy) -> Result<Snapshot, PasteboardError> {
         if matches!(policy, PullPolicy::Threshold(_)) {
-            return file_transfer::describe_snapshot(self.adapter, self.port)
+            return file_transfer::describe_snapshot(&mut self.adapter, self.port)
                 .await
                 .map_err(|error| match error {
                     FileTransferError::TimedOut => PasteboardError::RequestTimeout,
@@ -168,7 +178,7 @@ impl PasteboardBackend for RsdPasteboard<'_> {
     }
 
     async fn alternate_listing(&mut self) -> Result<Snapshot, PasteboardError> {
-        file_transfer::listing(self.adapter, self.port)
+        file_transfer::listing(&mut self.adapter, self.port)
             .await
             .map_err(|_| PasteboardError::RequestFailed)
     }
@@ -178,7 +188,7 @@ impl PasteboardBackend for RsdPasteboard<'_> {
         item_index: usize,
         uti: &str,
     ) -> Result<Vec<u8>, PasteboardError> {
-        file_transfer::resolve_alternate_image(self.adapter, self.port, item_index, uti)
+        file_transfer::resolve_alternate_image(&mut self.adapter, self.port, item_index, uti)
             .await
             .map_err(|_| PasteboardError::RequestFailed)
     }
@@ -195,7 +205,7 @@ impl PasteboardBackend for RsdPasteboard<'_> {
     ) -> Result<ReceivedFile, FileTransferError> {
         file_receive::receive(self.data_dir, offer, async |offer, writer| {
             file_transfer::receive_file(
-                self.adapter,
+                &mut self.adapter,
                 self.port,
                 offer,
                 Method::Threshold,
@@ -397,7 +407,7 @@ mod tests {
             .ok_or("pasteboard service missing")?
             .port;
         let mut backend = RsdPasteboard {
-            adapter,
+            adapter: adapter.clone(),
             port,
             data_dir,
         };

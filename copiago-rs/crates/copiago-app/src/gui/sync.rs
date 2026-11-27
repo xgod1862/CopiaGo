@@ -38,6 +38,10 @@ struct Transfer {
     id: u64,
     name: String,
     progress: Option<TransferProgress>,
+    /// Windows clipboard sequence when the download began. Reads run beside
+    /// downloads, so a newer copy can reach the clipboard first; a changed
+    /// sequence means the finished file must not replace it.
+    sequence: u32,
 }
 
 struct TransferProgress {
@@ -180,12 +184,27 @@ impl Host<'_> {
         {
             return;
         }
-        let Some((clip, kind)) = self
-            .clipboard
-            .read()
-            .ok()
-            .and_then(|read| self.clipboard_sync.read_windows(read))
-        else {
+        let read = match self.clipboard.read() {
+            Ok(read) => read,
+            Err(error) => {
+                diagnostic::event(format_args!("event=pc_read_failed error={error}"));
+                if self.clipboard_sync.auto_push() {
+                    self.set_status(clipboard_read_error(&error), StatusTone::Warning);
+                }
+                return;
+            }
+        };
+        if let Some(kind) = self.clipboard_sync.push_filtered(&read) {
+            diagnostic::event(format_args!("event=push_filtered kind={}", kind.as_str()));
+            self.set_status(
+                message!(
+                    "电脑上复制了{kind}，但设置中未开启「{kind}」同步到 iPhone。如需同步，请在设置的「自动同步到 iPhone」中勾选「{kind}」",
+                    kind = kind_name(kind)
+                ),
+                StatusTone::Muted,
+            );
+        }
+        let Some((clip, kind)) = self.clipboard_sync.read_windows(read) else {
             return;
         };
         if record {
@@ -214,6 +233,16 @@ impl Host<'_> {
                     kind.as_str(),
                     row.is_some()
                 ));
+                if let Some(row) = row {
+                    self.history_page.sending(row);
+                }
+                // Text arrives at once; announce only what the user may wait for.
+                if row.is_some() || kind != SyncKind::Text {
+                    self.set_status(
+                        message!("正在发送{kind}到 iPhone…", kind = kind_name(kind)),
+                        StatusTone::Muted,
+                    );
+                }
             }
             Ok(false) => {}
             Err(error) => {
@@ -222,9 +251,12 @@ impl Host<'_> {
                     PushQueueError::Closed => "queue_closed",
                 };
                 diagnostic::event(format_args!("event=push_failed reason={reason}"));
-                if row.is_some() {
+                if let Some(row) = row {
+                    self.history_page.send_failed(row);
                     let notice = match error {
-                        PushQueueError::Full => message!("发送到 iPhone 失败"),
+                        PushQueueError::Full => {
+                            message!("前面还有内容在发送，暂时无法加入。请稍后再点「发送」")
+                        }
                         PushQueueError::Closed => message!("iPhone 未连接，无法发送"),
                     };
                     self.report_send(notice);
@@ -248,7 +280,12 @@ impl Host<'_> {
                     bytes,
                     uti: "public.png".into(),
                 })
-                .map_err(|_| message!("发送到 iPhone 失败")),
+                .map_err(|error| match error {
+                    ImageError::ImageTooLarge => message!("图片过大（超过 64 MB），无法发送到 iPhone。请缩小或裁剪图片后重新复制"),
+                    ImageError::InvalidImage | ImageError::Codec(_) => {
+                        message!("这张图片无法转换为 PNG，未发送到 iPhone。请用「画图」等程序另存为 PNG 或 JPG 后重新复制")
+                    }
+                }),
             _ => Err(message!("无法读取这条历史")),
         };
         match clip {
@@ -291,8 +328,14 @@ impl Host<'_> {
                 if error == PasteboardError::PushBusy {
                     self.clipboard_sync.allow_resend();
                 }
-                diagnostic::event(format_args!("event=push_failed reason={error}"));
-                let notice = message!("发送到 iPhone 失败");
+                diagnostic::event(format_args!(
+                    "event=push_failed reason={error} kind={}",
+                    kind.as_str()
+                ));
+                if let Some(id) = row {
+                    self.history_page.send_failed(id);
+                }
+                let notice = push_error(error, kind);
                 self.notify(&notice, true, NotificationKind::Standard);
                 self.set_status(notice, StatusTone::Warning);
             }
@@ -307,6 +350,11 @@ impl Host<'_> {
                 .receive_phone(clip, stale, self.clipboard.sequence_number());
         let notice = match outcome {
             PhoneClip::Ignore => return,
+            PhoneClip::Filtered(kind) => {
+                diagnostic::event(format_args!("event=pull_filtered kind={}", kind.as_str()));
+                self.set_status(filtered_to_pc(kind), StatusTone::Muted);
+                return;
+            }
             PhoneClip::Hold(kind) => {
                 let pending = self.clipboard_sync.pending().unwrap();
                 let note = self.record_clip(Source::Phone, pending);
@@ -335,11 +383,11 @@ impl Host<'_> {
             }
             PhoneClip::Write(clip, kind) => {
                 if let Err(error) = self.write_clip(&clip) {
-                    let notice = clipboard_error(error);
                     diagnostic::event(format_args!(
-                        "event=pull_failed kind={} bytes={bytes}",
+                        "event=pull_failed kind={} bytes={bytes} error={error}",
                         kind.as_str()
                     ));
+                    let notice = clipboard_error(error);
                     self.notify(&notice, true, NotificationKind::Standard);
                     self.set_status(notice, StatusTone::Warning);
                     return;
@@ -448,7 +496,11 @@ impl Host<'_> {
         let bytes = offer.size;
         let decision = self.clipboard_sync.decide_offer(bytes);
         let reason = match decision {
-            OfferDecision::Ignore => return,
+            OfferDecision::Ignore => {
+                diagnostic::event(format_args!("event=pull_filtered kind=file"));
+                self.set_status(filtered_to_pc(SyncKind::File), StatusTone::Muted);
+                return;
+            }
             OfferDecision::TooLarge => {
                 diagnostic::event(format_args!(
                     "event=file_failed reason=too_large bytes={bytes}"
@@ -523,6 +575,10 @@ impl Host<'_> {
             return;
         }
         if accept && self.offer.active.is_some() {
+            self.set_status(
+                message!("还有一个文件正在同步，请等它完成后再试"),
+                StatusTone::Muted,
+            );
             return;
         }
         let waiting = self.offer.waiting.take().unwrap();
@@ -573,7 +629,13 @@ impl Host<'_> {
                 size = human_size(bytes)
             )
         };
-        self.offer.active = Some(Transfer { id, name, progress });
+        let sequence = self.clipboard.sequence_number();
+        self.offer.active = Some(Transfer {
+            id,
+            name,
+            progress,
+            sequence,
+        });
         self.set_status(notice, StatusTone::Muted);
         diagnostic::event(format_args!("event=file_requested bytes={bytes}"));
     }
@@ -594,6 +656,36 @@ impl Host<'_> {
         };
         let name = short_name(&active.name);
         let result = match result {
+            Ok(received) if superseded(active.sequence, self.clipboard.sequence_number()) => {
+                diagnostic::event(format_args!(
+                    "event=file_superseded bytes={}",
+                    received.bytes()
+                ));
+                let settings = self.settings.settings();
+                let notice = if settings.history
+                    && settings.pull_types.contains(&SyncKind::File)
+                    && matches!(self.history.add_received(active.name, &received), Ok(true))
+                {
+                    received.keep();
+                    if self.popup.visible() {
+                        self.refresh_entries();
+                    }
+                    message!(
+                        "「{name}」已下载，但电脑剪贴板里已有更新的内容，为避免覆盖未放入剪贴板。需要时可在历史中复制它",
+                        name = &name
+                    )
+                } else {
+                    message!(
+                        "「{name}」已下载，但电脑剪贴板里已有更新的内容，为避免覆盖未放入剪贴板。如仍需要，请在手机上重新复制该文件",
+                        name = &name
+                    )
+                };
+                if !self.popup.visible() {
+                    self.notify(&notice, false, NotificationKind::Standard);
+                }
+                self.set_status(notice, StatusTone::Muted);
+                Ok(())
+            }
             Ok(received) => {
                 let bytes = received.bytes();
                 if self.publish_file(&received).is_ok() {
@@ -620,7 +712,10 @@ impl Host<'_> {
                     diagnostic::event(format_args!("event=file_complete bytes={bytes}"));
                     Ok(())
                 } else {
-                    Err(message!("无法把「{name}」放进电脑剪贴板", name = &name))
+                    Err(message!(
+                        "已收到「{name}」，但无法放进电脑剪贴板：剪贴板可能被其他程序占用，请稍后在历史中重新复制",
+                        name = &name
+                    ))
                 }
             }
             Err(error) => {
@@ -633,7 +728,35 @@ impl Host<'_> {
                         message!("「{name}」太大，未能同步", name = &name)
                     }
                     FileTransferError::Disconnected => message!("iPhone 未连接，无法同步文件"),
-                    _ => message!("同步「{name}」失败", name = &name),
+                    FileTransferError::TimedOut => message!(
+                        "同步「{name}」超时：手机长时间没有传来数据。请保持手机解锁后重新复制",
+                        name = &name
+                    ),
+                    FileTransferError::DataUnavailable => message!(
+                        "iPhone 没有提供「{name}」的内容。若文件在 iCloud 中，请先在「文件」App 下载到本机",
+                        name = &name
+                    ),
+                    FileTransferError::Busy => {
+                        message!("还有一个文件正在同步，请等它完成后再试")
+                    }
+                    FileTransferError::Destination => message!(
+                        "无法把「{name}」保存到电脑，请检查磁盘空间和临时文件夹权限",
+                        name = &name
+                    ),
+                    FileTransferError::SizeMismatch
+                    | FileTransferError::Truncated
+                    | FileTransferError::InvalidReply => {
+                        message!("「{name}」传输不完整，已丢弃。请重新复制一次", name = &name)
+                    }
+                    FileTransferError::UnsupportedPayload => {
+                        message!(
+                            "「{name}」的格式无法同步。可在 iPhone「文件」App 中长按它选择「压缩」，再复制生成的 zip 文件",
+                            name = &name
+                        )
+                    }
+                    FileTransferError::Request => {
+                        message!("向 iPhone 请求「{name}」失败，请重新复制一次", name = &name)
+                    }
                 })
             }
         };
@@ -669,6 +792,12 @@ pub(super) fn retire_forgotten_session(
     }
 }
 
+/// Whether the Windows clipboard changed since a download began. A zero sequence
+/// means Windows could not report one, so nothing is known to be newer.
+fn superseded(started: u32, now: u32) -> bool {
+    started != 0 && now != started
+}
+
 fn payload_bytes(clip: &Clip) -> usize {
     match clip {
         Clip::Text(text) => text.len(),
@@ -701,11 +830,75 @@ fn history_note(result: io::Result<bool>) -> Message {
     })
 }
 
+/// Writing a phone copy to Windows failed. Each cause names its own remedy; the
+/// HRESULT or Win32 error is recorded in the `pull_failed` diagnostic event.
 fn clipboard_error(error: ClipboardError) -> Message {
     Message::new(match error {
         ClipboardError::ImageTooLarge => "图片过大，未同步到电脑",
-        _ => "写入 Windows 剪贴板失败",
+        _ if error.is_missing_codec() => {
+            "这台电脑缺少 HEIC 照片解码组件，未能写入。请在 Microsoft Store 安装「HEIF 图像扩展」和「HEVC 视频扩展」，或在 iPhone「设置 → 相机 → 格式」选「兼容性最佳」"
+        }
+        ClipboardError::ImageCodec(_) | ClipboardError::InvalidImage => {
+            "图片格式无法在电脑上解码，未同步。可在 iPhone 上截图后复制截图，或在「照片」中将图片导出为 JPEG 后再复制"
+        }
+        ClipboardError::Win32(_) => {
+            "Windows 剪贴板被其他程序占用，未能写入。请稍后在历史中重新复制"
+        }
+        ClipboardError::InvalidText | ClipboardError::InvalidFileList => {
+            "内容格式无效，未能写入 Windows 剪贴板。请在手机上重新复制一次"
+        }
     })
+}
+
+/// Reading a Windows copy for automatic sending failed.
+fn clipboard_read_error(error: &ClipboardError) -> Message {
+    Message::new(match error {
+        ClipboardError::ImageTooLarge => {
+            "电脑上复制的图片过大，未发送到 iPhone。请缩小或裁剪图片后重新复制"
+        }
+        ClipboardError::Win32(_) => {
+            "电脑剪贴板被其他程序占用，未能读取，本次未发送。请稍后重新复制一次"
+        }
+        _ => {
+            "电脑上复制的内容无法读取，本次未发送。请重新复制一次；图片可先另存为 PNG 或 JPG 再复制"
+        }
+    })
+}
+
+/// A push the phone did not accept, named by cause so a screenshot shows which.
+fn push_error(error: PasteboardError, kind: SyncKind) -> Message {
+    match error {
+        PasteboardError::RequestTimeout => message!(
+            "发送{kind}超时：iPhone 在 20 秒内没有确认。请保持手机解锁后重试",
+            kind = kind_name(kind)
+        ),
+        PasteboardError::RequestFailed => message!(
+            "iPhone 拒绝了这次{kind}写入。请解锁手机后重试",
+            kind = kind_name(kind)
+        ),
+        PasteboardError::Disconnected => message!(
+            "发送{kind}时 iPhone 断开了连接，未发送。重新连接后请在历史中再点「发送」",
+            kind = kind_name(kind)
+        ),
+        PasteboardError::PushBusy => message!("待发送的内容过多，已暂停发送。请稍后再试"),
+        PasteboardError::UnsupportedPush => {
+            message!("这种内容无法发送到 iPhone，目前只支持发送文字和图片")
+        }
+        PasteboardError::ServiceMissing
+        | PasteboardError::NotificationsUnavailable
+        | PasteboardError::NotificationsClosed
+        | PasteboardError::MetadataUnresponsive => message!(
+            "iPhone 剪贴板服务没有响应，未发送{kind}。正在重新连接，连上后请在历史中再点「发送」",
+            kind = kind_name(kind)
+        ),
+    }
+}
+
+fn filtered_to_pc(kind: SyncKind) -> Message {
+    message!(
+        "iPhone 上复制了{kind}，但设置中未开启「{kind}」同步到电脑。如需同步，请在设置的「自动同步到电脑」中勾选「{kind}」",
+        kind = kind_name(kind)
+    )
 }
 
 /// PNG thumbnail for a history entry. An image too large to shrink within the
@@ -737,6 +930,7 @@ mod tests {
                     received: 0,
                     total: None,
                 }),
+                sequence: 0,
             }),
             next_id: 2,
             ..FileUi::default()
@@ -795,6 +989,7 @@ mod tests {
                     received: 0,
                     total: Some(1),
                 }),
+                sequence: 0,
             }),
             next_id: 2,
         };
@@ -812,5 +1007,13 @@ mod tests {
 
         retire_forgotten_session(&mut clipboard, &mut file, &mut pushes, true);
         assert!(!clipboard.has_pending());
+    }
+
+    #[test]
+    fn a_download_yields_to_any_newer_clipboard_content() {
+        assert!(!superseded(7, 7));
+        assert!(superseded(7, 8));
+        // Windows reported no sequence: nothing is known to be newer.
+        assert!(!superseded(0, 8));
     }
 }

@@ -109,6 +109,15 @@ struct Record {
     revision: u64,
 }
 
+/// Progress of a PC row's manual send, shown on that row until it changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendMark {
+    /// Queued or waiting for the phone to confirm; the send button is disabled.
+    Sending,
+    Sent,
+    Failed,
+}
+
 /// History state independent of a Composition scene, held only by the UI thread.
 pub struct HistoryPage {
     language: Language,
@@ -120,7 +129,7 @@ pub struct HistoryPage {
     revision: u64,
     clear_until: Option<Instant>,
     copied: Option<(HistoryRowId, u64)>,
-    sent: Option<(HistoryRowId, u64)>,
+    sent: Option<(HistoryRowId, u64, SendMark)>,
     status: HistoryStatus,
     offer: Option<HistoryOffer>,
     update: Option<String>,
@@ -200,7 +209,7 @@ impl HistoryPage {
             self.record(id)
                 .is_some_and(|item| item.revision == revision)
         });
-        self.sent = self.sent.filter(|&(id, revision)| {
+        self.sent = self.sent.filter(|&(id, revision, _)| {
             self.record(id)
                 .is_some_and(|item| item.revision == revision)
         });
@@ -246,8 +255,33 @@ impl HistoryPage {
         self.copied = self.record(id).map(|item| (id, item.revision));
     }
 
+    /// Marks a manual send as waiting for the phone. Only one row carries a mark.
+    pub fn sending(&mut self, id: HistoryRowId) {
+        self.mark_send(id, SendMark::Sending);
+    }
+
     pub fn sent(&mut self, id: HistoryRowId) {
-        self.sent = self.record(id).map(|item| (id, item.revision));
+        self.mark_send(id, SendMark::Sent);
+    }
+
+    pub fn send_failed(&mut self, id: HistoryRowId) {
+        self.mark_send(id, SendMark::Failed);
+    }
+
+    /// Ends a send whose result will never arrive, such as one interrupted by
+    /// forgetting the phone, so its row can be sent again.
+    pub fn cancel_sending(&mut self) {
+        self.sent = self.sent.filter(|&(_, _, mark)| mark != SendMark::Sending);
+    }
+
+    fn mark_send(&mut self, id: HistoryRowId, mark: SendMark) {
+        self.sent = self.record(id).map(|item| (id, item.revision, mark));
+    }
+
+    pub(crate) fn send_mark(&self, id: HistoryRowId, revision: u64) -> Option<SendMark> {
+        self.sent
+            .filter(|&(sent, sent_revision, _)| sent == id && sent_revision == revision)
+            .map(|(_, _, mark)| mark)
     }
 
     /// A row click selects it. A double click or its copy button copies it.
@@ -279,8 +313,12 @@ impl HistoryPage {
             HistoryAction::Copy(id) | HistoryAction::Delete(id) => {
                 id.source == self.tab && self.record(id).is_some()
             }
+            // A second click while the phone has not answered would queue a duplicate.
             HistoryAction::Send(id) => {
-                id.source == Source::Pc && self.tab == Source::Pc && self.record(id).is_some()
+                id.source == Source::Pc
+                    && self.tab == Source::Pc
+                    && self.record(id).is_some()
+                    && !matches!(self.sent, Some((sent, _, SendMark::Sending)) if sent == id)
             }
             HistoryAction::Enable(source) => {
                 let list = self.list(source);

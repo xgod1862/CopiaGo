@@ -243,6 +243,10 @@ impl Host<'_> {
                 self.pending_offer.clear();
                 self.log.event("unsupported", format_args!(""));
             }
+            DeviceEvent::ReadFailed { timed_out, .. } => {
+                self.log
+                    .event("pull_unreadable", format_args!("timed_out={timed_out}"));
+            }
             DeviceEvent::DeviceInfo(_) => self.log.event("device_info", format_args!("")),
             DeviceEvent::DeveloperServicesMissing { wireless } => {
                 let transport = if wireless { "wifi" } else { "usb" };
@@ -367,6 +371,10 @@ impl Host<'_> {
             .receive_phone(clip, while_disconnected, self.clipboard.sequence_number())
         {
             PhoneClip::Ignore => {}
+            PhoneClip::Filtered(kind) => {
+                self.log
+                    .event("pull_filtered", format_args!("kind={}", kind.as_str()));
+            }
             PhoneClip::Hold(kind) => {
                 self.log.event(
                     "pull_held",

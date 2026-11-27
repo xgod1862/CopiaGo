@@ -34,6 +34,15 @@ pub enum DeviceEvent {
     Unsupported {
         kind: Message,
     },
+    /// The phone copied something CopiaGo syncs, but its data could not be read:
+    /// the request timed out, or the phone declared the type without supplying bytes.
+    /// The copy is not retried; the user can copy it again.
+    ReadFailed {
+        kind: Message,
+        /// The copy declared an image type, so photo-specific advice applies.
+        image: bool,
+        timed_out: bool,
+    },
     PushResult(Option<u64>, Result<(), PasteboardError>),
     ForgetResult(bool),
     /// The tunnel opened but RSD did not advertise the pasteboard service.

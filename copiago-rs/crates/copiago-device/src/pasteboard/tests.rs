@@ -587,12 +587,11 @@ async fn confirms_change_and_item_before_trying_alternatives() {
 
 #[tokio::test]
 async fn drops_resolved_bytes_when_the_change_cannot_be_confirmed() {
-    let png = push_png();
     for after in [snapshot(2, &[HEIC, JPEG, PNG], []), Snapshot::default()] {
         let update = next_update(
             heic_with_promised_alternatives()
                 .alternate_listing(heic_listing(128))
-                .resolve(0, PNG, Some(&png))
+                .resolve(0, JPEG, Some(JPEG_DATA))
                 .alternate_listing(after),
         )
         .await;
@@ -1554,18 +1553,19 @@ async fn an_offer_and_unprepared_images_never_reach_set() {
 }
 
 /// Commands delivered at fixed times after `started`, then none. Never reports a
-/// closed queue.
+/// closed queue. Like the real queue it is cancellation-safe: a command leaves the
+/// list only when it is returned, so a dropped wait loses nothing.
 fn timed_commands(
     started: Instant,
     commands: Vec<(u64, DeviceCommand)>,
 ) -> impl AsyncFnMut() -> Option<DeviceCommand> {
     let mut commands = VecDeque::from(commands);
-    async move || match commands.pop_front() {
-        Some((millis, command)) => {
-            sleep_until(started + Duration::from_millis(millis)).await;
-            Some(command)
-        }
-        None => pending().await,
+    async move || {
+        let Some(&(millis, _)) = commands.front() else {
+            return pending().await;
+        };
+        sleep_until(started + Duration::from_millis(millis)).await;
+        commands.pop_front().map(|(_, command)| command)
     }
 }
 

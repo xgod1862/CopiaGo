@@ -268,6 +268,12 @@ impl HistoryPage {
         self.mark_send(id, SendMark::Failed);
     }
 
+    /// Ends a send whose result will never arrive, such as one interrupted by
+    /// forgetting the phone, so its row can be sent again.
+    pub fn cancel_sending(&mut self) {
+        self.sent = self.sent.filter(|&(_, _, mark)| mark != SendMark::Sending);
+    }
+
     fn mark_send(&mut self, id: HistoryRowId, mark: SendMark) {
         self.sent = self.record(id).map(|item| (id, item.revision, mark));
     }

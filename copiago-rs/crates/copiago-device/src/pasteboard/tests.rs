@@ -1570,7 +1570,7 @@ fn timed_commands(
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_slow_read_does_not_hold_up_a_push() {
+async fn a_slow_read_does_not_hold_up_a_push_and_is_dropped_once_superseded() {
     let mut backend = FakeBackend::new()
         .answer(PullPolicy::AllPromised, text_at(1, "before"))
         // A phone change whose content takes ten seconds to arrive.
@@ -1584,18 +1584,23 @@ async fn a_slow_read_does_not_hold_up_a_push() {
             SetItem::Text(PUSH_TEXT.to_owned()),
             Duration::ZERO,
             Ok(snapshot(3, &[TEXT], []).change),
-        );
+        )
+        // The overdue poll after the slow read sees the push as the latest change.
+        .answer(PullPolicy::AllPromised, snapshot(3, &[TEXT], []))
+        // A later phone copy still syncs.
+        .answer(PullPolicy::AllPromised, snapshot(4, &[TEXT], []))
+        .answer(PullPolicy::PromiseSecondary, text_at(4, "newer phone copy"));
     let started = Instant::now();
-    let mut notified = false;
+    let mut signals = VecDeque::from([500, 12_000]);
     let mut pushed_at = None;
     watch(
         &mut backend,
-        async || {
-            if std::mem::replace(&mut notified, true) {
-                return pending().await;
+        async || match signals.pop_front() {
+            Some(millis) => {
+                sleep_until(started + Duration::from_millis(millis)).await;
+                Ok(NOTIFICATIONS[0].to_owned())
             }
-            sleep_until(started + Duration::from_millis(500)).await;
-            Ok(NOTIFICATIONS[0].to_owned())
+            None => pending().await,
         },
         true,
         || Language::ZhCn,
@@ -1612,9 +1617,10 @@ async fn a_slow_read_does_not_hold_up_a_push() {
                 DeviceEvent::Status(..) => {}
                 DeviceEvent::PushResult(Some(7), Ok(())) => pushed_at = Some(started.elapsed()),
                 event => {
-                    // The read still completes, after the push.
-                    assert_clip(Some(event), Clip::Text("slow phone copy".to_owned()));
-                    assert_eq!(started.elapsed(), Duration::from_millis(10_500));
+                    // The slow read began before the push replaced the phone's
+                    // clipboard, so writing it to the PC would undo the user's copy.
+                    assert_clip(Some(event), Clip::Text("newer phone copy".to_owned()));
+                    assert_eq!(started.elapsed(), Duration::from_secs(12));
                     return ControlFlow::Break(());
                 }
             }

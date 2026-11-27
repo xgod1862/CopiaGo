@@ -208,6 +208,8 @@ impl Host<'_> {
             &mut self.pushes,
             success,
         );
+        // Push results of the retired session are ignored, so none will end the mark.
+        self.history_page.cancel_sending();
         if success {
             self.reset_connection_feedback();
             let mut connection = self.settings.connection().clone();

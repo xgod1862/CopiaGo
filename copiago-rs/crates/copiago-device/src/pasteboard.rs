@@ -259,6 +259,12 @@ async fn watch_updates(
     // memory budget, and a FetchOffer waits behind at most one push.
     let mut deferred: Option<DeviceCommand> = None;
 
+    // Counts pushes that may have replaced the phone's clipboard. A read that
+    // started before one of them finished returns content the user has already
+    // overwritten from the PC; writing it back would undo that copy.
+    let mut writes = 0_u64;
+    let mut read_started_at_write = writes;
+
     let mut next_poll = Instant::now() + POLL_INTERVAL;
     let mut retry = None;
     let mut failures = 0;
@@ -275,6 +281,10 @@ async fn watch_updates(
                 writing.set(None.into());
                 writer = Some(lane);
                 let result: Result<Option<PasteboardChange>, PasteboardError> = result;
+                // A timed-out SET may still have reached the phone.
+                if matches!(result, Ok(_) | Err(PasteboardError::RequestTimeout)) {
+                    writes += 1;
+                }
                 let result = result.map(|change| state.finish_push(change));
                 if emit(DeviceEvent::PushResult(id, result)).is_break() {
                     return Ok(None);
@@ -323,6 +333,12 @@ async fn watch_updates(
                     ReadOutcome::Seen => stale = false,
                     ReadOutcome::Read(update) => {
                         let Update { change, mut event, skipped } = update?;
+                        if read_started_at_write != writes {
+                            // Superseded by a push: keep the push's change as the
+                            // latest, and let the next poll pick up anything newer.
+                            copiago_core::diagnostic::event(format_args!("pull_superseded"));
+                            continue;
+                        }
                         // Compared with the state as it is now: a push may have
                         // finished while this read ran.
                         let duplicate = already_seen(change.as_ref(), state.last_change.as_ref());
@@ -364,6 +380,7 @@ async fn watch_updates(
             _ = changed.notified(), if retry.is_none() && reader.is_some() => {
                 let lane = reader.take().unwrap();
                 let job = ReadJob::Changed(state.last_change.clone());
+                read_started_at_write = writes;
                 reading.set(Some(read_lane(lane, job, &language)).into());
             }
             _ = sleep_until(retry.unwrap_or(next_poll)), if retry.is_some() => {

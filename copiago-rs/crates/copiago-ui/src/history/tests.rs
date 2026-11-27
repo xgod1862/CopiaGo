@@ -211,4 +211,20 @@ fn a_row_cannot_be_sent_again_until_the_phone_answers() {
             Some(HistoryAction::Send(row(12)))
         );
     }
+
+    // A send interrupted by forgetting the phone never gets a result.
+    page.sending(row(12));
+    page.cancel_sending();
+    assert_eq!(page.send_mark(row(12), revision(&page, 12)), None);
+    assert_eq!(
+        page.activate(send(12), start),
+        Some(HistoryAction::Send(row(12)))
+    );
+    // A finished mark stays.
+    page.sent(row(11));
+    page.cancel_sending();
+    assert_eq!(
+        page.send_mark(row(11), revision(&page, 11)),
+        Some(SendMark::Sent)
+    );
 }

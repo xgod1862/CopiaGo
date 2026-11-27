@@ -106,17 +106,27 @@ impl Host<'_> {
                     StatusTone::Muted,
                 );
             }
-            DeviceEvent::ReadFailed { kind, timed_out } => {
+            DeviceEvent::ReadFailed {
+                kind,
+                image,
+                timed_out,
+            } => {
                 self.clear_waiting_offer();
                 diagnostic::event(format_args!("event=pull_unreadable timed_out={timed_out}"));
-                let notice = if timed_out {
+                let notice = if timed_out && image {
+                    // Photos kept in iCloud must download before the phone can hand
+                    // them over; a screenshot is always local.
+                    message!(
+                        "iPhone 上的图片读取超时，未同步到电脑。请保持手机解锁后重新复制；相册照片若存储在 iCloud，请先在「照片」中打开原图等待加载完成，或改用截图"
+                    )
+                } else if timed_out {
                     message!(
                         "iPhone 上的{kind}读取超时，未同步到电脑。请在手机上重新复制一次",
                         kind = kind
                     )
                 } else {
                     message!(
-                        "iPhone 复制了{kind}，但没有提供可读取的数据，未同步到电脑。请重新复制一次",
+                        "iPhone 复制了{kind}，但没有提供可读取的数据，未同步到电脑。请重新复制一次；仍不行可先保存到本机（如存入相册或「文件」App）后再复制",
                         kind = kind
                     )
                 };

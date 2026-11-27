@@ -194,7 +194,7 @@ impl Host<'_> {
             diagnostic::event(format_args!("event=push_filtered kind={}", kind.as_str()));
             self.set_status(
                 message!(
-                    "电脑上复制了{kind}，但设置中未开启「{kind}」同步到 iPhone",
+                    "电脑上复制了{kind}，但设置中未开启「{kind}」同步到 iPhone。如需同步，请在设置的「自动同步到 iPhone」中勾选「{kind}」",
                     kind = kind_name(kind)
                 ),
                 StatusTone::Muted,
@@ -277,9 +277,9 @@ impl Host<'_> {
                     uti: "public.png".into(),
                 })
                 .map_err(|error| match error {
-                    ImageError::ImageTooLarge => message!("图片过大，无法发送到 iPhone"),
+                    ImageError::ImageTooLarge => message!("图片过大（超过 64 MB），无法发送到 iPhone。请缩小或裁剪图片后重新复制"),
                     ImageError::InvalidImage | ImageError::Codec(_) => {
-                        message!("这张图片无法转换为 PNG，未发送到 iPhone")
+                        message!("这张图片无法转换为 PNG，未发送到 iPhone。请用「画图」等程序另存为 PNG 或 JPG 后重新复制")
                     }
                 }),
             _ => Err(message!("无法读取这条历史")),
@@ -709,7 +709,10 @@ impl Host<'_> {
                         message!("「{name}」传输不完整，已丢弃。请重新复制一次", name = &name)
                     }
                     FileTransferError::UnsupportedPayload => {
-                        message!("「{name}」的格式无法同步", name = &name)
+                        message!(
+                            "「{name}」的格式无法同步。可在 iPhone「文件」App 中长按它选择「压缩」，再复制生成的 zip 文件",
+                            name = &name
+                        )
                     }
                     FileTransferError::Request => {
                         message!("向 iPhone 请求「{name}」失败，请重新复制一次", name = &name)
@@ -790,13 +793,13 @@ fn clipboard_error(error: ClipboardError) -> Message {
             "这台电脑缺少 HEIC 照片解码组件，未能写入。请在 Microsoft Store 安装「HEIF 图像扩展」和「HEVC 视频扩展」，或在 iPhone「设置 → 相机 → 格式」选「兼容性最佳」"
         }
         ClipboardError::ImageCodec(_) | ClipboardError::InvalidImage => {
-            "图片格式无法在电脑上解码，未同步"
+            "图片格式无法在电脑上解码，未同步。可在 iPhone 上截图后复制截图，或在「照片」中将图片导出为 JPEG 后再复制"
         }
         ClipboardError::Win32(_) => {
             "Windows 剪贴板被其他程序占用，未能写入。请稍后在历史中重新复制"
         }
         ClipboardError::InvalidText | ClipboardError::InvalidFileList => {
-            "内容格式无效，未能写入 Windows 剪贴板"
+            "内容格式无效，未能写入 Windows 剪贴板。请在手机上重新复制一次"
         }
     })
 }
@@ -804,9 +807,15 @@ fn clipboard_error(error: ClipboardError) -> Message {
 /// Reading a Windows copy for automatic sending failed.
 fn clipboard_read_error(error: &ClipboardError) -> Message {
     Message::new(match error {
-        ClipboardError::ImageTooLarge => "电脑上复制的图片过大，未发送到 iPhone",
-        ClipboardError::Win32(_) => "电脑剪贴板被其他程序占用，未能读取，本次未发送",
-        _ => "电脑上复制的内容无法读取，本次未发送",
+        ClipboardError::ImageTooLarge => {
+            "电脑上复制的图片过大，未发送到 iPhone。请缩小或裁剪图片后重新复制"
+        }
+        ClipboardError::Win32(_) => {
+            "电脑剪贴板被其他程序占用，未能读取，本次未发送。请稍后重新复制一次"
+        }
+        _ => {
+            "电脑上复制的内容无法读取，本次未发送。请重新复制一次；图片可先另存为 PNG 或 JPG 再复制"
+        }
     })
 }
 
@@ -822,16 +831,18 @@ fn push_error(error: PasteboardError, kind: SyncKind) -> Message {
             kind = kind_name(kind)
         ),
         PasteboardError::Disconnected => message!(
-            "发送{kind}时 iPhone 断开了连接，未发送",
+            "发送{kind}时 iPhone 断开了连接，未发送。重新连接后请在历史中再点「发送」",
             kind = kind_name(kind)
         ),
         PasteboardError::PushBusy => message!("待发送的内容过多，已暂停发送。请稍后再试"),
-        PasteboardError::UnsupportedPush => message!("这种内容无法发送到 iPhone"),
+        PasteboardError::UnsupportedPush => {
+            message!("这种内容无法发送到 iPhone，目前只支持发送文字和图片")
+        }
         PasteboardError::ServiceMissing
         | PasteboardError::NotificationsUnavailable
         | PasteboardError::NotificationsClosed
         | PasteboardError::MetadataUnresponsive => message!(
-            "iPhone 剪贴板服务没有响应，未发送{kind}。正在重新连接",
+            "iPhone 剪贴板服务没有响应，未发送{kind}。正在重新连接，连上后请在历史中再点「发送」",
             kind = kind_name(kind)
         ),
     }
@@ -839,7 +850,7 @@ fn push_error(error: PasteboardError, kind: SyncKind) -> Message {
 
 fn filtered_to_pc(kind: SyncKind) -> Message {
     message!(
-        "iPhone 上复制了{kind}，但设置中未开启「{kind}」同步到电脑",
+        "iPhone 上复制了{kind}，但设置中未开启「{kind}」同步到电脑。如需同步，请在设置的「自动同步到电脑」中勾选「{kind}」",
         kind = kind_name(kind)
     )
 }

@@ -337,7 +337,7 @@ impl Failure {
                 | WifiProbeError::MultiplePairingRecords,
             ) => "无法读取电脑上保存的配对信息。请在设置中点「忘记此 iPhone」后重新配对。",
             Self::Wifi(WifiProbeError::HostName | WifiProbeError::CloseTimeout) | Self::Session => {
-                "与 iPhone 的连接已断开，正在自动重新连接。"
+                "与 iPhone 的连接已断开，正在自动重新连接。若长时间未恢复，请解锁手机并确认与电脑在同一 Wi-Fi，或插上数据线。"
             }
             Self::Usb(UsbProbeError::Usbmuxd) => crate::usb::APPLE_SERVICE_UNAVAILABLE,
             Self::Usb(UsbProbeError::DeviceLocked) => "iPhone 已锁定，解锁后会自动重新连接。",

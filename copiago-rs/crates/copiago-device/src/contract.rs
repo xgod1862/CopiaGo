@@ -39,6 +39,8 @@ pub enum DeviceEvent {
     /// The copy is not retried; the user can copy it again.
     ReadFailed {
         kind: Message,
+        /// The copy declared an image type, so photo-specific advice applies.
+        image: bool,
         timed_out: bool,
     },
     PushResult(Option<u64>, Result<(), PasteboardError>),

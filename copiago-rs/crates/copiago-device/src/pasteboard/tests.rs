@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use std::future::pending;
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use copiago_core::clip::{Clip, FileOffer};
@@ -49,51 +49,60 @@ enum Request {
     },
     Fetch {
         offer: FileOffer,
+        delay: Duration,
         error: FileTransferError,
     },
 }
 
-struct FakeBackend(VecDeque<Request>);
+/// Scripted pasteboard. Forks share one script, so requests from concurrent lanes
+/// must arrive in the scripted order; a test that overlaps lanes scripts the order
+/// the lanes reach the phone.
+struct FakeBackend(Rc<RefCell<VecDeque<Request>>>);
 
 impl FakeBackend {
     fn new() -> Self {
-        Self(VecDeque::new())
+        Self(Rc::default())
     }
 
-    fn answer(mut self, policy: PullPolicy, snapshot: Snapshot) -> Self {
-        self.0.push_back(Request::Pull {
-            policy,
-            delay: Duration::ZERO,
-            result: Ok(snapshot),
-        });
+    fn push_back(self, request: Request) -> Self {
+        self.0.borrow_mut().push_back(request);
         self
     }
 
-    fn delay(mut self, policy: PullPolicy, seconds: u64, snapshot: Snapshot) -> Self {
-        self.0.push_back(Request::Pull {
+    fn pop_front(&self) -> Option<Request> {
+        self.0.borrow_mut().pop_front()
+    }
+
+    fn answer(self, policy: PullPolicy, snapshot: Snapshot) -> Self {
+        self.push_back(Request::Pull {
+            policy,
+            delay: Duration::ZERO,
+            result: Ok(snapshot),
+        })
+    }
+
+    fn delay(self, policy: PullPolicy, seconds: u64, snapshot: Snapshot) -> Self {
+        self.push_back(Request::Pull {
             policy,
             delay: Duration::from_secs(seconds),
             result: Ok(snapshot),
-        });
-        self
+        })
     }
 
-    fn error(mut self, policy: PullPolicy) -> Self {
-        self.0.push_back(Request::Pull {
+    fn error(self, policy: PullPolicy) -> Self {
+        self.push_back(Request::Pull {
             policy,
             delay: Duration::ZERO,
             result: Err(PasteboardError::RequestFailed),
-        });
-        self
+        })
     }
 
     fn alternate_listing(self, reply: Snapshot) -> Self {
         self.delay_alternate_listing(Duration::ZERO, reply)
     }
 
-    fn delay_alternate_listing(mut self, delay: Duration, reply: Snapshot) -> Self {
-        self.0.push_back(Request::AlternateListing { delay, reply });
-        self
+    fn delay_alternate_listing(self, delay: Duration, reply: Snapshot) -> Self {
+        self.push_back(Request::AlternateListing { delay, reply })
     }
 
     fn resolve(self, index: usize, uti: &'static str, data: Option<&[u8]>) -> Self {
@@ -101,47 +110,57 @@ impl FakeBackend {
     }
 
     fn delay_resolve(
-        mut self,
+        self,
         index: usize,
         uti: &'static str,
         delay: Duration,
         data: Option<&[u8]>,
     ) -> Self {
-        self.0.push_back(Request::Resolve {
+        self.push_back(Request::Resolve {
             index,
             uti,
             delay,
             data: data.map(<[u8]>::to_vec),
-        });
-        self
+        })
     }
 
     fn expect_set(
-        mut self,
+        self,
         item: SetItem,
         delay: Duration,
         result: Result<Option<PasteboardChange>, PasteboardError>,
     ) -> Self {
-        self.0.push_back(Request::Set {
+        self.push_back(Request::Set {
             item,
             delay,
             result,
-        });
-        self
+        })
+    }
+
+    fn expect_fetch(self, offer: FileOffer, delay: Duration, error: FileTransferError) -> Self {
+        self.push_back(Request::Fetch {
+            offer,
+            delay,
+            error,
+        })
     }
 
     fn verify(&self) {
-        assert!(self.0.is_empty(), "expected more requests");
+        assert!(self.0.borrow().is_empty(), "expected more requests");
     }
 }
 
 impl PasteboardBackend for FakeBackend {
+    fn fork(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+
     async fn pull(&mut self, policy: PullPolicy) -> Result<Snapshot, PasteboardError> {
         let Some(Request::Pull {
             policy: expected,
             delay,
             result,
-        }) = self.0.pop_front()
+        }) = self.pop_front()
         else {
             panic!("unexpected PULL");
         };
@@ -153,7 +172,7 @@ impl PasteboardBackend for FakeBackend {
     }
 
     async fn alternate_listing(&mut self) -> Result<Snapshot, PasteboardError> {
-        let Some(Request::AlternateListing { delay, reply }) = self.0.pop_front() else {
+        let Some(Request::AlternateListing { delay, reply }) = self.pop_front() else {
             panic!("unexpected alternate metadata request");
         };
         if !delay.is_zero() {
@@ -172,7 +191,7 @@ impl PasteboardBackend for FakeBackend {
             uti: expected,
             delay,
             data,
-        }) = self.0.pop_front()
+        }) = self.pop_front()
         else {
             panic!("unexpected RESOLVE");
         };
@@ -188,7 +207,7 @@ impl PasteboardBackend for FakeBackend {
             item: expected,
             delay,
             result,
-        }) = self.0.pop_front()
+        }) = self.pop_front()
         else {
             panic!("unexpected SET");
         };
@@ -206,12 +225,16 @@ impl PasteboardBackend for FakeBackend {
     ) -> Result<ReceivedFile, FileTransferError> {
         let Some(Request::Fetch {
             offer: expected,
+            delay,
             error,
-        }) = self.0.pop_front()
+        }) = self.pop_front()
         else {
             panic!("unexpected fetch");
         };
         assert!(offer == expected, "unexpected offer");
+        if !delay.is_zero() {
+            sleep(delay).await;
+        }
         Err(error)
     }
 }
@@ -819,11 +842,13 @@ async fn watcher_dispatches_fetch_offer_and_emits_the_result() {
         change: None,
         data: None,
     };
-    let mut backend = FakeBackend::new().answer(PullPolicy::AllPromised, snapshot(1, &[], []));
-    backend.0.push_back(Request::Fetch {
-        offer: offer.clone(),
-        error: FileTransferError::OfferExpired,
-    });
+    let mut backend = FakeBackend::new()
+        .answer(PullPolicy::AllPromised, snapshot(1, &[], []))
+        .expect_fetch(
+            offer.clone(),
+            Duration::ZERO,
+            FileTransferError::OfferExpired,
+        );
     let mut command = Some(DeviceCommand::FetchOffer(offer, 1));
     let mut expired = false;
     watch(
@@ -832,7 +857,11 @@ async fn watcher_dispatches_fetch_offer_and_emits_the_result() {
         true,
         || Language::ZhCn,
         &mut PasteboardState::default(),
-        async || command.take(),
+        // A real queue waits for the next command; `None` would mean it closed.
+        async || match command.take() {
+            Some(command) => Some(command),
+            None => pending().await,
+        },
         |event| {
             if matches!(
                 event,
@@ -1091,6 +1120,7 @@ async fn lightweight_timeout_keeps_listing_id_and_reports_the_timeout() {
     assert!(update.skipped);
     let Some(DeviceEvent::ReadFailed {
         kind,
+        image: false,
         timed_out: true,
     }) = update.event
     else {
@@ -1329,7 +1359,13 @@ async fn push_and_pull_round_trip_while_suppressing_both_kinds_of_echo() {
                 Duration::from_millis(200),
                 Ok(snapshot(2, &[uti], []).change),
             )
+            // Reading runs beside the SET: the phone's copy of the pushed item is
+            // read while the SET still awaits its reply, and dropped as an echo.
             .answer(PullPolicy::AllPromised, snapshot(2, &[uti], []))
+            .answer(
+                PullPolicy::PromiseSecondary,
+                snapshot(2, &[uti], [(uti, inline(&bytes))]),
+            )
             .answer(PullPolicy::AllPromised, snapshot(3, &[uti], []))
             .answer(PullPolicy::PromiseSecondary, read_back())
             .answer(PullPolicy::AllPromised, different_nonce(dictionary([])))
@@ -1514,5 +1550,140 @@ async fn an_offer_and_unprepared_images_never_reach_set() {
         );
     }
     assert!(state.last_push.is_none());
+    backend.verify();
+}
+
+/// Commands delivered at fixed times after `started`, then none. Never reports a
+/// closed queue.
+fn timed_commands(
+    started: Instant,
+    commands: Vec<(u64, DeviceCommand)>,
+) -> impl AsyncFnMut() -> Option<DeviceCommand> {
+    let mut commands = VecDeque::from(commands);
+    async move || match commands.pop_front() {
+        Some((millis, command)) => {
+            sleep_until(started + Duration::from_millis(millis)).await;
+            Some(command)
+        }
+        None => pending().await,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_read_does_not_hold_up_a_push() {
+    let mut backend = FakeBackend::new()
+        .answer(PullPolicy::AllPromised, text_at(1, "before"))
+        // A phone change whose content takes ten seconds to arrive.
+        .answer(PullPolicy::AllPromised, snapshot(2, &[TEXT], []))
+        .delay(
+            PullPolicy::PromiseSecondary,
+            10,
+            text_at(2, "slow phone copy"),
+        )
+        .expect_set(
+            SetItem::Text(PUSH_TEXT.to_owned()),
+            Duration::ZERO,
+            Ok(snapshot(3, &[TEXT], []).change),
+        );
+    let started = Instant::now();
+    let mut notified = false;
+    let mut pushed_at = None;
+    watch(
+        &mut backend,
+        async || {
+            if std::mem::replace(&mut notified, true) {
+                return pending().await;
+            }
+            sleep_until(started + Duration::from_millis(500)).await;
+            Ok(NOTIFICATIONS[0].to_owned())
+        },
+        true,
+        || Language::ZhCn,
+        &mut PasteboardState::default(),
+        timed_commands(
+            started,
+            vec![(
+                1_000,
+                DeviceCommand::Push(Clip::Text(PUSH_TEXT.to_owned()), Some(7)),
+            )],
+        ),
+        |event| {
+            match event {
+                DeviceEvent::Status(..) => {}
+                DeviceEvent::PushResult(Some(7), Ok(())) => pushed_at = Some(started.elapsed()),
+                event => {
+                    // The read still completes, after the push.
+                    assert_clip(Some(event), Clip::Text("slow phone copy".to_owned()));
+                    assert_eq!(started.elapsed(), Duration::from_millis(10_500));
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(pushed_at, Some(Duration::from_secs(1)));
+    backend.verify();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_download_does_not_hold_up_polls_or_pushes() {
+    let offer = FileOffer {
+        name: "large.zip".to_owned(),
+        uti: "public.zip-archive".to_owned(),
+        size: 1,
+        change: None,
+        data: None,
+    };
+    let mut backend = FakeBackend::new()
+        .answer(PullPolicy::AllPromised, text_at(1, "before"))
+        .expect_fetch(
+            offer.clone(),
+            Duration::from_secs(5),
+            FileTransferError::OfferExpired,
+        )
+        .expect_set(
+            SetItem::Text(PUSH_TEXT.to_owned()),
+            Duration::ZERO,
+            Ok(None),
+        )
+        // Periodic polls keep running at 2 s and 4 s during the download.
+        .answer(PullPolicy::AllPromised, text_at(1, "before"))
+        .answer(PullPolicy::AllPromised, text_at(1, "before"));
+    let started = Instant::now();
+    let mut pushed_at = None;
+    watch(
+        &mut backend,
+        async || pending().await,
+        true,
+        || Language::ZhCn,
+        &mut PasteboardState::default(),
+        timed_commands(
+            started,
+            vec![
+                (0, DeviceCommand::FetchOffer(offer, 3)),
+                (
+                    1_000,
+                    DeviceCommand::Push(Clip::Text(PUSH_TEXT.to_owned()), None),
+                ),
+            ],
+        ),
+        |event| {
+            match event {
+                DeviceEvent::Status(..) => {}
+                DeviceEvent::PushResult(None, Ok(())) => pushed_at = Some(started.elapsed()),
+                DeviceEvent::FileResult(3, Err(FileTransferError::OfferExpired)) => {
+                    assert_eq!(started.elapsed(), Duration::from_secs(5));
+                    return ControlFlow::Break(());
+                }
+                _ => panic!("unexpected event"),
+            }
+            ControlFlow::Continue(())
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(pushed_at, Some(Duration::from_secs(1)));
     backend.verify();
 }

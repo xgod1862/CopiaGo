@@ -260,41 +260,42 @@ iPhone 未通过这台电脑的无线配对验证，可能已在手机上取消�
 已连上 iPhone，但未能读取手机提供的服务。请保持手机解锁，稍后会自动重试；反复出现时请重启 iPhone。	Reached the iPhone, but could not read the services it provides. Keep the phone unlocked; CopiaGo retries automatically. If this keeps happening, restart the iPhone.
 已连上 iPhone，但剪贴板服务未能启动。请保持手机解锁，稍后会自动重试。	Reached the iPhone, but its clipboard service did not start. Keep the phone unlocked; CopiaGo retries automatically.
 无法读取电脑上保存的配对信息。请在设置中点「忘记此 iPhone」后重新配对。	Could not read the pairing saved on this PC. Select Forget this iPhone in Settings and pair again.
-与 iPhone 的连接已断开，正在自动重新连接。	The connection to the iPhone was lost. Reconnecting automatically.
+与 iPhone 的连接已断开，正在自动重新连接。若长时间未恢复，请解锁手机并确认与电脑在同一 Wi-Fi，或插上数据线。	The connection to the iPhone was lost. Reconnecting automatically. If it does not recover, unlock the phone and make sure it is on the same Wi-Fi as this PC, or connect a cable.
 USB 已检测不到这台 iPhone。请检查数据线是否插紧，稍后会自动重试。	This iPhone is no longer detected over USB. Check that the cable is firmly connected; CopiaGo retries automatically.
 USB 连接超时，稍后会自动重试。请把 iPhone 直接插在电脑机身的 USB 口并保持解锁。	The USB connection timed out; CopiaGo retries automatically. Plug the iPhone directly into a USB port on the PC and keep it unlocked.
 已通过 USB 找到 iPhone，但开发者通道未能打开，稍后会自动重试；反复出现时请重新插拔数据线。	Found the iPhone over USB, but the developer channel did not open. CopiaGo retries automatically; if this keeps happening, reconnect the cable.
 已通过 USB 找到 iPhone，但 USB 会话未能建立，稍后会自动重试；反复出现时请重新插拔数据线。	Found the iPhone over USB, but the USB session could not be started. CopiaGo retries automatically; if this keeps happening, reconnect the cable.
 USB 信任已失效。请解锁 iPhone 后点「继续连接」，并在手机上点「信任」。	USB trust is no longer valid. Unlock the iPhone, select Continue, then tap Trust on the phone.
-电脑上复制了{kind}，但设置中未开启「{kind}」同步到 iPhone	{kind} copied on this PC, but syncing {kind} to iPhone is turned off in Settings.
+电脑上复制了{kind}，但设置中未开启「{kind}」同步到 iPhone。如需同步，请在设置的「自动同步到 iPhone」中勾选「{kind}」	{kind} copied on this PC, but syncing {kind} to iPhone is turned off. To sync it, select {kind} under Auto-sync to iPhone in Settings.
 正在发送{kind}到 iPhone…	Sending {kind} to iPhone…
 前面还有内容在发送，暂时无法加入。请稍后再点「发送」	Other items are still being sent. Select Send again in a moment.
-图片过大，无法发送到 iPhone	The image is too large to send to iPhone.
-这张图片无法转换为 PNG，未发送到 iPhone	This image could not be converted to PNG and was not sent to iPhone.
+图片过大（超过 64 MB），无法发送到 iPhone。请缩小或裁剪图片后重新复制	The image is too large to send to iPhone (over 64 MB). Resize or crop it, then copy it again.
+这张图片无法转换为 PNG，未发送到 iPhone。请用「画图」等程序另存为 PNG 或 JPG 后重新复制	This image could not be converted to PNG and was not sent to iPhone. Save it as PNG or JPG in an app such as Paint, then copy it again.
 已收到「{name}」，但无法放进电脑剪贴板：剪贴板可能被其他程序占用，请稍后在历史中重新复制	Received {name}, but it could not be placed on the PC clipboard. Another app may be using the clipboard; copy it again from history later.
 同步「{name}」超时：手机长时间没有传来数据。请保持手机解锁后重新复制	Syncing {name} timed out: the phone stopped sending data. Keep the phone unlocked and copy it again.
 iPhone 没有提供「{name}」的内容。若文件在 iCloud 中，请先在「文件」App 下载到本机	The iPhone did not provide the contents of {name}. If the file is in iCloud, download it in the Files app first.
 还有一个文件正在同步，请等它完成后再试	Another file is still syncing. Try again when it finishes.
 无法把「{name}」保存到电脑，请检查磁盘空间和临时文件夹权限	Could not save {name} on this PC. Check free disk space and access to the temporary folder.
 「{name}」传输不完整，已丢弃。请重新复制一次	{name} arrived incomplete and was discarded. Copy it again.
-「{name}」的格式无法同步	The format of {name} cannot be synced.
+「{name}」的格式无法同步。可在 iPhone「文件」App 中长按它选择「压缩」，再复制生成的 zip 文件	The format of {name} cannot be synced. In the Files app on iPhone, touch and hold it, choose Compress, then copy the zip file.
 向 iPhone 请求「{name}」失败，请重新复制一次	Requesting {name} from iPhone failed. Copy it again.
 这台电脑缺少 HEIC 照片解码组件，未能写入。请在 Microsoft Store 安装「HEIF 图像扩展」和「HEVC 视频扩展」，或在 iPhone「设置 → 相机 → 格式」选「兼容性最佳」	This PC cannot decode HEIC photos, so the image was not written. Install HEIF Image Extensions and HEVC Video Extensions from the Microsoft Store, or set iPhone Settings → Camera → Formats to Most Compatible.
-图片格式无法在电脑上解码，未同步	This PC cannot decode the image format, so it was not synced.
+图片格式无法在电脑上解码，未同步。可在 iPhone 上截图后复制截图，或在「照片」中将图片导出为 JPEG 后再复制	This PC cannot decode the image format, so it was not synced. Take a screenshot on iPhone and copy that, or export the image as JPEG from Photos, then copy it.
 Windows 剪贴板被其他程序占用，未能写入。请稍后在历史中重新复制	Another app is using the Windows clipboard, so it was not written. Copy it again from history later.
-内容格式无效，未能写入 Windows 剪贴板	The content is invalid and was not written to the Windows clipboard.
-电脑上复制的图片过大，未发送到 iPhone	The image copied on this PC is too large and was not sent to iPhone.
-电脑剪贴板被其他程序占用，未能读取，本次未发送	Another app is using the PC clipboard, so this copy was not read or sent.
-电脑上复制的内容无法读取，本次未发送	The content copied on this PC could not be read and was not sent.
+内容格式无效，未能写入 Windows 剪贴板。请在手机上重新复制一次	The content is invalid and was not written to the Windows clipboard. Copy it again on the phone.
+电脑上复制的图片过大，未发送到 iPhone。请缩小或裁剪图片后重新复制	The image copied on this PC is too large and was not sent to iPhone. Resize or crop it, then copy it again.
+电脑剪贴板被其他程序占用，未能读取，本次未发送。请稍后重新复制一次	Another app is using the PC clipboard, so this copy was not read or sent. Copy it again in a moment.
+电脑上复制的内容无法读取，本次未发送。请重新复制一次；图片可先另存为 PNG 或 JPG 再复制	The content copied on this PC could not be read and was not sent. Copy it again; for an image, save it as PNG or JPG first.
 发送{kind}超时：iPhone 在 20 秒内没有确认。请保持手机解锁后重试	Sending {kind} timed out: the iPhone did not confirm within 20 seconds. Keep it unlocked and try again.
 iPhone 拒绝了这次{kind}写入。请解锁手机后重试	The iPhone rejected this {kind}. Unlock the phone and try again.
-发送{kind}时 iPhone 断开了连接，未发送	The iPhone disconnected while sending {kind}; it was not sent.
+发送{kind}时 iPhone 断开了连接，未发送。重新连接后请在历史中再点「发送」	The iPhone disconnected while sending {kind}; it was not sent. After it reconnects, select Send again in history.
 待发送的内容过多，已暂停发送。请稍后再试	Too many items are waiting to be sent. Try again later.
-这种内容无法发送到 iPhone	This kind of content cannot be sent to iPhone.
-iPhone 剪贴板服务没有响应，未发送{kind}。正在重新连接	The iPhone clipboard service is not responding, so {kind} was not sent. Reconnecting.
-iPhone 上复制了{kind}，但设置中未开启「{kind}」同步到电脑	{kind} copied on iPhone, but syncing {kind} to this PC is turned off in Settings.
+这种内容无法发送到 iPhone，目前只支持发送文字和图片	This kind of content cannot be sent to iPhone. Only text and images can be sent.
+iPhone 剪贴板服务没有响应，未发送{kind}。正在重新连接，连上后请在历史中再点「发送」	The iPhone clipboard service is not responding, so {kind} was not sent. Reconnecting; once connected, select Send again in history.
+iPhone 上复制了{kind}，但设置中未开启「{kind}」同步到电脑。如需同步，请在设置的「自动同步到电脑」中勾选「{kind}」	{kind} copied on iPhone, but syncing {kind} to this PC is turned off. To sync it, select {kind} under Auto-sync to PC in Settings.
 iPhone 上的{kind}读取超时，未同步到电脑。请在手机上重新复制一次	Reading {kind} from iPhone timed out, so it was not synced. Copy it again on the phone.
-iPhone 复制了{kind}，但没有提供可读取的数据，未同步到电脑。请重新复制一次	{kind} was copied on iPhone, but no readable data was provided, so it was not synced. Copy it again.
+iPhone 复制了{kind}，但没有提供可读取的数据，未同步到电脑。请重新复制一次；仍不行可先保存到本机（如存入相册或「文件」App）后再复制	{kind} was copied on iPhone, but no readable data was provided, so it was not synced. Copy it again; if that fails, save it on the phone first (to Photos or the Files app) and copy it from there.
 内容	content
 正在发送到 iPhone…	Sending to iPhone…
 发送失败	Send failed
+iPhone 上的图片读取超时，未同步到电脑。请保持手机解锁后重新复制；相册照片若存储在 iCloud，请先在「照片」中打开原图等待加载完成，或改用截图	Reading the image from iPhone timed out, so it was not synced. Keep the phone unlocked and copy it again. If the photo is stored in iCloud, open it in Photos and wait for the original to load, or use a screenshot instead.

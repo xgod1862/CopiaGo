@@ -194,6 +194,7 @@ impl Snapshot {
         Update {
             event: Some(DeviceEvent::ReadFailed {
                 kind: self.copied_kind(),
+                image: self.declares_image(),
                 timed_out,
             }),
             change: self.change,

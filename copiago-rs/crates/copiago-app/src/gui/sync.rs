@@ -180,12 +180,27 @@ impl Host<'_> {
         {
             return;
         }
-        let Some((clip, kind)) = self
-            .clipboard
-            .read()
-            .ok()
-            .and_then(|read| self.clipboard_sync.read_windows(read))
-        else {
+        let read = match self.clipboard.read() {
+            Ok(read) => read,
+            Err(error) => {
+                diagnostic::event(format_args!("event=pc_read_failed error={error}"));
+                if self.clipboard_sync.auto_push() {
+                    self.set_status(clipboard_read_error(&error), StatusTone::Warning);
+                }
+                return;
+            }
+        };
+        if let Some(kind) = self.clipboard_sync.push_filtered(&read) {
+            diagnostic::event(format_args!("event=push_filtered kind={}", kind.as_str()));
+            self.set_status(
+                message!(
+                    "电脑上复制了{kind}，但设置中未开启「{kind}」同步到 iPhone",
+                    kind = kind_name(kind)
+                ),
+                StatusTone::Muted,
+            );
+        }
+        let Some((clip, kind)) = self.clipboard_sync.read_windows(read) else {
             return;
         };
         if record {
@@ -214,6 +229,16 @@ impl Host<'_> {
                     kind.as_str(),
                     row.is_some()
                 ));
+                if let Some(row) = row {
+                    self.history_page.sending(row);
+                }
+                // Text arrives at once; announce only what the user may wait for.
+                if row.is_some() || kind != SyncKind::Text {
+                    self.set_status(
+                        message!("正在发送{kind}到 iPhone…", kind = kind_name(kind)),
+                        StatusTone::Muted,
+                    );
+                }
             }
             Ok(false) => {}
             Err(error) => {
@@ -222,9 +247,12 @@ impl Host<'_> {
                     PushQueueError::Closed => "queue_closed",
                 };
                 diagnostic::event(format_args!("event=push_failed reason={reason}"));
-                if row.is_some() {
+                if let Some(row) = row {
+                    self.history_page.send_failed(row);
                     let notice = match error {
-                        PushQueueError::Full => message!("发送到 iPhone 失败"),
+                        PushQueueError::Full => {
+                            message!("前面还有内容在发送，暂时无法加入。请稍后再点「发送」")
+                        }
                         PushQueueError::Closed => message!("iPhone 未连接，无法发送"),
                     };
                     self.report_send(notice);
@@ -248,7 +276,12 @@ impl Host<'_> {
                     bytes,
                     uti: "public.png".into(),
                 })
-                .map_err(|_| message!("发送到 iPhone 失败")),
+                .map_err(|error| match error {
+                    ImageError::ImageTooLarge => message!("图片过大，无法发送到 iPhone"),
+                    ImageError::InvalidImage | ImageError::Codec(_) => {
+                        message!("这张图片无法转换为 PNG，未发送到 iPhone")
+                    }
+                }),
             _ => Err(message!("无法读取这条历史")),
         };
         match clip {
@@ -291,8 +324,14 @@ impl Host<'_> {
                 if error == PasteboardError::PushBusy {
                     self.clipboard_sync.allow_resend();
                 }
-                diagnostic::event(format_args!("event=push_failed reason={error}"));
-                let notice = message!("发送到 iPhone 失败");
+                diagnostic::event(format_args!(
+                    "event=push_failed reason={error} kind={}",
+                    kind.as_str()
+                ));
+                if let Some(id) = row {
+                    self.history_page.send_failed(id);
+                }
+                let notice = push_error(error, kind);
                 self.notify(&notice, true, NotificationKind::Standard);
                 self.set_status(notice, StatusTone::Warning);
             }
@@ -307,6 +346,11 @@ impl Host<'_> {
                 .receive_phone(clip, stale, self.clipboard.sequence_number());
         let notice = match outcome {
             PhoneClip::Ignore => return,
+            PhoneClip::Filtered(kind) => {
+                diagnostic::event(format_args!("event=pull_filtered kind={}", kind.as_str()));
+                self.set_status(filtered_to_pc(kind), StatusTone::Muted);
+                return;
+            }
             PhoneClip::Hold(kind) => {
                 let pending = self.clipboard_sync.pending().unwrap();
                 let note = self.record_clip(Source::Phone, pending);
@@ -335,11 +379,11 @@ impl Host<'_> {
             }
             PhoneClip::Write(clip, kind) => {
                 if let Err(error) = self.write_clip(&clip) {
-                    let notice = clipboard_error(error);
                     diagnostic::event(format_args!(
-                        "event=pull_failed kind={} bytes={bytes}",
+                        "event=pull_failed kind={} bytes={bytes} error={error}",
                         kind.as_str()
                     ));
+                    let notice = clipboard_error(error);
                     self.notify(&notice, true, NotificationKind::Standard);
                     self.set_status(notice, StatusTone::Warning);
                     return;
@@ -448,7 +492,11 @@ impl Host<'_> {
         let bytes = offer.size;
         let decision = self.clipboard_sync.decide_offer(bytes);
         let reason = match decision {
-            OfferDecision::Ignore => return,
+            OfferDecision::Ignore => {
+                diagnostic::event(format_args!("event=pull_filtered kind=file"));
+                self.set_status(filtered_to_pc(SyncKind::File), StatusTone::Muted);
+                return;
+            }
             OfferDecision::TooLarge => {
                 diagnostic::event(format_args!(
                     "event=file_failed reason=too_large bytes={bytes}"
@@ -523,6 +571,10 @@ impl Host<'_> {
             return;
         }
         if accept && self.offer.active.is_some() {
+            self.set_status(
+                message!("还有一个文件正在同步，请等它完成后再试"),
+                StatusTone::Muted,
+            );
             return;
         }
         let waiting = self.offer.waiting.take().unwrap();
@@ -620,7 +672,10 @@ impl Host<'_> {
                     diagnostic::event(format_args!("event=file_complete bytes={bytes}"));
                     Ok(())
                 } else {
-                    Err(message!("无法把「{name}」放进电脑剪贴板", name = &name))
+                    Err(message!(
+                        "已收到「{name}」，但无法放进电脑剪贴板：剪贴板可能被其他程序占用，请稍后在历史中重新复制",
+                        name = &name
+                    ))
                 }
             }
             Err(error) => {
@@ -633,7 +688,32 @@ impl Host<'_> {
                         message!("「{name}」太大，未能同步", name = &name)
                     }
                     FileTransferError::Disconnected => message!("iPhone 未连接，无法同步文件"),
-                    _ => message!("同步「{name}」失败", name = &name),
+                    FileTransferError::TimedOut => message!(
+                        "同步「{name}」超时：手机长时间没有传来数据。请保持手机解锁后重新复制",
+                        name = &name
+                    ),
+                    FileTransferError::DataUnavailable => message!(
+                        "iPhone 没有提供「{name}」的内容。若文件在 iCloud 中，请先在「文件」App 下载到本机",
+                        name = &name
+                    ),
+                    FileTransferError::Busy => {
+                        message!("还有一个文件正在同步，请等它完成后再试")
+                    }
+                    FileTransferError::Destination => message!(
+                        "无法把「{name}」保存到电脑，请检查磁盘空间和临时文件夹权限",
+                        name = &name
+                    ),
+                    FileTransferError::SizeMismatch
+                    | FileTransferError::Truncated
+                    | FileTransferError::InvalidReply => {
+                        message!("「{name}」传输不完整，已丢弃。请重新复制一次", name = &name)
+                    }
+                    FileTransferError::UnsupportedPayload => {
+                        message!("「{name}」的格式无法同步", name = &name)
+                    }
+                    FileTransferError::Request => {
+                        message!("向 iPhone 请求「{name}」失败，请重新复制一次", name = &name)
+                    }
                 })
             }
         };
@@ -701,11 +781,67 @@ fn history_note(result: io::Result<bool>) -> Message {
     })
 }
 
+/// Writing a phone copy to Windows failed. Each cause names its own remedy; the
+/// HRESULT or Win32 error is recorded in the `pull_failed` diagnostic event.
 fn clipboard_error(error: ClipboardError) -> Message {
     Message::new(match error {
         ClipboardError::ImageTooLarge => "图片过大，未同步到电脑",
-        _ => "写入 Windows 剪贴板失败",
+        _ if error.is_missing_codec() => {
+            "这台电脑缺少 HEIC 照片解码组件，未能写入。请在 Microsoft Store 安装「HEIF 图像扩展」和「HEVC 视频扩展」，或在 iPhone「设置 → 相机 → 格式」选「兼容性最佳」"
+        }
+        ClipboardError::ImageCodec(_) | ClipboardError::InvalidImage => {
+            "图片格式无法在电脑上解码，未同步"
+        }
+        ClipboardError::Win32(_) => {
+            "Windows 剪贴板被其他程序占用，未能写入。请稍后在历史中重新复制"
+        }
+        ClipboardError::InvalidText | ClipboardError::InvalidFileList => {
+            "内容格式无效，未能写入 Windows 剪贴板"
+        }
     })
+}
+
+/// Reading a Windows copy for automatic sending failed.
+fn clipboard_read_error(error: &ClipboardError) -> Message {
+    Message::new(match error {
+        ClipboardError::ImageTooLarge => "电脑上复制的图片过大，未发送到 iPhone",
+        ClipboardError::Win32(_) => "电脑剪贴板被其他程序占用，未能读取，本次未发送",
+        _ => "电脑上复制的内容无法读取，本次未发送",
+    })
+}
+
+/// A push the phone did not accept, named by cause so a screenshot shows which.
+fn push_error(error: PasteboardError, kind: SyncKind) -> Message {
+    match error {
+        PasteboardError::RequestTimeout => message!(
+            "发送{kind}超时：iPhone 在 20 秒内没有确认。请保持手机解锁后重试",
+            kind = kind_name(kind)
+        ),
+        PasteboardError::RequestFailed => message!(
+            "iPhone 拒绝了这次{kind}写入。请解锁手机后重试",
+            kind = kind_name(kind)
+        ),
+        PasteboardError::Disconnected => message!(
+            "发送{kind}时 iPhone 断开了连接，未发送",
+            kind = kind_name(kind)
+        ),
+        PasteboardError::PushBusy => message!("待发送的内容过多，已暂停发送。请稍后再试"),
+        PasteboardError::UnsupportedPush => message!("这种内容无法发送到 iPhone"),
+        PasteboardError::ServiceMissing
+        | PasteboardError::NotificationsUnavailable
+        | PasteboardError::NotificationsClosed
+        | PasteboardError::MetadataUnresponsive => message!(
+            "iPhone 剪贴板服务没有响应，未发送{kind}。正在重新连接",
+            kind = kind_name(kind)
+        ),
+    }
+}
+
+fn filtered_to_pc(kind: SyncKind) -> Message {
+    message!(
+        "iPhone 上复制了{kind}，但设置中未开启「{kind}」同步到电脑",
+        kind = kind_name(kind)
+    )
 }
 
 /// PNG thumbnail for a history entry. An image too large to shrink within the

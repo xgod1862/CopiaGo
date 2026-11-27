@@ -21,6 +21,8 @@ pub(super) struct ClipboardSync {
 
 pub(super) enum PhoneClip {
     Ignore,
+    /// The settings exclude this kind from syncing to the PC.
+    Filtered(SyncKind),
     Hold(SyncKind),
     Write(Clip, SyncKind),
 }
@@ -104,6 +106,17 @@ impl ClipboardSync {
             .then_some((clip, kind))
     }
 
+    /// The kind of a Windows copy that automatic sending would have pushed but the
+    /// settings exclude, so the host can say why nothing was sent.
+    pub(super) fn push_filtered(&self, read: &ClipboardRead) -> Option<SyncKind> {
+        let kind = match read {
+            ClipboardRead::Text(_) => SyncKind::Text,
+            ClipboardRead::Png(_) => SyncKind::Image,
+            ClipboardRead::Empty | ClipboardRead::Sensitive => return None,
+        };
+        (self.auto_push() && !self.settings.push_types.contains(&kind)).then_some(kind)
+    }
+
     pub(super) fn has_pending(&self) -> bool {
         self.pending_clip.is_some()
     }
@@ -132,7 +145,7 @@ impl ClipboardSync {
             return PhoneClip::Ignore;
         }
         if !self.settings.pull_types.contains(&kind) {
-            return PhoneClip::Ignore;
+            return PhoneClip::Filtered(kind);
         }
         let changed_elsewhere = self
             .written_sequence
@@ -224,7 +237,7 @@ mod tests {
         ));
         assert!(matches!(
             sync.receive_phone(text(), false, 10),
-            PhoneClip::Ignore
+            PhoneClip::Filtered(SyncKind::Text)
         ));
         assert!(
             sync.pending_clip
@@ -323,5 +336,24 @@ mod tests {
             sync.queue_push(image, None, false, &send),
             Ok(true)
         ));
+    }
+
+    #[test]
+    fn names_a_windows_copy_that_the_settings_keep_from_the_phone() {
+        let mut sync = ClipboardSync::new(
+            Settings {
+                push: true,
+                push_types: vec![SyncKind::Text],
+                ..Settings::default()
+            },
+            10,
+        );
+        let png = ClipboardRead::Png(vec![1]);
+        // Nothing would have been sent while disconnected, so there is nothing to explain.
+        assert_eq!(sync.push_filtered(&png), None);
+        sync.connected(true);
+        assert_eq!(sync.push_filtered(&png), Some(SyncKind::Image));
+        assert_eq!(sync.push_filtered(&ClipboardRead::Text("a".into())), None);
+        assert_eq!(sync.push_filtered(&ClipboardRead::Sensitive), None);
     }
 }

@@ -79,14 +79,36 @@ pub enum WifiProbeError {
     HostName,
     Discovery,
     NoEndpoint,
+    /// The phone was advertised, but no TCP connection to it ever completed: packets
+    /// were dropped or the host was unreachable. Typical of Wi-Fi client (AP) isolation,
+    /// where multicast discovery still works but unicast between clients is blocked.
+    Unreachable,
+    /// The phone answered but refused the TCP connection.
     Connect,
     PairVerify,
     CreateListener,
     Tunnel,
     Rsd,
     Pasteboard(PasteboardError),
+    /// TCP to the phone succeeded, but pair-verify, the tunnel or RSD did not finish
+    /// in time. Silence before TCP completes is [`Self::Unreachable`] instead.
     Timeout,
     CloseTimeout,
+}
+
+impl WifiProbeError {
+    /// How far one endpoint attempt got. With several endpoints (IPv4 and IPv6), the
+    /// furthest failure is reported, so a blocked IPv6 link-local address cannot hide
+    /// an IPv4 handshake problem and vice versa.
+    fn connect_progress(self) -> u8 {
+        match self {
+            Self::NoEndpoint => 0,
+            Self::Unreachable => 1,
+            Self::Connect => 2,
+            Self::Timeout => 3,
+            _ => 4,
+        }
+    }
 }
 
 impl fmt::Display for WifiProbeError {
@@ -99,7 +121,8 @@ impl fmt::Display for WifiProbeError {
             Self::HostName => "could not determine the host name",
             Self::Discovery => "could not start DNS-SD discovery",
             Self::NoEndpoint => "no matching RemotePairing endpoint found",
-            Self::Connect => "could not connect to the RemotePairing endpoint",
+            Self::Unreachable => "RemotePairing endpoint was advertised but did not answer",
+            Self::Connect => "RemotePairing endpoint refused the connection",
             Self::PairVerify => "RemotePairing pair-verify failed",
             Self::CreateListener => "could not create the CoreDevice tunnel listener",
             Self::Tunnel => "could not open the TLS-PSK tunnel",
@@ -211,9 +234,10 @@ async fn open(
         if now >= deadline {
             break;
         }
-        match timeout_at(
+        let mut reached = false;
+        let error = match timeout_at(
             deadline.min(now + ENDPOINT_TIMEOUT),
-            open_at(endpoint, &mut record.pairing),
+            open_at(endpoint, &mut record.pairing, &mut reached),
         )
         .await
         {
@@ -228,15 +252,32 @@ async fn open(
                 let migration = record.persist_identifier(options.write_identifier);
                 return Ok((tunnel, migration));
             }
-            Ok(Err(error)) => last_error = error,
-            Err(_) => last_error = WifiProbeError::Timeout,
-        }
+            Ok(Err(error)) => error,
+            Err(_) if reached => WifiProbeError::Timeout,
+            Err(_) => WifiProbeError::Unreachable,
+        };
         diagnostic::event(format_args!(
-            "event=wifi_endpoint_failed family={} error={last_error:?}",
+            "event=wifi_endpoint_failed family={} error={error:?}",
             if endpoint.is_ipv4() { "v4" } else { "v6" }
         ));
+        if error.connect_progress() >= last_error.connect_progress() {
+            last_error = error;
+        }
     }
     Err(last_error)
+}
+
+/// Only an explicit refusal proves the phone answered. Dropped packets surface as a
+/// timeout and isolation or routing filters as unreachable host or network errors.
+fn connect_failure(kind: std::io::ErrorKind) -> WifiProbeError {
+    use std::io::ErrorKind;
+    match kind {
+        ErrorKind::ConnectionRefused => WifiProbeError::Connect,
+        ErrorKind::TimedOut | ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => {
+            WifiProbeError::Unreachable
+        }
+        _ => WifiProbeError::Connect,
+    }
 }
 
 /// Records which RSD step failed; both map to [`WifiProbeError::Rsd`].
@@ -245,13 +286,17 @@ fn rsd_failed(step: &str) -> WifiProbeError {
     WifiProbeError::Rsd
 }
 
+/// Sets `reached` once TCP to `endpoint` completes, so a caller that times this out can
+/// tell an unreachable phone from a stalled handshake.
 async fn open_at(
     endpoint: SocketAddr,
     pairing: &mut RpPairingFile,
+    reached: &mut bool,
 ) -> Result<WifiTunnel, WifiProbeError> {
     let mut control = TcpStream::connect(endpoint)
         .await
-        .map_err(|_| WifiProbeError::Connect)?;
+        .map_err(|error| connect_failure(error.kind()))?;
+    *reached = true;
     let tunnel = {
         let mut client =
             RemotePairingClient::new(RpPairingSocket::new(&mut control), pairing.identifier());
@@ -320,5 +365,45 @@ impl WifiTunnel {
     pub(crate) async fn close(mut self) -> Result<(), WifiProbeError> {
         let _ = self.adapter.close().await;
         self.lifetime.close().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::ErrorKind;
+
+    use super::*;
+
+    #[test]
+    fn only_a_refusal_counts_as_an_answer() {
+        assert_eq!(
+            connect_failure(ErrorKind::ConnectionRefused),
+            WifiProbeError::Connect
+        );
+        for kind in [
+            ErrorKind::TimedOut,
+            ErrorKind::HostUnreachable,
+            ErrorKind::NetworkUnreachable,
+        ] {
+            assert_eq!(
+                connect_failure(kind),
+                WifiProbeError::Unreachable,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_furthest_endpoint_failure_wins() {
+        let order = [
+            WifiProbeError::NoEndpoint,
+            WifiProbeError::Unreachable,
+            WifiProbeError::Connect,
+            WifiProbeError::Timeout,
+            WifiProbeError::PairVerify,
+        ];
+        for pair in order.windows(2) {
+            assert!(pair[0].connect_progress() < pair[1].connect_progress());
+        }
     }
 }

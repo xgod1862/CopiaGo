@@ -37,9 +37,13 @@ mod tests;
 
 use clipboard_queue::ClipboardQueue;
 
-/// Status while a paired phone is not reachable. The host recognizes it to add hints
-/// about the PC's network, such as an active VPN adapter.
-pub const WAITING_FOR_IPHONE: &str = "等待 iPhone 连接；请检查解锁、信任及同一局域网";
+/// Status while a paired phone is not advertising on the PC's network.
+pub const WAITING_FOR_IPHONE: &str = "当前 Wi-Fi 中未发现这台 iPhone。请确认手机已解锁、与电脑连接同一 Wi-Fi 且未开启 VPN；手机回到网络后会自动连接。";
+/// The phone advertises on the network but never answers: usually client isolation.
+pub const WIFI_UNREACHABLE: &str = "已在 Wi-Fi 中发现 iPhone，但电脑连不上它。当前网络可能禁止设备互相访问（校园网、公司网和公共 Wi-Fi 常见），请改用手机热点、电脑热点或数据线连接。";
+/// Reconnect statuses whose cause may be on the PC's network. The host recognizes them
+/// to add hints such as an active VPN adapter.
+pub const NETWORK_WAIT_HINTS: [&str; 2] = [WAITING_FOR_IPHONE, WIFI_UNREACHABLE];
 const RETRY_DELAY: Duration = Duration::from_secs(4);
 // After this many consecutive misses the phone is probably away. Stop blind polling and
 // wait for its network announcement, with a slow timer as a safety net.
@@ -274,15 +278,95 @@ impl Failure {
             | Self::Usb(UsbProbeError::PairingRecordUnavailable | UsbProbeError::TrustRequired) => {
                 "USB 信任未能恢复。请解锁 iPhone，重新插拔数据线，再点「继续连接」。"
             }
-            Self::Wifi(WifiProbeError::NoEndpoint | WifiProbeError::Discovery) => {
+            Self::Wifi(WifiProbeError::NoEndpoint) => {
                 "无线未找到这台 iPhone，USB 也未检测到它。请重新插紧数据线或换一个电脑 USB 口。"
+            }
+            Self::Wifi(WifiProbeError::Discovery) => {
+                "电脑无法在局域网中搜索 iPhone，USB 也未检测到它。请把手机直接接到电脑后重试；仍不行请重启电脑。"
+            }
+            Self::Wifi(WifiProbeError::Unreachable) => {
+                "已在 Wi-Fi 中发现 iPhone，但电脑连不上它，USB 也未检测到它。当前网络可能禁止设备互相访问，请把手机接到电脑，或改用手机热点后重试。"
+            }
+            Self::Wifi(WifiProbeError::PairVerify) => {
+                "iPhone 未通过这台电脑的无线配对验证，USB 也未检测到它。请在设置中点「忘记此 iPhone」，再用数据线重新配对。"
             }
             Self::Wifi(_) => {
                 "无线连接失败，USB 也未检测到这台 iPhone。请将手机直接接到电脑后重试。"
             }
+            Self::Usb(UsbProbeError::DeveloperMenu) => crate::usb::DEVELOPER_MENU_RETRY,
             _ => {
                 "与 iPhone 的连接中断。请插紧数据线并保持手机解锁，再点「继续连接」；反复断开时请换一个 USB 口或数据线。"
             }
+        }
+    }
+
+    /// Status for an automatic reconnect of a phone that has connected before.
+    ///
+    /// Each cause gets its own text so users know what to fix and a screenshot tells
+    /// developers which step failed. Causes share a text only when the remedy is the
+    /// same; the exact variant is still in the `attempt_failed` diagnostic event.
+    fn reconnect_hint(self) -> &'static str {
+        match self {
+            Self::Wifi(WifiProbeError::NoEndpoint) => WAITING_FOR_IPHONE,
+            Self::Wifi(WifiProbeError::Unreachable) => WIFI_UNREACHABLE,
+            Self::Wifi(WifiProbeError::Discovery) => {
+                "电脑无法在局域网中搜索 iPhone。请重启电脑后重试；也可以先用数据线连接。"
+            }
+            Self::Wifi(WifiProbeError::Connect) => {
+                "已在 Wi-Fi 中发现 iPhone，但它拒绝了连接。请解锁手机，稍后会自动重试；反复出现时请重启 iPhone。"
+            }
+            Self::Wifi(WifiProbeError::Timeout) => {
+                "已连上 iPhone，但无线握手超时。网络可能不稳定，请让手机靠近路由器并保持解锁，稍后会自动重试。"
+            }
+            Self::Wifi(WifiProbeError::PairVerify) => {
+                "iPhone 未通过这台电脑的无线配对验证，可能已在手机上取消信任。可先插上数据线使用；若反复出现，请在设置中点「忘记此 iPhone」后重新配对。"
+            }
+            Self::Wifi(WifiProbeError::CreateListener | WifiProbeError::Tunnel) => {
+                "已连上 iPhone，但无线加密通道未能建立。请保持手机解锁，稍后会自动重试；反复出现时请重启 iPhone 或改用数据线。"
+            }
+            Self::Wifi(WifiProbeError::Rsd) | Self::Usb(UsbProbeError::Rsd) => {
+                "已连上 iPhone，但未能读取手机提供的服务。请保持手机解锁，稍后会自动重试；反复出现时请重启 iPhone。"
+            }
+            Self::Wifi(WifiProbeError::Pasteboard(_)) => {
+                "已连上 iPhone，但剪贴板服务未能启动。请保持手机解锁，稍后会自动重试。"
+            }
+            Self::Wifi(
+                WifiProbeError::ReadPairingRecord
+                | WifiProbeError::InvalidPairingRecord
+                | WifiProbeError::NoPairingRecord
+                | WifiProbeError::MultiplePairingRecords,
+            ) => "无法读取电脑上保存的配对信息。请在设置中点「忘记此 iPhone」后重新配对。",
+            Self::Wifi(WifiProbeError::HostName | WifiProbeError::CloseTimeout) | Self::Session => {
+                "与 iPhone 的连接已断开，正在自动重新连接。"
+            }
+            Self::Usb(UsbProbeError::Usbmuxd) => crate::usb::APPLE_SERVICE_UNAVAILABLE,
+            Self::Usb(UsbProbeError::DeviceLocked) => "iPhone 已锁定，解锁后会自动重新连接。",
+            Self::Usb(UsbProbeError::NoUsbDevice) => {
+                "USB 已检测不到这台 iPhone。请检查数据线是否插紧，稍后会自动重试。"
+            }
+            Self::Usb(UsbProbeError::MultipleUsbDevices(_)) => "请暂时只连接一台 iPhone",
+            Self::Usb(UsbProbeError::Timeout) => {
+                "USB 连接超时，稍后会自动重试。请把 iPhone 直接插在电脑机身的 USB 口并保持解锁。"
+            }
+            Self::Usb(UsbProbeError::CoreDeviceProxy) => {
+                "已通过 USB 找到 iPhone，但开发者通道未能打开，稍后会自动重试；反复出现时请重新插拔数据线。"
+            }
+            Self::Usb(UsbProbeError::Lockdown) => {
+                "已通过 USB 找到 iPhone，但 USB 会话未能建立，稍后会自动重试；反复出现时请重新插拔数据线。"
+            }
+            // Background reconnects never raise a trust prompt; "继续连接" may.
+            Self::Usb(UsbProbeError::TrustRequired | UsbProbeError::PairingRecordUnavailable)
+            | Self::Trust(_) => {
+                "USB 信任已失效。请解锁 iPhone 后点「继续连接」，并在手机上点「信任」。"
+            }
+            Self::Usb(UsbProbeError::DeveloperMenu) | Self::DeveloperMenuUnavailable => {
+                crate::usb::DEVELOPER_MENU_RETRY
+            }
+            // Handled by dedicated branches of `wait`; kept total for the compiler.
+            Self::Usb(UsbProbeError::DeveloperModeRequired)
+            | Self::DeveloperModeRequired
+            | Self::DeveloperModeOffline
+            | Self::Setup { .. } => WAITING_FOR_IPHONE,
         }
     }
 
@@ -333,14 +417,7 @@ impl Failure {
             _ => (
                 WaitMode::Reconnect,
                 ConnState::Waiting,
-                Message::new(match self {
-                    Self::Usb(UsbProbeError::Usbmuxd) => crate::usb::APPLE_SERVICE_UNAVAILABLE,
-                    // Reconnects are automatic; a paired phone has no "Connect" button.
-                    Self::Usb(UsbProbeError::DeviceLocked) => {
-                        "iPhone 已锁定，解锁后会自动重新连接。"
-                    }
-                    _ => WAITING_FOR_IPHONE,
-                }),
+                Message::new(self.reconnect_hint()),
             ),
         };
         Wait {

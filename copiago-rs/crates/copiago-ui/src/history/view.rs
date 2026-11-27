@@ -224,7 +224,7 @@ struct RowPaint {
     language: copiago_core::i18n::Language,
     today: NaiveDate,
     copied: bool,
-    sent: bool,
+    sent: Option<super::SendMark>,
 }
 
 struct Row {
@@ -493,7 +493,7 @@ impl HistoryView {
                 language: page.language,
                 today: layout.today,
                 copied: page.copied == Some((placed.id, record.revision)),
-                sent: page.sent == Some((placed.id, record.revision)),
+                sent: page.send_mark(placed.id, record.revision),
             };
             let old = previous
                 .iter()
@@ -814,16 +814,18 @@ impl LayoutRow {
                 .split_once("://")
                 .map_or_else(String::new, |(_, tail)| tail.to_owned()),
         };
-        if style.copied || style.sent {
+        let mark = if style.copied {
+            Some("已复制")
+        } else {
+            style.sent.map(|mark| match mark {
+                super::SendMark::Sending => "正在发送到 iPhone…",
+                super::SendMark::Sent => "已发送到 iPhone",
+                super::SendMark::Failed => "发送失败",
+            })
+        };
+        if let Some(mark) = mark {
             detail.push_str(" · ");
-            detail.push_str(&tr!(
-                language,
-                if style.copied {
-                    "已复制"
-                } else {
-                    "已发送到 iPhone"
-                }
-            ));
+            detail.push_str(&tr!(language, mark));
         }
         let lines = if style.selected && matches!(self.item.kind, ItemKind::Text | ItemKind::Link) {
             layout
@@ -856,7 +858,7 @@ impl LayoutRow {
             ItemContent {
                 title,
                 detail,
-                emphasized_detail: style.copied || style.sent,
+                emphasized_detail: style.copied || style.sent.is_some(),
                 copied: style.copied,
             },
             &LIGHT_THEME,

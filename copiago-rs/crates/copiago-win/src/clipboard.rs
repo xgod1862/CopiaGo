@@ -60,6 +60,23 @@ impl fmt::Display for ClipboardError {
 
 impl std::error::Error for ClipboardError {}
 
+impl ClipboardError {
+    /// Whether decoding failed because an optional Windows codec is absent, as with
+    /// HEIC photos when the HEIF/HEVC Store extensions are not installed.
+    pub fn is_missing_codec(&self) -> bool {
+        const MF_E_TOPO_CODEC_NOT_FOUND: i32 = 0xc00d5212_u32 as i32;
+        matches!(
+            self,
+            Self::ImageCodec(code) if [
+                windows::Win32::Foundation::WINCODEC_ERR_COMPONENTNOTFOUND.0,
+                windows::Win32::Foundation::WINCODEC_ERR_COMPONENTINITIALIZEFAILURE.0,
+                MF_E_TOPO_CODEC_NOT_FOUND,
+            ]
+            .contains(code)
+        )
+    }
+}
+
 impl From<io::Error> for ClipboardError {
     fn from(error: io::Error) -> Self {
         Self::Win32(error)

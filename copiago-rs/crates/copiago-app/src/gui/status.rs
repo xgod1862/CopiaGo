@@ -106,6 +106,25 @@ impl Host<'_> {
                     StatusTone::Muted,
                 );
             }
+            DeviceEvent::ReadFailed { kind, timed_out } => {
+                self.clear_waiting_offer();
+                diagnostic::event(format_args!("event=pull_unreadable timed_out={timed_out}"));
+                let notice = if timed_out {
+                    message!(
+                        "iPhone 上的{kind}读取超时，未同步到电脑。请在手机上重新复制一次",
+                        kind = kind
+                    )
+                } else {
+                    message!(
+                        "iPhone 复制了{kind}，但没有提供可读取的数据，未同步到电脑。请重新复制一次",
+                        kind = kind
+                    )
+                };
+                if !self.popup.visible() {
+                    self.notify(&notice, false, NotificationKind::Standard);
+                }
+                self.set_status(notice, StatusTone::Warning);
+            }
             DeviceEvent::FileOffer(offer) => self.on_file_offer(offer),
             DeviceEvent::FileProgress(id, progress) => self.on_file_progress(id, progress),
             DeviceEvent::FileResult(id, result) => self.on_file_result(id, result),
@@ -400,7 +419,10 @@ impl Host<'_> {
     /// While a paired phone is unreachable, names an active VPN or proxy adapter, the most
     /// common PC-side reason for a phone that never reappears on Wi-Fi.
     fn network_hint(&mut self, detail: Message) -> Message {
-        let adapter = if detail == Message::new(copiago_device::WAITING_FOR_IPHONE) {
+        let adapter = if copiago_device::NETWORK_WAIT_HINTS
+            .iter()
+            .any(|&hint| detail == Message::new(hint))
+        {
             super::network::vpn_adapter()
         } else {
             None

@@ -1258,3 +1258,78 @@ fn developer_mode_hints_match_whether_the_phone_is_on_usb() {
     );
     assert!(!crate::usb::DEVELOPER_MENU_RETRY.contains("请用数据线连接"));
 }
+
+/// Every failure a paired phone can hit while reconnecting, grouped by remedy. Each
+/// group must have its own text, so a screenshot names the failing step.
+const RECONNECT_GROUPS: &[&[Failure]] = &[
+    &[Failure::Wifi(WifiProbeError::NoEndpoint)],
+    &[Failure::Wifi(WifiProbeError::Unreachable)],
+    &[Failure::Wifi(WifiProbeError::Discovery)],
+    &[Failure::Wifi(WifiProbeError::Connect)],
+    &[Failure::Wifi(WifiProbeError::Timeout)],
+    &[Failure::Wifi(WifiProbeError::PairVerify)],
+    &[
+        Failure::Wifi(WifiProbeError::CreateListener),
+        Failure::Wifi(WifiProbeError::Tunnel),
+    ],
+    &[
+        Failure::Wifi(WifiProbeError::Rsd),
+        Failure::Usb(UsbProbeError::Rsd),
+    ],
+    &[Failure::Wifi(WifiProbeError::Pasteboard(
+        PasteboardError::Disconnected,
+    ))],
+    &[
+        Failure::Wifi(WifiProbeError::ReadPairingRecord),
+        Failure::Wifi(WifiProbeError::InvalidPairingRecord),
+    ],
+    &[Failure::Session, Failure::Wifi(WifiProbeError::HostName)],
+    &[Failure::Usb(UsbProbeError::Usbmuxd)],
+    &[Failure::Usb(UsbProbeError::DeviceLocked)],
+    &[Failure::Usb(UsbProbeError::NoUsbDevice)],
+    &[Failure::Usb(UsbProbeError::MultipleUsbDevices(2))],
+    &[Failure::Usb(UsbProbeError::Timeout)],
+    &[Failure::Usb(UsbProbeError::CoreDeviceProxy)],
+    &[Failure::Usb(UsbProbeError::Lockdown)],
+    &[
+        Failure::Usb(UsbProbeError::TrustRequired),
+        Failure::Usb(UsbProbeError::PairingRecordUnavailable),
+        Failure::Trust(PairingError::Failed),
+    ],
+];
+
+#[test]
+fn reconnect_failures_name_their_own_cause() {
+    use copiago_core::i18n::{Language, tr};
+    let mut seen = std::collections::HashSet::new();
+    for group in RECONNECT_GROUPS {
+        let wait = group[0].wait(false);
+        assert_eq!(wait.state, ConnState::Waiting, "{:?}", group[0]);
+        let text = group[0].reconnect_hint();
+        assert_eq!(wait.message, Message::new(text));
+        for failure in &group[1..] {
+            assert_eq!(failure.reconnect_hint(), text, "{failure:?}");
+        }
+        assert!(
+            seen.insert(text),
+            "{:?} reuses another cause's text",
+            group[0]
+        );
+        assert_ne!(tr!(Language::En, text), text, "missing English: {text}");
+    }
+}
+
+#[test]
+fn an_isolated_network_is_told_apart_from_a_missing_phone() {
+    let isolated = Failure::Wifi(WifiProbeError::Unreachable);
+    assert_eq!(isolated.reconnect_hint(), WIFI_UNREACHABLE);
+    assert!(NETWORK_WAIT_HINTS.contains(&WIFI_UNREACHABLE));
+    assert!(NETWORK_WAIT_HINTS.contains(&WAITING_FOR_IPHONE));
+    // First setup without USB still points at isolation instead of the cable.
+    let first = isolated.first_connection_hint();
+    assert_ne!(
+        first,
+        Failure::Wifi(WifiProbeError::NoEndpoint).first_connection_hint()
+    );
+    assert!(first.contains("禁止设备互相访问"));
+}

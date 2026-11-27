@@ -288,8 +288,14 @@ async fn watch_updates(
                 if change.is_some() {
                     state.last_change = change;
                 }
-                // An abandoned pull leaves the reconnect marker available.
+                // An abandoned pull leaves the reconnect marker available. Its
+                // failure notice, if any, still reaches the user.
                 if skipped {
+                    if let Some(event) = event
+                        && emit(event).is_break()
+                    {
+                        return Ok(None);
+                    }
                     continue;
                 }
                 let was_stale = std::mem::take(&mut stale);

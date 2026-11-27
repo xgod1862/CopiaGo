@@ -9,7 +9,7 @@ use tokio::{
     time::{advance, sleep},
 };
 
-use super::content::Snapshot;
+use super::content::{ALTERNATE_TIMEOUT, RESOLVE_TIMEOUT, Snapshot};
 use super::file_offer::FILE_DESCRIPTOR;
 use super::*;
 
@@ -448,7 +448,7 @@ async fn heic_only_skips_the_alternative_request() {
 const JPEG_DATA: &[u8] = b"\xff\xd8\xff\xe0synthetic bytes";
 
 #[tokio::test]
-async fn resolves_png_first_at_the_original_wire_index() {
+async fn resolves_jpeg_first_at_the_original_wire_index() {
     let image_types = &[HEIC, JPEG, PNG];
     let secondary = board(
         metadata("nonce".into(), 1),
@@ -466,68 +466,68 @@ async fn resolves_png_first_at_the_original_wire_index() {
             ],
         )
     };
-    let png = push_png();
     let update = next_update(
         FakeBackend::new()
             .answer(PullPolicy::AllPromised, listed())
             .answer(PullPolicy::PromiseSecondary, secondary)
             .alternate_listing(listed())
-            .resolve(1, PNG, Some(&png))
+            .resolve(1, JPEG, Some(JPEG_DATA))
             .alternate_listing(listed()),
-    )
-    .await;
-    assert_clip(update.event, test_image(PNG, &png));
-}
-
-#[tokio::test(start_paused = true)]
-async fn unavailable_wrong_format_or_slow_png_falls_back_to_jpeg() {
-    for (data, delay) in [
-        (None, Duration::ZERO),
-        (Some(JPEG_DATA), Duration::ZERO),
-        (None, Duration::from_secs(3)),
-    ] {
-        let update = next_update(
-            heic_with_promised_alternatives()
-                .alternate_listing(heic_listing(128))
-                .delay_resolve(0, PNG, delay, data)
-                .alternate_listing(heic_listing(128))
-                .resolve(0, JPEG, Some(JPEG_DATA))
-                .alternate_listing(heic_listing(128)),
-        )
-        .await;
-        assert_clip(update.event, test_image(JPEG, JPEG_DATA));
-    }
-}
-
-#[tokio::test]
-async fn skips_png_advertised_as_oversized() {
-    let listing = || heic_listing(MAX_ALTERNATE_IMAGE_BYTES as i64 + 1);
-    let update = next_update(
-        heic_with_promised_alternatives()
-            .alternate_listing(listing())
-            .resolve(0, JPEG, Some(JPEG_DATA))
-            .alternate_listing(listing()),
     )
     .await;
     assert_clip(update.event, test_image(JPEG, JPEG_DATA));
 }
 
 #[tokio::test(start_paused = true)]
+async fn unavailable_wrong_format_or_slow_jpeg_falls_back_to_png() {
+    let png = push_png();
+    for (data, delay) in [
+        (None, Duration::ZERO),
+        (Some(png.as_slice()), Duration::ZERO),
+        (None, RESOLVE_TIMEOUT + Duration::from_secs(1)),
+    ] {
+        let update = next_update(
+            heic_with_promised_alternatives()
+                .alternate_listing(heic_listing(128))
+                .delay_resolve(0, JPEG, delay, data)
+                .alternate_listing(heic_listing(128))
+                .resolve(0, PNG, Some(&png))
+                .alternate_listing(heic_listing(128)),
+        )
+        .await;
+        assert_clip(update.event, test_image(PNG, &png));
+    }
+}
+
+#[tokio::test]
+async fn skips_png_advertised_as_oversized() {
+    let listing = || heic_listing(MAX_ALTERNATE_IMAGE_BYTES as i64 + 1);
+    // JPEG is unavailable; the oversized PNG is never requested, so HEIC stays.
+    let update = next_update(
+        heic_with_promised_alternatives()
+            .alternate_listing(listing())
+            .resolve(0, JPEG, None)
+            .alternate_listing(listing()),
+    )
+    .await;
+    assert_clip(update.event, test_image(HEIC, b"heic"));
+}
+
+#[tokio::test(start_paused = true)]
 async fn preserves_original_heic_after_both_attempts_or_at_the_total_deadline() {
     let unavailable = heic_with_promised_alternatives()
         .alternate_listing(heic_listing(128))
-        .resolve(0, PNG, None)
+        .resolve(0, JPEG, None)
         .alternate_listing(heic_listing(128))
-        .resolve(0, JPEG, None);
+        .resolve(0, PNG, None);
+    // Each resolve runs past its own limit, so the total budget ends the second one.
+    let stalled = RESOLVE_TIMEOUT + Duration::from_secs(2);
     let slow = heic_with_promised_alternatives()
         .delay_alternate_listing(Duration::from_millis(1_500), heic_listing(128))
-        .delay_resolve(0, PNG, Duration::from_secs(3), None)
+        .delay_resolve(0, JPEG, stalled, None)
         .delay_alternate_listing(Duration::from_millis(1_500), heic_listing(128))
-        .delay_resolve(0, JPEG, Duration::from_secs(3), None);
-    for (backend, elapsed) in [
-        (unavailable, Duration::ZERO),
-        (slow, Duration::from_secs(6)),
-    ] {
+        .delay_resolve(0, PNG, stalled, None);
+    for (backend, elapsed) in [(unavailable, Duration::ZERO), (slow, ALTERNATE_TIMEOUT)] {
         let started = Instant::now();
         let update = next_update(backend).await;
         assert_eq!(started.elapsed(), elapsed);
@@ -1053,7 +1053,9 @@ async fn notes_64_second_response_times_out_and_next_copy_arrives() {
         |event| {
             match event {
                 DeviceEvent::Status(..) => {}
-                DeviceEvent::Unsupported { .. } => {
+                DeviceEvent::ReadFailed {
+                    timed_out: true, ..
+                } => {
                     assert!(!saw_timeout);
                     assert!(started.elapsed() >= Duration::from_secs(30));
                     assert!(started.elapsed() < Duration::from_secs(31));
@@ -1075,7 +1077,7 @@ async fn notes_64_second_response_times_out_and_next_copy_arrives() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn lightweight_timeout_keeps_listing_id_and_skips_without_clip() {
+async fn lightweight_timeout_keeps_listing_id_and_reports_the_timeout() {
     let listing = snapshot(1, &[TEXT], []);
     let change = listing.change.clone();
     let started = Instant::now();
@@ -1086,7 +1088,15 @@ async fn lightweight_timeout_keeps_listing_id_and_skips_without_clip() {
     )
     .await;
     assert!(update.change == change);
-    assert!(update.event.is_none());
+    assert!(update.skipped);
+    let Some(DeviceEvent::ReadFailed {
+        kind,
+        timed_out: true,
+    }) = update.event
+    else {
+        panic!("expected a timed-out read");
+    };
+    assert_eq!(kind.render(Language::ZhCn), "文本");
     assert!(started.elapsed() >= Duration::from_secs(15));
     assert!(started.elapsed() < Duration::from_secs(16));
 }

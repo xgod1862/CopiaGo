@@ -18,7 +18,10 @@ mod usb;
 mod wifi;
 
 #[cfg(windows)]
-pub use connection::{DeviceRunOptions, HostSignal, HostSignals, WAITING_FOR_IPHONE, run_device};
+pub use connection::{
+    DeviceRunOptions, HostSignal, HostSignals, NETWORK_WAIT_HINTS, WAITING_FOR_IPHONE,
+    WIFI_UNREACHABLE, run_device,
+};
 #[cfg(windows)]
 pub use contract::{ConnState, DeviceCommand, DeviceEvent, FileProgress};
 #[cfg(windows)]

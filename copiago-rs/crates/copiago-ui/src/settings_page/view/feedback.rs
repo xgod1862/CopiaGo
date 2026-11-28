@@ -121,6 +121,30 @@ impl SettingsLayout {
         })
     }
 
+    pub(super) fn activity(&self) -> Option<&str> {
+        self.activity.as_deref()
+    }
+
+    /// True when the two layouts place the same feedback lines and differ only in their
+    /// text, as download or connection progress does several times a second.
+    pub(super) fn same_frame(&self, other: &Self) -> bool {
+        self.lines.len() == other.lines.len()
+            && self
+                .lines
+                .iter()
+                .zip(&other.lines)
+                .all(|((_, a), (_, b))| a == b)
+            && self.activity.is_some() == other.activity.is_some()
+            && self.driver == other.driver
+            && self.connected == other.connected
+            && self.help == other.help
+            && self.height == other.height
+            && self.header == other.header
+            && self.viewport == other.viewport
+            && self.inline == other.inline
+            && self.scroll_all == other.scroll_all
+    }
+
     pub fn bounds(&self) -> PopupBounds {
         PopupBounds::new(WIDTH, self.height, 24.0)
     }
@@ -135,31 +159,31 @@ impl Builder<'_> {
             60.0
         };
         for (line, warning) in &layout.lines {
-            label(
+            let label = LiveLabel::new(
                 self.scene,
                 self.target(scrolled),
-                line,
                 Rect::new(PAD + 2.0, y, INNER - 4.0, 18.0),
-                Font::Regular,
-                12.0,
+                line,
+                (Font::Regular, 12.0),
                 if *warning {
                     THEME.disconnected.text
                 } else {
                     THEME.muted
                 },
             )?;
+            self.body.live_lines.push(label);
             y += 18.0;
         }
         if let Some(activity) = &layout.activity {
-            label(
+            let label = LiveLabel::new(
                 self.scene,
                 self.target(scrolled),
-                activity,
                 Rect::new(PAD + 2.0, y, INNER - 4.0, 18.0),
-                Font::Regular,
-                12.0,
+                activity,
+                (Font::Regular, 12.0),
                 THEME.muted,
             )?;
+            self.body.live_activity = Some(label);
             self.add_progress(y + 22.0, scrolled)?;
             y += 34.0;
         } else if layout.connected {
@@ -271,5 +295,40 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use crate::settings_page::ConnectionState;
+    use copiago_core::i18n::message;
+
+    #[test]
+    fn download_progress_rewrites_text_without_a_new_frame() {
+        let mut state = SettingsState::load(
+            std::env::temp_dir().join("copiago-feedback-read-only"),
+            "test",
+        );
+        let measure = |state: &mut SettingsState, received: u32| {
+            state.set_connection(ConnectionState {
+                phase: ConnectionPhase::Connecting,
+                detail: Some(message!(
+                    "正在下载文件 {index}/{count} · {received} MB / 16 MB",
+                    index = 2,
+                    count = 3,
+                    received = received
+                )),
+                device: Some(DeviceInfo::default()),
+                ..Default::default()
+            });
+            SettingsLayout::measure(state, SettingsScreen::Settings, 800.0).unwrap()
+        };
+        let early = measure(&mut state, 1);
+        let late = measure(&mut state, 12);
+        assert!(early != late);
+        assert!(early.same_frame(&late));
+        state.set_notice(Some(message!("诊断信息已复制。")));
+        assert!(!measure(&mut state, 12).same_frame(&late));
     }
 }

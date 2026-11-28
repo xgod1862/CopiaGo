@@ -78,10 +78,18 @@ pub fn crossfade(
         children.InsertAbove(incoming, outgoing)?;
         return children.Remove(outgoing);
     }
+    // The new content fades in over an opaque old copy, then the old copy fades out
+    // beneath it. Fading both at once dims every pixel the two share (at the midpoint
+    // they compose to about 70% opacity), so unchanged titles, tabs and buttons blink.
+    // Drawn this way, shared pixels stay put and only what changed transitions.
     incoming.SetOpacity(0.0)?;
     children.InsertAbove(incoming, outgoing)?;
-    animator.opacity(incoming, 1.0, Tween::new(180))?;
+    animator.opacity(incoming, 1.0, CROSSFADE_IN)?;
     animator.detach_after(parent, outgoing, || {
-        animator.opacity(outgoing, 0.0, Tween::new(140))
+        animator.opacity(outgoing, 0.0, CROSSFADE_OUT)
     })
 }
+
+const CROSSFADE_IN: Tween = Tween::new(180);
+/// Starts once the incoming copy is opaque, so it only shows where the new copy is empty.
+const CROSSFADE_OUT: Tween = Tween::delayed(120, 180);

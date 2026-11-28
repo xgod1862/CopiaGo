@@ -17,8 +17,8 @@ use super::{
 use crate::{
     animation::{Animator, MotionPolicy, Tween},
     components::{
-        Button, Interaction, LIGHT_THEME as THEME, ProgressBar, ProgressState, Rect, ScrollLayout,
-        ScrollView, Status, StatusPill, Toggle, center, holder, xy,
+        Button, Interaction, LIGHT_THEME as THEME, LiveLabel, ProgressBar, ProgressState, Rect,
+        ScrollLayout, ScrollView, Status, StatusPill, Toggle, center, holder, xy,
     },
     composition::{Font, PopupBounds, PopupScene, RoundedRectangle, TextStyle, rounded_rectangle},
 };
@@ -136,7 +136,22 @@ impl SettingsView {
         geometry: &SettingsLayout,
     ) -> Result<()> {
         let next_layout = LayoutKey::new(state, self.screen, now);
-        if next_layout != self.layout || geometry != &self.geometry {
+        if next_layout == self.layout
+            && geometry != &self.geometry
+            && geometry.same_frame(&self.geometry)
+        {
+            // Progress text only: rewrite the lines and keep the page, its progress bar
+            // animation and its scroll position.
+            for (label, (line, _)) in self.body.live_lines.iter_mut().zip(&geometry.lines) {
+                label.set(scene, line)?;
+            }
+            if let (Some(label), Some(activity)) =
+                (self.body.live_activity.as_mut(), geometry.activity())
+            {
+                label.set(scene, activity)?;
+            }
+            self.geometry = geometry.clone();
+        } else if next_layout != self.layout || geometry != &self.geometry {
             let mut next = Body::new(scene, animator, state, &next_layout, geometry)?;
             let offset = self.body.scroll.offset_at(now);
             if offset > 0.0
@@ -337,6 +352,8 @@ struct Body {
     scroll_all: bool,
     progress: Option<ProgressBar>,
     pill: Option<StatusPill>,
+    live_lines: Vec<LiveLabel>,
+    live_activity: Option<LiveLabel>,
 }
 
 impl Body {
@@ -356,6 +373,8 @@ impl Body {
             scroll_all: geometry.scroll_all,
             progress: None,
             pill: None,
+            live_lines: Vec::new(),
+            live_activity: None,
         };
         body.visual.Children()?.InsertAtTop(body.scroll.visual())?;
         let mut build = Builder {

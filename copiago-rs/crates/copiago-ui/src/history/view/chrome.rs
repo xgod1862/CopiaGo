@@ -2,7 +2,7 @@ use std::{borrow::Cow, time::Instant};
 
 use copiago_core::{
     history::Source,
-    i18n::{Language, tr},
+    i18n::{Language, Message, tr},
 };
 use windows::{
     UI::{Color, Composition::ContainerVisual},
@@ -12,7 +12,9 @@ use windows_numerics::Vector2;
 
 use crate::{
     animation::{Animator, Tween},
-    components::{Button, ButtonStyle, Interaction, Rect, ScrollView, Theme, center, text, xy},
+    components::{
+        Button, ButtonStyle, Interaction, LiveLabel, Rect, ScrollView, Theme, center, text, xy,
+    },
     composition::{PopupScene, rgb, rounded_rectangle},
 };
 
@@ -163,6 +165,22 @@ impl ChromeState {
         }
     }
 
+    /// True when the two states draw the same chrome apart from progress text and the
+    /// transfer percentage, which [`Chrome::update_live`] changes in place.
+    pub(super) fn same_frame(&self, other: &Self) -> bool {
+        fn frame(state: &ChromeState) -> ChromeState {
+            let mut state = state.clone();
+            state.detail.iter_mut().for_each(String::clear);
+            state.offer_lines.iter_mut().for_each(String::clear);
+            if let Some(offer) = &mut state.offer {
+                offer.reason = Message::new("");
+                offer.percent = None;
+            }
+            state
+        }
+        frame(self) == frame(other)
+    }
+
     pub(super) fn footer_height(&self) -> f32 {
         (self.footer_lines.len() as f32 * 18.0).max(32.0) + 30.0
     }
@@ -195,6 +213,10 @@ pub(super) struct Chrome {
     pub(super) inline_height: f32,
     pub(super) footer_top: f32,
     controls: Vec<Control>,
+    detail_labels: Vec<LiveLabel>,
+    offer_labels: Vec<LiveLabel>,
+    /// The layer holding the transfer bar's fill, and the bar's track.
+    offer_fill: Option<(ContainerVisual, Rect)>,
 }
 
 impl Chrome {
@@ -211,6 +233,9 @@ impl Chrome {
             inline_height: layout.inline_height,
             footer_top: layout.footer_top(),
             controls: Vec::new(),
+            detail_labels: Vec::new(),
+            offer_labels: Vec::new(),
+            offer_fill: None,
         };
         let style = &layout.state;
         let language = style.language;
@@ -247,19 +272,15 @@ impl Chrome {
             61.0
         };
         for (index, line) in style.detail.iter().enumerate() {
-            label(
+            let label = LiveLabel::new(
                 scene,
-                if scrolls {
-                    &chrome.scrolled
-                } else {
-                    &chrome.frame
-                },
+                chrome.layer(scrolls),
                 Rect::new(PAD, top + index as f32 * 18.0, detail_width, 18.0),
                 line,
                 (Font::Regular, NOTE_SIZE),
                 tone,
-                false,
             )?;
+            chrome.detail_labels.push(label);
         }
         if let Some(width) = style.retry_width {
             let button = Button::text(
@@ -316,6 +337,26 @@ impl Chrome {
             chrome.empty(scene, &layout.measure)?;
         }
         Ok(chrome)
+    }
+
+    /// Applies a state that differs only in progress text or percentage (see
+    /// [`ChromeState::same_frame`]) without rebuilding or crossfading the chrome.
+    pub(super) fn update_live(&mut self, scene: &PopupScene, state: &ChromeState) -> Result<()> {
+        for (label, line) in self.detail_labels.iter_mut().zip(&state.detail) {
+            label.set(scene, line)?;
+        }
+        for (label, line) in self.offer_labels.iter_mut().zip(&state.offer_lines) {
+            label.set(scene, line)?;
+        }
+        let percent = |state: &ChromeState| state.offer.as_ref().and_then(|offer| offer.percent);
+        if let Some((layer, track)) = &self.offer_fill
+            && percent(&self.state) != percent(state)
+        {
+            layer.Children()?.RemoveAll()?;
+            progress_fill(scene, layer, *track, percent(state))?;
+        }
+        self.state = state.clone();
+        Ok(())
     }
 
     fn layer(&self, scrolled: bool) -> &ContainerVisual {
@@ -635,7 +676,7 @@ impl Chrome {
             false,
         )?;
         for (index, line) in self.state.offer_lines.iter().enumerate() {
-            label(
+            let label = LiveLabel::new(
                 scene,
                 &self.scrolled,
                 Rect::new(
@@ -647,24 +688,17 @@ impl Chrome {
                 line,
                 (Font::Regular, NOTE_SIZE),
                 color,
-                false,
             )?;
+            self.offer_labels.push(label);
         }
         let actions_y = top + 60.0 + self.state.offer_lines.len() as f32 * 18.0;
         if offer.busy {
             let track = Rect::new(PAD + 14.0, actions_y, INNER - 28.0, 5.0);
             shape(scene, &self.scrolled, track, 2.5, LIGHT_THEME.tint)?;
-            if let Some(percent) = offer.percent.filter(|&percent| percent != 0) {
-                let width = track.width * f32::from(percent.min(100)) / 100.0;
-                let fill = Rect::new(track.x, track.y, width, track.height);
-                shape(
-                    scene,
-                    &self.scrolled,
-                    fill,
-                    2.5_f32.min(width / 2.0),
-                    LIGHT_THEME.accent,
-                )?;
-            }
+            let layer = scene.compositor().CreateContainerVisual()?;
+            self.scrolled.Children()?.InsertAtTop(&layer)?;
+            progress_fill(scene, &layer, track, offer.percent)?;
+            self.offer_fill = Some((layer, track));
             return Ok(());
         }
         let mut right = WIDTH - PAD - 12.0;
@@ -808,6 +842,26 @@ fn icon(
     parent.Children()?.InsertAtTop(&sprite.visual)
 }
 
+fn progress_fill(
+    scene: &PopupScene,
+    layer: &ContainerVisual,
+    track: Rect,
+    percent: Option<u8>,
+) -> Result<()> {
+    if let Some(percent) = percent.filter(|&percent| percent != 0) {
+        let width = track.width * f32::from(percent.min(100)) / 100.0;
+        let fill = Rect::new(track.x, track.y, width, track.height);
+        shape(
+            scene,
+            layer,
+            fill,
+            2.5_f32.min(width / 2.0),
+            LIGHT_THEME.accent,
+        )?;
+    }
+    Ok(())
+}
+
 fn shape(
     scene: &PopupScene,
     parent: &ContainerVisual,
@@ -891,5 +945,57 @@ mod tests {
             assert_eq!(small.state.detail, trying.state.detail);
             assert!(small.footer_top() >= small.inline_height);
         }
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use copiago_core::i18n::{Language, message};
+
+    use super::*;
+    use crate::history::{HistoryPage, HistoryStatus};
+
+    fn receiving(page: &mut HistoryPage, received: u64, percent: u8, tone: StatusTone) {
+        let progress = message!(
+            "{received} MB / 400 MB · {percent}%",
+            received = received,
+            percent = percent
+        );
+        page.set_status(HistoryStatus {
+            detail: Some(message!(
+                "正在同步「{name}」 · {progress}",
+                name = "video.mov",
+                progress = progress.clone()
+            )),
+            tone,
+            ..HistoryStatus::default()
+        });
+        page.set_offer(Some(HistoryOffer {
+            id: 1,
+            name: "video.mov".into(),
+            metadata: "MOV".into(),
+            reason: progress,
+            busy: true,
+            percent: Some(percent),
+        }));
+    }
+
+    #[test]
+    fn transfer_progress_updates_in_place_but_real_changes_rebuild() {
+        let measure = TextMeasurer::new().unwrap();
+        let mut page = HistoryPage::new(Language::ZhCn);
+        receiving(&mut page, 12, 3, StatusTone::Muted);
+        let before = ChromeState::new(&page, &measure).unwrap();
+        receiving(&mut page, 200, 50, StatusTone::Muted);
+        let after = ChromeState::new(&page, &measure).unwrap();
+        assert!(before != after);
+        assert!(before.same_frame(&after));
+
+        receiving(&mut page, 200, 50, StatusTone::Warning);
+        let warning = ChromeState::new(&page, &measure).unwrap();
+        assert!(!after.same_frame(&warning));
+        page.set_offer(None);
+        let finished = ChromeState::new(&page, &measure).unwrap();
+        assert!(!warning.same_frame(&finished));
     }
 }

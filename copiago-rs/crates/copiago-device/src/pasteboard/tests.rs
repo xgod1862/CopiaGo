@@ -10,7 +10,7 @@ use tokio::{
 };
 
 use super::content::{ALTERNATE_TIMEOUT, RESOLVE_TIMEOUT, Snapshot};
-use super::file_offer::FILE_DESCRIPTOR;
+use super::file_offer::{FILE_DESCRIPTOR, FINODE_DESCRIPTOR};
 use super::*;
 
 const TEXT: &str = "public.utf8-plain-text";
@@ -772,6 +772,28 @@ async fn unsupported_types_do_not_pull_payloads() {
 }
 
 #[tokio::test]
+async fn file_description_supplies_identity_when_listing_omits_it() {
+    let mut listing = snapshot(10, &[FILE_DESCRIPTOR, "public.data"], []);
+    listing.change = None;
+    let described = snapshot(
+        10,
+        &[FILE_DESCRIPTOR, "public.data"],
+        [("public.data", promised(42))],
+    );
+    let expected = described.change.clone();
+    let update = next_update(
+        FakeBackend::new()
+            .answer(PullPolicy::AllPromised, listing)
+            .answer(PullPolicy::Threshold(256 * 1024), described),
+    )
+    .await;
+    let Some(DeviceEvent::FileOffer(offer)) = update.event else {
+        panic!("expected file offer");
+    };
+    assert!(expected.is_some() && offer.change == expected && update.change == expected);
+}
+
+#[tokio::test]
 async fn files_use_threshold_and_keep_offer_identity() {
     const PDF: &str = "com.adobe.pdf";
     let mut descriptor = Vec::new();
@@ -814,6 +836,99 @@ async fn files_use_threshold_and_keep_offer_identity() {
         assert!(offer.data == inline_data);
         assert!(offer.change == offer_change && update.change == offer_change);
     }
+}
+
+#[tokio::test]
+async fn finode_offers_follow_the_archived_url_and_keep_the_file_payload() {
+    const BIN: &str = "com.apple.macbinary-archive";
+    let uid = |i| Value::Uid(plist::Uid::new(i));
+    let mut descriptor = Vec::new();
+    dictionary([
+        ("$top", dictionary([("root", uid(2))])),
+        (
+            "$objects",
+            Value::Array(vec![
+                "$null".into(),
+                "unrelated.bin".into(),
+                dictionary([("FI URL", uid(3))]),
+                dictionary([("NS.base", uid(0)), ("NS.relative", uid(4))]),
+                "file:///private/Downloads/%E6%B5%8B%E8%AF%95%20a+b%23%25.bin".into(),
+            ]),
+        ),
+    ])
+    .to_writer_binary(&mut descriptor)
+    .unwrap();
+
+    for types in [
+        vec![FINODE_DESCRIPTOR, BIN],
+        vec![FILE_DESCRIPTOR, FINODE_DESCRIPTOR, BIN],
+    ] {
+        let listing = snapshot(10, &types, []);
+        let change = listing.change.clone();
+        let update = next_update(
+            FakeBackend::new()
+                .answer(PullPolicy::AllPromised, listing)
+                .answer(
+                    PullPolicy::Threshold(256 * 1024),
+                    snapshot(
+                        10,
+                        &types,
+                        [
+                            (FINODE_DESCRIPTOR, inline(&descriptor)),
+                            (BIN, promised(100 * 1024 * 1024)),
+                        ],
+                    ),
+                ),
+        )
+        .await;
+        let Some(DeviceEvent::FileOffer(offer)) = update.event else {
+            panic!("expected Files offer")
+        };
+        assert_eq!(offer.name, "测试 a+b#%.bin");
+        assert_eq!(offer.uti, BIN);
+        assert_eq!(offer.size, 100 * 1024 * 1024);
+        assert!(offer.change == change);
+        assert!(offer.data.is_none());
+    }
+}
+
+#[tokio::test]
+async fn finode_with_an_invalid_reference_still_offers_the_inline_file() {
+    const BIN: &str = "com.apple.macbinary-archive";
+    let mut invalid = Vec::new();
+    dictionary([
+        (
+            "$top",
+            dictionary([("root", Value::Uid(plist::Uid::new(99)))]),
+        ),
+        ("$objects", Value::Array(vec!["unrelated.bin".into()])),
+    ])
+    .to_writer_binary(&mut invalid)
+    .unwrap();
+    let types = &[FINODE_DESCRIPTOR, BIN];
+    let update = next_update(
+        FakeBackend::new()
+            .answer(PullPolicy::AllPromised, snapshot(42, types, []))
+            .answer(
+                PullPolicy::Threshold(256 * 1024),
+                snapshot(
+                    42,
+                    types,
+                    [
+                        (FINODE_DESCRIPTOR, inline(&invalid)),
+                        (BIN, inline(b"file")),
+                    ],
+                ),
+            ),
+    )
+    .await;
+    let Some(DeviceEvent::FileOffer(offer)) = update.event else {
+        panic!("expected Files offer")
+    };
+    assert!(offer.name.ends_with(".bin"));
+    assert_ne!(offer.name, "unrelated.bin");
+    assert_eq!(offer.size, 4);
+    assert_eq!(offer.data.as_deref(), Some(b"file".as_slice()));
 }
 
 #[tokio::test]

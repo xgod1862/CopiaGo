@@ -8,16 +8,20 @@ use plist::Value;
 use super::content::Snapshot;
 
 pub(super) const FILE_DESCRIPTOR: &str = "com.apple.DocumentManager.FPItem.File";
+pub(super) const FINODE_DESCRIPTOR: &str = "com.apple.DocumentManager.FINode.File";
 const PHOTO_IDENTIFIER: &str = "com.apple.mobileslideshow.asset.localidentifier";
 
 pub(super) fn content_type(snapshot: &Snapshot) -> Option<&str> {
-    if !snapshot.types().any(|uti| uti == FILE_DESCRIPTOR) {
+    if !snapshot
+        .types()
+        .any(|uti| matches!(uti, FILE_DESCRIPTOR | FINODE_DESCRIPTOR))
+    {
         return None;
     }
     // Python sorts the declared types before choosing the file representation.
     snapshot
         .types()
-        .filter(|uti| !matches!(*uti, FILE_DESCRIPTOR | PHOTO_IDENTIFIER))
+        .filter(|uti| !matches!(*uti, FILE_DESCRIPTOR | FINODE_DESCRIPTOR | PHOTO_IDENTIFIER))
         .min()
         .filter(|uti| !uti.is_empty())
 }
@@ -41,23 +45,54 @@ pub(super) fn describe(
     );
 
     let extension = extension_for(&uti);
-    let descriptor = snapshot
-        .take_entry(FILE_DESCRIPTOR)
-        .and_then(|mut entry| entry.remove("data"))
-        .and_then(Value::into_data);
-    let name = descriptor
-        .as_deref()
-        .and_then(|archive| descriptor_name(archive, extension))
-        .and_then(|name| safe_name(&name, extension.unwrap_or("bin")))
+    let name = [FILE_DESCRIPTOR, FINODE_DESCRIPTOR]
+        .into_iter()
+        .find_map(|kind| {
+            let bytes = snapshot.take_entry(kind)?.remove("data")?.into_data()?;
+            let name = if kind == FINODE_DESCRIPTOR {
+                finode_name(&bytes)?
+            } else {
+                descriptor_name(&bytes, extension)?
+            };
+            safe_name(&name, extension.unwrap_or("bin"))
+        })
         .unwrap_or_else(|| fallback_name(language(), extension.unwrap_or("bin")));
 
     FileOffer {
         name,
         uti,
         size,
-        change,
+        change: change.or(snapshot.change),
         data,
     }
+}
+
+fn finode_name(bytes: &[u8]) -> Option<String> {
+    let archive = Value::from_reader(std::io::Cursor::new(bytes)).ok()?;
+    let archive = archive.as_dictionary()?;
+    let objects = archive.get("$objects")?.as_array()?;
+    let resolve = |uid: &Value| objects.get(usize::try_from(uid.as_uid()?.get()).ok()?);
+
+    // FINode archives an NSURL. Follow its references so unrelated strings and
+    // bookmark data in the same object table cannot supply the display name.
+    let top = archive.get("$top")?.as_dictionary()?;
+    let node = resolve(top.get("root")?)?.as_dictionary()?;
+    let url = resolve(node.get("FI URL")?)?.as_dictionary()?;
+    let relative = resolve(url.get("NS.relative")?)?.as_string()?;
+    let location = relative.strip_prefix("file://")?.split(['?', '#']).next()?;
+    let (_, name) = location.rsplit_once('/')?;
+    let mut encoded = name.bytes();
+    let mut decoded = Vec::with_capacity(name.len());
+    while let Some(byte) = encoded.next() {
+        decoded.push(if byte == b'%' {
+            let high = char::from(encoded.next()?).to_digit(16)?;
+            let low = char::from(encoded.next()?).to_digit(16)?;
+            (high * 16 + low) as u8
+        } else {
+            byte
+        });
+    }
+    String::from_utf8(decoded).ok()
 }
 
 fn descriptor_name(archive: &[u8], expected_extension: Option<&str>) -> Option<String> {

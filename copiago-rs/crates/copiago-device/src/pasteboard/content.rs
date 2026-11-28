@@ -414,7 +414,9 @@ pub(super) async fn read_clip(
             // newer change and fetch its own description.
             Ok(described) if listing.has_different_change(&described) => Ok(listing.skip()),
             Ok(described) => {
-                let offer = file_offer::describe(described, uti, listing.change.clone(), language);
+                let mut listing = listing;
+                let offer = file_offer::describe(described, uti, listing.change.take(), language);
+                listing.change.clone_from(&offer.change);
                 Ok(listing.into_update(Some(Clip::File(offer))))
             }
             Err(PasteboardError::RequestTimeout) => Ok(listing.timed_out()),

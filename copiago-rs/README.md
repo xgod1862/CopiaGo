@@ -48,7 +48,7 @@ $testDir = Join-Path $env:TEMP "CopiaGo-$testId\app"
 真机复验时，在测试电脑的同一账户用 Python 1.2.0 完成配对并保存设置和两侧历史，保持手机解锁、拔掉 USB，并确认电脑与手机处于同一局域网。从仓库根目录启动已构建的安装器。
 
 ```powershell
-Start-Process -FilePath '.\copiago-rs\target\packages\CopiaGo-Setup-1.3.2-x64.exe' -ArgumentList ('/LOG="{0}"' -f (Join-Path $env:TEMP 'CopiaGo-upgrade.log')) -Wait
+Start-Process -FilePath '.\copiago-rs\target\packages\CopiaGo-Setup-1.3.3-x64.exe' -ArgumentList ('/LOG="{0}"' -f (Join-Path $env:TEMP 'CopiaGo-upgrade.log')) -Wait
 ```
 
 安装后首次打开 CopiaGo，确认直接显示「已连接（无线）」且未出现配对引导。核对 iPhone 和电脑两侧的历史、设置及登录启动开关，再确认旧程序和运行时已清理。

@@ -125,10 +125,10 @@ pub(super) async fn describe_snapshot(
 /// Writes a file representation to an unpublished destination on the current tunnel.
 ///
 /// Call serially with other pasteboard requests. For a promise, this rechecks the
-/// offer's change ID before the transfer. A threshold reply with a missing ID
-/// requires one more listing before success. Zero size means unknown. The caller
-/// owns the destination and must flush, publish on success and discard it on error
-/// or cancellation. Bytes may already have been written before a late error.
+/// offer's change ID before and after the transfer, since a reply can describe
+/// the original copy even after a second copy has replaced it. Zero size means
+/// unknown. The caller must flush and publish on success or discard the
+/// destination on error or cancellation, even if bytes have already been written.
 pub(crate) async fn receive_file(
     adapter: &mut AdapterHandle,
     port: u16,
@@ -153,9 +153,15 @@ pub(crate) async fn receive_file(
         return Ok(data.len() as u64);
     }
 
-    let current = listing(adapter, port).await?;
-    if offer.change.is_some() && current.change != offer.change {
-        return Err(FileTransferError::OfferExpired);
+    let mut current = listing(adapter, port).await?;
+    if let Some(expected) = &offer.change {
+        let change = file_change(current.change.take(), async || {
+            describe_snapshot(adapter, port).await
+        })
+        .await?;
+        if change.as_ref() != Some(expected) {
+            return Err(FileTransferError::OfferExpired);
+        }
     }
     let item_index = if method == Method::Resolve {
         current
@@ -165,11 +171,15 @@ pub(crate) async fn receive_file(
         0
     };
     let expected = Some(offer.size).filter(|size| *size != 0);
-    let reply = timeout(transfer_timeout(expected), async {
+    let result = timeout(transfer_timeout(expected), async {
         let mut stream = adapter
             .connect(port)
             .await
             .map_err(|_| FileTransferError::Request)?;
+        copiago_core::diagnostic::event(format_args!(
+            "event=file_payload_request method={method:?} bytes={}",
+            offer.size
+        ));
         receive(
             &mut stream,
             method,
@@ -186,12 +196,23 @@ pub(crate) async fn receive_file(
     })
     .with_subscriber(Dispatch::none())
     .await
-    .map_err(|_| FileTransferError::TimedOut)??;
-    reply
-        .confirm_change(method, offer.change.as_ref(), async || {
-            Ok(listing(adapter, port).await?.change)
-        })
-        .await
+    .map_err(|_| FileTransferError::TimedOut)?;
+    finish_offer(result, offer.change.as_ref(), async || {
+        let listed = listing(adapter, port).await?.change;
+        file_change(listed, async || describe_snapshot(adapter, port).await).await
+    })
+    .await
+}
+
+// Some devices supply the identity only in the bounded file description.
+async fn file_change(
+    listed: Option<PasteboardChange>,
+    describe: impl AsyncFnOnce() -> Result<Snapshot, FileTransferError>,
+) -> Result<Option<PasteboardChange>, FileTransferError> {
+    match listed {
+        Some(change) => Ok(Some(change)),
+        None => Ok(describe().await?.change),
+    }
 }
 
 pub(super) async fn listing(
@@ -315,29 +336,27 @@ async fn send(stream: &mut impl ReadWrite, request: XPCObject) -> Result<(), Fil
         .map_err(|_| FileTransferError::Request)
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct ReceivedFile {
-    bytes: u64,
-    change_verified: bool,
-}
-
-impl ReceivedFile {
-    async fn confirm_change(
-        self,
-        method: Method,
-        expected: Option<&PasteboardChange>,
-        read_current: impl AsyncFnOnce() -> Result<Option<PasteboardChange>, FileTransferError>,
-    ) -> Result<u64, FileTransferError> {
-        // Older PULL_REPLY messages may omit the ID. The bytes remain staged
-        // until we confirm the pasteboard stayed on the offer's change.
-        if let Some(expected) = expected
-            && method == Method::Threshold
-            && !self.change_verified
-            && read_current().await?.as_ref() != Some(expected)
-        {
-            return Err(FileTransferError::OfferExpired);
-        }
-        Ok(self.bytes)
+async fn finish_offer(
+    result: Result<u64, FileTransferError>,
+    expected: Option<&PasteboardChange>,
+    read_current: impl AsyncFnOnce() -> Result<Option<PasteboardChange>, FileTransferError>,
+) -> Result<u64, FileTransferError> {
+    use FileTransferError::{OfferExpired, Request, Truncated};
+    let Some(expected) = expected else {
+        return result;
+    };
+    match result {
+        Ok(bytes) => match read_current().await? {
+            Some(current) if &current == expected => Ok(bytes),
+            _ => Err(OfferExpired),
+        },
+        // A new copy may invalidate a promised representation while the peer
+        // is writing it. Preserve the transport error unless replacement is proven.
+        Err(error @ (Truncated | Request)) => match read_current().await {
+            Ok(Some(current)) if &current != expected => Err(OfferExpired),
+            _ => Err(error),
+        },
+        Err(error) => Err(error),
     }
 }
 
@@ -348,7 +367,7 @@ async fn receive(
     item_index: usize,
     change: Option<&PasteboardChange>,
     destination: FileOutput<'_, impl AsyncWrite + Unpin>,
-) -> Result<ReceivedFile, FileTransferError> {
+) -> Result<u64, FileTransferError> {
     let expected = destination.expected;
     if expected.is_some_and(|size| size > MAX_FILE_BYTES) {
         return Err(FileTransferError::TooLarge);
@@ -366,7 +385,7 @@ async fn receive_reply(
     uti: &str,
     change: Option<&PasteboardChange>,
     mut destination: Destination<'_, impl AsyncWrite + Unpin>,
-) -> Result<ReceivedFile, FileTransferError> {
+) -> Result<u64, FileTransferError> {
     let max_body = destination.max_payload() + MAX_METADATA_BODY;
     let mut frames = ReplyFrames::new(stream);
     loop {

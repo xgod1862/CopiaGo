@@ -8,8 +8,8 @@ use crate::{
 };
 
 use super::{
-    FileTransferError as Error, MAX_FILE_BYTES, MAX_METADATA_BODY, Method, ReceivedFile,
-    check_size, frames::ReplyFrames,
+    FileTransferError as Error, MAX_FILE_BYTES, MAX_METADATA_BODY, Method, check_size,
+    frames::ReplyFrames,
 };
 
 pub(super) const MAX_KEY_BYTES: usize = 1024;
@@ -60,7 +60,7 @@ pub(super) async fn scan(
     uti: &str,
     change: Option<&PasteboardChange>,
     destination: &mut Destination<'_, impl AsyncWrite + Unpin>,
-) -> Result<Option<ReceivedFile>, Error> {
+) -> Result<Option<u64>, Error> {
     let mut scan = Scan {
         frames,
         offset: 0,
@@ -71,7 +71,6 @@ pub(super) async fn scan(
         command_seen: false,
         entry_seen: false,
         payload_seen: false,
-        change_verified: false,
         written: None,
     };
     let mut header = [0; 8];
@@ -90,10 +89,7 @@ pub(super) async fn scan(
         return Err(Error::InvalidReply);
     }
     let bytes = scan.written.ok_or(Error::DataUnavailable)?;
-    Ok(Some(ReceivedFile {
-        bytes,
-        change_verified: scan.change_verified,
-    }))
+    Ok(Some(bytes))
 }
 
 struct Scan<'a, 'stream, 'destination, R, W> {
@@ -106,7 +102,6 @@ struct Scan<'a, 'stream, 'destination, R, W> {
     command_seen: bool,
     entry_seen: bool,
     payload_seen: bool,
-    change_verified: bool,
     written: Option<u64>,
 }
 
@@ -250,7 +245,6 @@ impl<R: AsyncRead + AsyncWrite + Unpin, W: AsyncWrite + Unpin> Scan<'_, '_, '_, 
         if Some(&change) != self.change {
             return Err(Error::OfferExpired);
         }
-        self.change_verified = true;
         Ok(())
     }
 

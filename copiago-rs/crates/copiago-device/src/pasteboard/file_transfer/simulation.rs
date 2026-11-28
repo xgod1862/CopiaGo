@@ -78,7 +78,7 @@ async fn exchange(
         peer.send_file(method, size).await
     };
     let (received, hash) = tokio::try_join!(client, server)?;
-    Ok((received.bytes, hash))
+    Ok((received, hash))
 }
 
 struct Peer<'a, S> {

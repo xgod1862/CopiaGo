@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io, time::Instant};
 
 use copiago_core::{
-    clip::{Clip, FileOffer},
+    clip::{Clip, FileOffer, PasteboardChange},
     diagnostic,
     files::{self, Confirmation, OfferDecision, ReceivedFile, human_size, short_name},
     history::{Source, StoredClip},
@@ -37,6 +37,8 @@ struct Offered {
 struct Transfer {
     id: u64,
     name: String,
+    change: Option<PasteboardChange>,
+    replaced: bool,
     progress: Option<TransferProgress>,
     /// Windows clipboard sequence when the download began. Reads run beside
     /// downloads, so a newer copy can reach the clipboard first; a changed
@@ -86,8 +88,28 @@ impl TransferProgress {
 }
 
 impl FileUi {
+    // Compare the phone's copy identity, never a filename or size. A user can
+    // intentionally copy a different file with the same name and length.
+    fn observe_offer(&mut self, change: Option<&PasteboardChange>) -> bool {
+        if let Some(change) = change
+            && (self.active.as_ref().and_then(|entry| entry.change.as_ref()) == Some(change)
+                || self
+                    .waiting
+                    .as_ref()
+                    .and_then(|entry| entry.offer.change.as_ref())
+                    == Some(change))
+        {
+            return false;
+        }
+        if let Some(active) = &mut self.active {
+            active.replaced = true;
+        }
+        true
+    }
+
     pub fn presentation(&self, language: Language) -> Option<HistoryOffer> {
         if let Some(active) = &self.active
+            && !active.replaced
             && let Some(progress) = &active.progress
         {
             return Some(HistoryOffer {
@@ -131,7 +153,10 @@ impl FileUi {
     }
 
     fn update_progress(&mut self, id: u64, report: FileProgress) -> Option<Message> {
-        let active = self.active.as_mut().filter(|active| active.id == id)?;
+        let active = self
+            .active
+            .as_mut()
+            .filter(|active| active.id == id && !active.replaced)?;
         let progress = active.progress.as_mut()?;
         progress.received = report.received_bytes;
         progress.total = Some(report.total_bytes);
@@ -492,6 +517,9 @@ impl Host<'_> {
     }
 
     pub(super) fn on_file_offer(&mut self, offer: FileOffer) {
+        if !self.offer.observe_offer(offer.change.as_ref()) {
+            return;
+        }
         self.clear_waiting_offer();
         let bytes = offer.size;
         let decision = self.clipboard_sync.decide_offer(bytes);
@@ -602,6 +630,8 @@ impl Host<'_> {
         let name = offer.name.clone();
         let short = short_name(&name);
         let bytes = offer.size;
+        let change = offer.change.clone();
+        let count = change.as_ref().map(|change| change.count);
         let progress = offer.data.is_none().then_some(TransferProgress {
             received: 0,
             total: (bytes != 0).then_some(bytes),
@@ -633,11 +663,15 @@ impl Host<'_> {
         self.offer.active = Some(Transfer {
             id,
             name,
+            change,
+            replaced: false,
             progress,
             sequence,
         });
         self.set_status(notice, StatusTone::Muted);
-        diagnostic::event(format_args!("event=file_requested bytes={bytes}"));
+        diagnostic::event(format_args!(
+            "event=file_requested bytes={bytes} id={id} change_count={count:?}"
+        ));
     }
 
     pub(super) fn on_file_progress(&mut self, id: u64, report: FileProgress) {
@@ -654,6 +688,14 @@ impl Host<'_> {
         let Some(active) = self.offer.active.take_if(|active| active.id == id) else {
             return;
         };
+        if active.replaced {
+            // The new file is still waiting and has not written to the Windows
+            // clipboard. Its sequence number cannot detect this replacement.
+            drop(result);
+            diagnostic::event(format_args!("event=file_superseded id={id} source=phone"));
+            self.resume_auto_offer();
+            return;
+        }
         let name = short_name(&active.name);
         let result = match result {
             Ok(received) if superseded(active.sequence, self.clipboard.sequence_number()) => {
@@ -709,7 +751,7 @@ impl Host<'_> {
                     if self.popup.visible() {
                         self.refresh_entries();
                     }
-                    diagnostic::event(format_args!("event=file_complete bytes={bytes}"));
+                    diagnostic::event(format_args!("event=file_complete bytes={bytes} id={id}"));
                     Ok(())
                 } else {
                     Err(message!(
@@ -719,7 +761,7 @@ impl Host<'_> {
                 }
             }
             Err(error) => {
-                diagnostic::event(format_args!("event=file_failed reason={error}"));
+                diagnostic::event(format_args!("event=file_failed reason={error} id={id}"));
                 Err(match error {
                     FileTransferError::OfferExpired => {
                         message!("手机上已复制了别的内容，这个文件不再可用")
@@ -764,6 +806,10 @@ impl Host<'_> {
             self.notify(&notice, true, NotificationKind::Standard);
             self.set_status(notice, StatusTone::Warning);
         }
+        self.resume_auto_offer();
+    }
+
+    fn resume_auto_offer(&mut self) {
         if self
             .offer
             .waiting
@@ -915,10 +961,33 @@ mod tests {
     use copiago_core::settings::Settings;
 
     #[test]
+    fn repeated_file_notification_is_ignored_but_a_new_copy_retires_the_old_result() {
+        let generation = |count| PasteboardChange { count, nonce: None };
+        let mut ui = FileUi {
+            active: Some(Transfer {
+                id: 1,
+                name: "same.dat".into(),
+                change: Some(generation(10)),
+                replaced: false,
+                progress: None,
+                sequence: 42,
+            }),
+            ..FileUi::default()
+        };
+        assert!(!ui.observe_offer(Some(&generation(10))));
+        assert!(!ui.active.as_ref().unwrap().replaced);
+        assert!(ui.observe_offer(Some(&generation(11))));
+        assert!(ui.active.as_ref().unwrap().replaced);
+        assert!(!ui.observe_offer(Some(&generation(10))));
+    }
+
+    #[test]
     fn streaming_card_tracks_only_the_current_transfer() {
         let mut file = FileUi {
             active: Some(Transfer {
                 id: 2,
+                change: None,
+                replaced: false,
                 name: "sample.zip".into(),
                 progress: Some(TransferProgress {
                     received: 0,
@@ -977,6 +1046,8 @@ mod tests {
                 auto: false,
             }),
             active: Some(Transfer {
+                change: None,
+                replaced: false,
                 id: 1,
                 name: "canceled.bin".into(),
                 progress: Some(TransferProgress {

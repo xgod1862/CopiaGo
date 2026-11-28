@@ -1,8 +1,14 @@
 # CopiaGo Rust 重写交付报告
 
-本轮交付 M0–M5 共 33 张任务卡。21 张已合并、12 张待真机验证。状态按 [进度台账](PROGRESS.md) 记录，待真机验证的任务已集成代码并通过本地质量门禁，仍需完成下列设备操作。连接沿用 Python 1.2.0 的行为，Wi-Fi 优先，无线失败后回退到同一台已配对手机的 USB。 [连接验收](https://github.com/xgod1862/CopiaGo/pull/10)
+## 1.3.3 发布验收 · 2026-11-28
 
-## 任务结果
+真机测量使用包含修复的 1.3.2 x64 构建。1.3.3 另补了只在文件描述中返回复制标识的兼容回归。各任务当前状态见 [进度台账](PROGRESS.md)，原始测值见 [实测指标](METRICS.md)。
+
+- 正式版在 Wi-Fi 和 USB 各接收 100 MiB 文件，USB 收件在资源管理器实际粘贴并核对 SHA-256。升级前后配对、设置及原有 57 条历史一致。
+- 首轮 512 MiB 测试中，手机多次拷贝，电脑发起五次请求，两次完成、三次失败。旧日志无法逐次对应点击与错误。修复后在 USB 上只拷贝一次，内容请求一次、成功一次、落盘一份；513 MiB 在发起内容请求前显示超限提示。
+- 测试者另行确认了重叠复制、文件档位和确认、传输进度与收件清理、双向剪贴板、连接恢复、设置和分发流程。诊断信息脱敏与反馈链接、断线小文件与电脑新文字的先后处理、专用手机恢复空剪贴板也已人工复测通过。这些补测按人工结论登记，未提供的最终剪贴板内容、性能采样与逐项日志不作推算。
+
+## M0–M5 交付时的任务结果
 
 | 任务 | 状态 | PR | 结果 |
 | --- | --- | --- | --- |
@@ -59,7 +65,7 @@
 
 本地 `cargo fmt --check`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked` 和依赖许可证检查通过。248 项默认通过，10 项按原标记忽略，另定向通过 512 MiB 合成接收、Python 双向历史和原生 Windows 探针。 [最终质量检查](https://github.com/xgod1862/CopiaGo/pull/14/checks) · [复验结果](METRICS.md)
 
-## 待真机与人工复验
+## M0–M5 原始人工复验清单
 
 ### 建立隔离环境
 
@@ -181,7 +187,7 @@ Get-Counter -Counter $paths -SampleInterval 3600 -MaxSamples 25 -ErrorAction Sil
 - [ ] 执行 `(Get-Item ./target/release/copiago.exe).VersionInfo`，预期产品为 `CopiaGo`，版本 `2.0.0-beta`。在可运行 `mt.exe` 的 Windows SDK 终端用 `mt.exe -nologo '-inputresource:target\release\copiago.exe;#1' '-out:target\copiago-extracted.manifest'`，再用 `mt.exe -nologo -manifest target\copiago-extracted.manifest -validate_manifest`，预期解析成功。 [资源验收](https://github.com/xgod1862/CopiaGo/pull/8)
 - [ ] 对当前 Windows 账户的只读旧设置或其副本，执行 `cargo test -p copiago-core --lib settings::tests::reads_installed_python_settings -- --ignored --exact`，预期 1 项通过。执行 `cargo test -p copiago-core icacls_confirms_only_user_and_system_and_inheritance` 与 `cargo test -p copiago-core reads_python_compatible_powershell_fixture`，预期 ACL 和 DPAPI 的示例复验通过。 [数据路径验收](https://github.com/xgod1862/CopiaGo/pull/9)
 
-## 已知差距与后续工作
+## M0–M5 交付时的差距记录
 
 - 台账无「阻塞」任务。后续优先复验 USB 信任与回退、双向剪贴板、真机挂载、实际睡眠与网络切换，以及持续 24 小时连机采样。 [M5 真机实测](METRICS.md)
 - 48 MP 基线 JPEG 缩略图和透明度通过。渐进 JPEG 的独立 Debug 探针三次超过 30 MB，采样专用工作集最高 146,251,776 B。应复现正式 EXE 端到端峰值并控制缩略图开销。仅有 HEIC 的样本在本机返回 `0xc00d5212`，先核对真实来源能否提供同条目的 PNG/JPEG，剩余样本再评估解码支持。 [图片问题清单](METRICS.md) · [M2](https://github.com/xgod1862/CopiaGo/pull/11)

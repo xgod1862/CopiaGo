@@ -1,4 +1,4 @@
-use super::super::ReceivedFile;
+use super::super::finish_offer;
 use super::*;
 use copiago_core::clip::PasteboardChange;
 use std::time::Duration;
@@ -76,7 +76,7 @@ async fn reports_streamed_payload_bytes_without_frame_padding() {
             .unwrap();
     };
     let (reply, ()) = tokio::join!(client, server);
-    assert_eq!(reply.unwrap().bytes, 9);
+    assert_eq!(reply.unwrap(), 9);
     assert_eq!(output, b"abcdefghi");
     assert_eq!(
         reports,
@@ -200,7 +200,7 @@ async fn rejects_threshold_reply_for_a_newer_change_after_staging_bytes() {
 }
 
 #[tokio::test]
-async fn matching_threshold_reply_completes_without_another_listing() {
+async fn matching_threshold_reply_is_discarded_if_another_copy_arrived_during_download() {
     let change = PasteboardChange {
         count: 41,
         nonce: None,
@@ -208,14 +208,45 @@ async fn matching_threshold_reply_completes_without_another_listing() {
     let wire = threshold_wire(Some(idevice::xpc!({ "changeCount": 41i64 })));
     let (result, staged) =
         receive_wire_with_change(Method::Threshold, &wire, Some(3), true, Some(&change)).await;
-    let bytes = result
-        .unwrap()
-        .confirm_change(Method::Threshold, Some(&change), async || {
-            panic!("a matching reply should not require a listing")
-        })
-        .await;
-    assert_eq!(bytes, Ok(3));
+    let newer = PasteboardChange {
+        count: 42,
+        nonce: None,
+    };
+    let bytes = finish_offer(result, Some(&change), async || Ok(Some(newer))).await;
+    assert_eq!(bytes, Err(Error::OfferExpired));
     assert_eq!(staged, [1, 2, 3]);
+}
+
+#[tokio::test]
+async fn file_change_uses_the_description_only_when_the_listing_omits_its_id() {
+    use super::super::{Snapshot, file_change};
+
+    let change = PasteboardChange {
+        count: 41,
+        nonce: None,
+    };
+    let listed = file_change(Some(change.clone()), async || {
+        panic!("unexpected description")
+    })
+    .await;
+    assert!(listed == Ok(Some(change.clone())));
+
+    let mut description = Snapshot::default();
+    description.change.replace(change.clone());
+    let recovered = file_change(None, async move || Ok(description))
+        .await
+        .unwrap();
+    assert!(recovered == Some(change));
+    assert!(
+        file_change(None, async || Ok(Snapshot::default()))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        file_change(None, async || Err(Error::Request)).await,
+        Err(Error::Request)
+    ));
 }
 
 #[tokio::test]
@@ -241,12 +272,34 @@ async fn missing_threshold_id_requires_a_matching_listing_after_staging() {
             let (result, staged) =
                 receive_wire_with_change(Method::Threshold, &wire, Some(3), true, Some(&change))
                     .await;
-            let bytes = result
-                .unwrap()
-                .confirm_change(Method::Threshold, Some(&change), async move || listing)
-                .await;
+            let bytes = finish_offer(result, Some(&change), async move || listing).await;
             assert_eq!(bytes, expected);
             assert_eq!(staged, [1, 2, 3]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn transport_error_is_reclassified_only_for_a_confirmed_new_copy() {
+    let old = PasteboardChange {
+        count: 41,
+        nonce: None,
+    };
+    let new = PasteboardChange {
+        count: 42,
+        nonce: None,
+    };
+    for error in [Error::Truncated, Error::Request] {
+        for (current, expected) in [
+            (Ok(Some(new.clone())), Error::OfferExpired),
+            (Ok(Some(old.clone())), error),
+            (Ok(None), error),
+            (Err(Error::TimedOut), error),
+        ] {
+            assert_eq!(
+                finish_offer(Err(error), Some(&old), async move || current).await,
+                Err(expected)
+            );
         }
     }
 }
@@ -345,7 +398,7 @@ async fn receive_wire(
     end_stream: bool,
 ) -> (Result<u64, Error>, Vec<u8>) {
     let (result, staged) = receive_wire_with_change(method, wire, size, end_stream, None).await;
-    (result.map(|reply| reply.bytes), staged)
+    (result, staged)
 }
 
 async fn receive_wire_with_change(
@@ -354,7 +407,7 @@ async fn receive_wire_with_change(
     size: Option<u64>,
     end_stream: bool,
     change: Option<&PasteboardChange>,
-) -> (Result<ReceivedFile, Error>, Vec<u8>) {
+) -> (Result<u64, Error>, Vec<u8>) {
     let (mut client, mut server) = duplex(4096);
     let mut output = Vec::new();
     let mut progress = |_| {};

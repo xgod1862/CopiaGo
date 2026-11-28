@@ -45,14 +45,16 @@ Get-Process copiago -ErrorAction SilentlyContinue | Select-Object Id, Path
 
 ### 1.3 隔离的数据目录（沿用现有配对）
 
-正式安装版的数据通常在 `%LOCALAPPDATA%\Programs\CopiaGo\data\<账户名>`。配对记录是这个目录里的 `remote_*.plist` 文件，用当前 Windows 账户的 DPAPI 加密，同一账户下复制后仍可使用。
+正式安装版的数据通常在 `%LOCALAPPDATA%\Programs\CopiaGo\data\<账户名>`。配对记录是这个目录下 `device-data` 子目录里的 `remote_*.plist` 文件，用当前 Windows 账户的 DPAPI 加密，同一账户下复制后仍可使用。程序只在 `<数据根目录>\device-data` 里找配对记录，所以复制时必须保留这一层。
 
 ```powershell
+# $src 是 ...\<账户名>\device-data
 $src = (Get-ChildItem "$env:LOCALAPPDATA\Programs\CopiaGo\data" -Recurse -Filter "remote_*.plist" -ErrorAction SilentlyContinue | Select-Object -First 1).DirectoryName
 $qa = "$env:TEMP\copiago-qa"
 Remove-Item $qa -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $qa\data | Out-Null
-Copy-Item "$src\*" "$qa\data" -Recurse
+Copy-Item $src "$qa\data\device-data" -Recurse
+Get-ChildItem "$qa\data\device-data" -Filter "remote_*.plist"   # 必须能列出至少一个文件
 ```
 
 如果找不到 `remote_*.plist`，说明这台电脑还没有可用的配对。这时在第一次协助时请用户用数据线连接 iPhone，然后用 GUI 完成配对：点「连接 iPhone」，在手机上点「信任」并输入密码。
@@ -63,7 +65,9 @@ Copy-Item "$src\*" "$qa\data" -Recurse
 function Set-QaSettings([string[]]$Pull = @('text','image','file'), [string[]]$Push = @('text','image')) {
   @{ pull = $true; push = $true; history = $true; pc_history = $true; file_ask_mb = 0;
      notifications = $false; update_check = $false;
-     pull_types = $Pull; push_types = $Push } | ConvertTo-Json | Set-Content "$qa\data\settings.json" -Encoding UTF8
+     pull_types = $Pull; push_types = $Push } | ConvertTo-Json |
+    ForEach-Object { [IO.File]::WriteAllText("$qa\data\settings.json", $_, (New-Object Text.UTF8Encoding $false)) }
+  # 不要用 Set-Content -Encoding UTF8：PowerShell 5.1 会写入 BOM
 }
 Set-QaSettings
 ```
@@ -293,7 +297,7 @@ Wait-Log 'event=pull_filtered kind=image' $m 60
 
 | 项 | 操作 | 通过条件 |
 |---|---|---|
-| E1 文字 | `Set-ClipText "QA-文字😀-$(New-Guid)"` | `push_complete`；30 秒内剪贴板变成 `ECHO:` 加上原文字，内容完全一致 |
+| E1 文字 | `Set-ClipText "PCTXT-文字😀-$(New-Guid)"`（不能以 `QA-` 开头，否则快捷指令不会回显） | `push_complete`；30 秒内剪贴板变成 `ECHO:` 加上原文字，内容完全一致 |
 | E2 小图 | `New-TestPng $qa\a.png 1200 800; Set-ClipPng $qa\a.png` | `push_queued kind=image` 之后很快出现 `push_complete kind=image`；回显 `ECHO-IMG:1200x800` |
 | E3 大图 | `New-TestPng $qa\b.png 3800 3000 -Noise`（约 45 MB）后 `Set-ClipPng` | 记录推送耗时；`push_complete`，或 `push_failed reason=pasteboard request timed out`（这时截图核对提示文字）；能回显时尺寸为 `3800x3000` |
 | E4 超限 | `New-TestPng $qa\c.png 5000 4000 -Noise`（大于 64 MB）后 `Set-ClipPng` | 不应出现 `push_queued kind=image`；应出现 `pc_read_failed`，截图核对"电脑上复制的图片过大"提示 |

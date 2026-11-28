@@ -309,7 +309,12 @@ impl Host<'_> {
 
     fn on_file_answer(&mut self, answer: Answer) {
         let Some(offer) = self.pending_offer.take(answer.id) else {
-            self.on_file_result(answer.id, Err(FileTransferError::OfferExpired));
+            // Logged directly: a repeated answer for a download already under way must
+            // not end that download's bookkeeping.
+            self.log.event(
+                "file_failed",
+                format_args!("reason=offer_expired id={}", answer.id),
+            );
             return;
         };
         if answer.accept {

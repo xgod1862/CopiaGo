@@ -278,3 +278,16 @@ fn reads_installed_python_settings() {
         "installed settings.json changed during verification"
     );
 }
+
+#[test]
+fn a_utf8_bom_written_by_windows_powershell_is_accepted() {
+    let dir = TestDir::new();
+    fs::write(
+        dir.path().join(FILE_NAME),
+        "\u{feff}{\"push\":true,\"file_ask_mb\":0}",
+    )
+    .unwrap();
+    let settings = Settings::read(dir.path()).unwrap();
+    assert!(settings.push);
+    assert_eq!(settings.file_ask_mb, 0);
+}

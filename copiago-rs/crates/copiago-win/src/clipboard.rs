@@ -103,16 +103,24 @@ type Result<T> = std::result::Result<T, ClipboardError>;
 
 pub enum ClipboardRead {
     Empty,
-    Sensitive,
+    /// CopiaGo wrote this itself, usually a copy from the phone. Never send it back.
+    Own,
     Text(String),
     Png(Vec<u8>),
+}
+
+pub struct ClipboardCopy {
+    pub content: ClipboardRead,
+    /// Another app marked this copy as not for clipboard history, cloud sync or
+    /// monitors. Password managers do this for every secret they copy.
+    pub marked: bool,
 }
 
 /// Clipboard access for a window on the calling thread.
 ///
 /// The window receives WM_CLIPBOARDUPDATE through its normal message loop.
 /// Drop the Clipboard before destroying that window. Changes made through
-/// this object are marked as sensitive and subsequently skipped by read.
+/// this object carry a private marker and read as [`ClipboardRead::Own`].
 pub struct Clipboard {
     owner: HWND,
     formats: Formats,
@@ -134,11 +142,13 @@ impl Clipboard {
 
     /// Reads data eligible for PC history or phone sync. The registered PNG
     /// format takes precedence over bitmaps and text.
-    pub fn read(&self) -> Result<ClipboardRead> {
+    pub fn read(&self) -> Result<ClipboardCopy> {
+        let mut marked = false;
         let data = OpenClipboardGuard::run(self.owner, |clipboard| {
-            if self.formats.sensitive(clipboard)? {
-                return Ok(ReadData::Sensitive);
+            if clipboard.available(self.formats.owner) {
+                return Ok(ReadData::Own);
             }
+            marked = self.formats.marked(clipboard)?;
             if clipboard.available(self.formats.png) {
                 return clipboard.with_data(self.formats.png, |data| {
                     Ok(ReadData::Png(image::png_payload(data)?.to_vec()))
@@ -156,16 +166,17 @@ impl Clipboard {
         })?;
 
         // Decode or encode after closing the clipboard.
-        match data {
-            ReadData::Empty => Ok(ClipboardRead::Empty),
-            ReadData::Sensitive => Ok(ClipboardRead::Sensitive),
-            ReadData::Text(text) => Ok(ClipboardRead::Text(text)),
+        let content = match data {
+            ReadData::Empty => ClipboardRead::Empty,
+            ReadData::Own => ClipboardRead::Own,
+            ReadData::Text(text) => ClipboardRead::Text(text),
             ReadData::Png(png) => {
                 image::validate_png(&png)?;
-                Ok(ClipboardRead::Png(png))
+                ClipboardRead::Png(png)
             }
-            ReadData::Bitmap(bmp) => Ok(ClipboardRead::Png(image::bmp_to_png(&bmp)?)),
-        }
+            ReadData::Bitmap(bmp) => ClipboardRead::Png(image::bmp_to_png(&bmp)?),
+        };
+        Ok(ClipboardCopy { content, marked })
     }
 
     pub fn write_text(&self, text: &str) -> Result<()> {
@@ -193,6 +204,7 @@ impl Clipboard {
     fn write(&self, contents: impl IntoIterator<Item = (u32, OwnedMemory)>) -> Result<()> {
         // Stage every allocation before replacing the current clipboard.
         let privacy = [
+            (self.formats.owner, OwnedMemory::from_bytes(b"1")?),
             (self.formats.excluded, OwnedMemory::from_bytes(b"1")?),
             (self.formats.history, OwnedMemory::from_bytes(&[0; 4])?),
             (self.formats.cloud, OwnedMemory::from_bytes(&[0; 4])?),
@@ -234,6 +246,8 @@ impl Drop for Clipboard {
 }
 
 struct Formats {
+    /// CopiaGo's own marker, so its writes are told apart from other apps' markers.
+    owner: u32,
     excluded: u32,
     viewer_ignore: u32,
     history: u32,
@@ -245,6 +259,7 @@ struct Formats {
 impl Formats {
     fn register() -> io::Result<Self> {
         Ok(Self {
+            owner: register_format(w!("CopiaGo Clipboard Owner"))?,
             excluded: register_format(w!("ExcludeClipboardContentFromMonitorProcessing"))?,
             viewer_ignore: register_format(w!("Clipboard Viewer Ignore"))?,
             history: register_format(w!("CanIncludeInClipboardHistory"))?,
@@ -254,7 +269,9 @@ impl Formats {
         })
     }
 
-    fn sensitive(&self, clipboard: &OpenClipboardGuard) -> Result<bool> {
+    /// Whether another app, typically a password manager, asked clipboard monitors,
+    /// history or cloud sync to leave this copy alone.
+    fn marked(&self, clipboard: &OpenClipboardGuard) -> Result<bool> {
         if clipboard.available(self.excluded) || clipboard.available(self.viewer_ignore) {
             return Ok(true);
         }
@@ -271,7 +288,7 @@ impl Formats {
 
 enum ReadData {
     Empty,
-    Sensitive,
+    Own,
     Text(String),
     Png(Vec<u8>),
     Bitmap(Vec<u8>),

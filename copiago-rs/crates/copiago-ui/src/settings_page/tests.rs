@@ -75,6 +75,10 @@ fn writes_each_json_setting_using_the_python_schema() {
             SettingsChange::UpdateCheck(false),
         ),
         (
+            SettingsAction::Toggle(SettingSwitch::PushMarked),
+            SettingsChange::PushMarked(false),
+        ),
+        (
             SettingsAction::ToggleType(SyncDirection::ToPc, SyncKind::File),
             SettingsChange::PullTypes(vec![SyncKind::Text, SyncKind::Image]),
         ),
@@ -107,6 +111,7 @@ fn writes_each_json_setting_using_the_python_schema() {
             push: true,
             pull_types: vec![SyncKind::Text, SyncKind::Image],
             push_types: vec![SyncKind::Text],
+            push_marked: false,
             file_ask_mb: 0,
             notifications: false,
             update_check: false,

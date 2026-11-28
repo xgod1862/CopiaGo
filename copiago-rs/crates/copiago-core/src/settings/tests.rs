@@ -22,6 +22,7 @@ fn defaults_for_missing_empty_or_invalid_documents() {
         push: false,
         pull_types: vec![SyncKind::Text, SyncKind::Image, SyncKind::File],
         push_types: vec![SyncKind::Text, SyncKind::Image],
+        push_marked: true,
         file_ask_mb: 20,
         notifications: true,
         update_check: true,
@@ -148,6 +149,7 @@ fn settings_updates_round_trip_all_keys() {
         SettingsChange::PushTypes(vec![SyncKind::Image]),
         SettingsChange::FileAskMb(0),
         SettingsChange::Notifications(false),
+        SettingsChange::PushMarked(false),
         SettingsChange::UpdateCheck(false),
     ] {
         updated = Settings::update(&data, change).unwrap();
@@ -160,6 +162,7 @@ fn settings_updates_round_trip_all_keys() {
         push: true,
         pull_types: vec![SyncKind::Text, SyncKind::File],
         push_types: vec![SyncKind::Image],
+        push_marked: false,
         file_ask_mb: 0,
         notifications: false,
         update_check: false,
@@ -178,6 +181,7 @@ fn settings_updates_round_trip_all_keys() {
             "push": true,
             "pull_types": ["text", "file"],
             "push_types": ["image"],
+            "push_marked": false,
             "file_ask_mb": 0,
             "notifications": false,
             "update_check": false,

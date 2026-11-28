@@ -313,3 +313,4 @@ iPhone 上的图片读取超时，未同步到电脑。请保持手机解锁后�
 「{name}」已下载，但电脑剪贴板里已有更新的内容，为避免覆盖未放入剪贴板。需要时可在历史中复制它	Downloaded {name}, but the PC clipboard already holds newer content, so it was not replaced. Copy the file from history when you need it.
 「{name}」已下载，但电脑剪贴板里已有更新的内容，为避免覆盖未放入剪贴板。如仍需要，请在手机上重新复制该文件	Downloaded {name}, but the PC clipboard already holds newer content, so it was not replaced. If you still need it, copy the file on the phone again.
 这台 iPhone 的系统版本过低。CopiaGo 需要 iOS 17.4 或更高版本，请在 iPhone「设置 → 通用 → 软件更新」中更新后再连接。	This iPhone’s iOS is too old. CopiaGo needs iOS 17.4 or later. Update it in Settings → General → Software Update on your iPhone, then connect again.
+同步密码管理器复制的内容	Send copies from password managers

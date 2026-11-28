@@ -6,7 +6,7 @@ use copiago_core::{
     settings::{Settings, SyncKind},
 };
 use copiago_device::DeviceCommand;
-use copiago_win::clipboard::ClipboardRead;
+use copiago_win::clipboard::{ClipboardCopy, ClipboardRead};
 use tokio::sync::mpsc;
 
 pub(super) struct ClipboardSync {
@@ -88,8 +88,13 @@ impl ClipboardSync {
         Ok(true)
     }
 
-    pub(super) fn read_windows(&self, read: ClipboardRead) -> Option<(Clip, SyncKind)> {
-        let (clip, kind) = match read {
+    /// A Windows copy to record or send. The flag is true for a copy another app marked
+    /// as private: it may be sent when the settings allow it, but is never recorded.
+    pub(super) fn read_windows(&self, copy: ClipboardCopy) -> Option<(Clip, SyncKind, bool)> {
+        if copy.marked && !self.settings.push_marked {
+            return None;
+        }
+        let (clip, kind) = match copy.content {
             ClipboardRead::Text(text) => (Clip::Text(text), SyncKind::Text),
             ClipboardRead::Png(bytes) => (
                 Clip::Image {
@@ -98,21 +103,24 @@ impl ClipboardSync {
                 },
                 SyncKind::Image,
             ),
-            ClipboardRead::Empty | ClipboardRead::Sensitive => return None,
+            ClipboardRead::Empty | ClipboardRead::Own => return None,
         };
         self.settings
             .push_types
             .contains(&kind)
-            .then_some((clip, kind))
+            .then_some((clip, kind, copy.marked))
     }
 
     /// The kind of a Windows copy that automatic sending would have pushed but the
     /// settings exclude, so the host can say why nothing was sent.
-    pub(super) fn push_filtered(&self, read: &ClipboardRead) -> Option<SyncKind> {
-        let kind = match read {
+    pub(super) fn push_filtered(&self, copy: &ClipboardCopy) -> Option<SyncKind> {
+        if copy.marked && !self.settings.push_marked {
+            return None;
+        }
+        let kind = match copy.content {
             ClipboardRead::Text(_) => SyncKind::Text,
             ClipboardRead::Png(_) => SyncKind::Image,
-            ClipboardRead::Empty | ClipboardRead::Sensitive => return None,
+            ClipboardRead::Empty | ClipboardRead::Own => return None,
         };
         (self.auto_push() && !self.settings.push_types.contains(&kind)).then_some(kind)
     }
@@ -301,17 +309,18 @@ mod tests {
             10,
         );
         let (send, mut receive) = mpsc::channel(1);
-        assert!(sync.read_windows(ClipboardRead::Sensitive).is_none());
+        assert!(sync.read_windows(copy(ClipboardRead::Own, false)).is_none());
         assert!(
-            sync.read_windows(ClipboardRead::Text("example".to_owned()))
+            sync.read_windows(copy(ClipboardRead::Text("example".to_owned()), false))
                 .is_none()
         );
         assert!(receive.try_recv().is_err());
 
         let bytes = vec![1, 2, 3];
-        let (image, kind) = sync
-            .read_windows(ClipboardRead::Png(bytes.clone()))
+        let (image, kind, marked) = sync
+            .read_windows(copy(ClipboardRead::Png(bytes.clone()), false))
             .unwrap();
+        assert!(!marked);
         assert_eq!(kind, SyncKind::Image);
         assert!(matches!(
             sync.queue_push(image.clone(), Some(7), false, &send),
@@ -356,13 +365,49 @@ mod tests {
             },
             10,
         );
-        let png = ClipboardRead::Png(vec![1]);
+        let png = copy(ClipboardRead::Png(vec![1]), false);
         // Nothing would have been sent while disconnected, so there is nothing to explain.
         assert_eq!(sync.push_filtered(&png), None);
         sync.connected(true);
         assert_eq!(sync.push_filtered(&png), Some(SyncKind::Image));
-        assert_eq!(sync.push_filtered(&ClipboardRead::Text("a".into())), None);
-        assert_eq!(sync.push_filtered(&ClipboardRead::Sensitive), None);
+        assert_eq!(
+            sync.push_filtered(&copy(ClipboardRead::Text("a".into()), false)),
+            None
+        );
+        assert_eq!(sync.push_filtered(&copy(ClipboardRead::Own, false)), None);
+    }
+
+    fn copy(content: ClipboardRead, marked: bool) -> ClipboardCopy {
+        ClipboardCopy { content, marked }
+    }
+
+    #[test]
+    fn password_manager_copies_are_sent_only_when_allowed_and_never_recorded() {
+        let mut sync = ClipboardSync::new(
+            Settings {
+                push: true,
+                push_types: vec![SyncKind::Text],
+                ..Settings::default()
+            },
+            10,
+        );
+        assert!(
+            sync.settings.push_marked,
+            "sending marked copies is the default"
+        );
+        let secret = || copy(ClipboardRead::Text("hunter2".into()), true);
+        assert!(matches!(
+            sync.read_windows(secret()),
+            Some((Clip::Text(text), SyncKind::Text, true)) if text == "hunter2"
+        ));
+        // CopiaGo's own writes stay out regardless, so phone copies never echo back.
+        assert!(sync.read_windows(copy(ClipboardRead::Own, false)).is_none());
+
+        sync.settings.push_marked = false;
+        assert!(sync.read_windows(secret()).is_none());
+        sync.connected(true);
+        sync.settings.push_types = vec![SyncKind::Image];
+        assert_eq!(sync.push_filtered(&secret()), None);
     }
 
     #[test]

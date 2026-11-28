@@ -5,10 +5,13 @@ on:
     branches: [main]
     paths:
       - 'copiago-rs/**'
+      # Changes to this workflow must run it, or they reach main unverified.
+      - '.github/workflows/rust.yml'
   push:
     branches: [main]
     paths:
       - 'copiago-rs/**'
+      - '.github/workflows/rust.yml'
 
 permissions:
   contents: read

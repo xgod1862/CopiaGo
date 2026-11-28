@@ -230,7 +230,7 @@ $http = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--bind'
 4. 允许快捷指令读取剪贴板：在「设置 → 快捷指令」（较新的 iOS 在「设置 → App → 快捷指令」）中，把「从其他 App 粘贴」设为「允许」。
 5. 先随手截一张图。确认相册里最新的一张照片是用相机拍的（如果没有，随手拍一张）。
 6. 在「快捷指令」App 里按 2.3 节新建两个快捷指令，运行「QA 下载样本」（Codex 会告诉你电脑的 IP 地址），等它把 6 个样本下载完。
-7. 回答 Codex 几个问题：Codex 是否可以用 winget 安装 Inno Setup（第 3.10 节用，不同意就跳过）？电脑上是否有平时使用的 VPN？是否接了第二块屏幕？是否愿意做 A5（手机会重启两次）？
+7. 回答 Codex 几个问题：Codex 是否可以用 winget 安装 Inno Setup（第 3.10 节用，不同意就跳过）？电脑上是否有平时使用的 VPN？是否接了第二块屏幕？是否愿意做 A5（手机会重启两次）？是否同意临时修改本账户的开机启动注册表项（G4，会先备份、结束后恢复）？
 8. 如果 Codex 没有管理员权限：以管理员身份重新打开 Codex 所在的终端，或者在需要时批准 UAC 提示。
 
 ### 2.2 协助 A2、A3
@@ -283,6 +283,7 @@ Codex 完成对应准备后，请用户在手机上运行一次「CopiaGo QA」�
 8. （第 1.6 节的防火墙方法无效时才需要，否则跳过）关闭 iPhone 的无线局域网 60 秒再打开；然后拷贝 `QA-M8`。
 9. 在「文件 → 我的 iPhone → CopiaGo-QA」里长按 `qa-100MiB.bin` →「拷贝」，然后**不要再拷贝别的内容**，等 Codex 说可以继续（Codex 要用它跑几轮吞吐测试，约 5 分钟）。如果 Codex 前面说文件用例需要手动补测，也在这一步按 Codex 的要求拷贝 `qa-512MiB.bin` 等文件。
 10. 拷贝文字 `QA-M9`；15 秒后拷贝 `QA-M10-offline`；之后 60 秒内不要操作手机。
+11. 等 Codex 说"开始过期测试"后，在「文件」App 拷贝 `qa-100MiB.bin`；等 Codex 说"拷贝第二个"后，再拷贝 `qa-25MiB.bin`。
 
 ## 3. 测试流程
 
@@ -321,7 +322,7 @@ Wait-Log 'event=connected transport=usb' $m0 90
 | U4 | `QA-P2` 后立即开始 | 每 1.5 秒执行一次 `Set-ClipText "QA-PC-<序号>-<guid>"`，共 15 次，最后一条存为 `$last`。按 `push_queued` 和 `push_complete` 计算每次推送的耗时：照片读取期间每次都应小于 3 秒。照片读取结束后，Windows 剪贴板仍应是 `$last`，不能被照片覆盖（日志里出现 `pull_superseded` 属于正常） |
 | U5 | `QA-P3` 之后 | 一出现 `file_requested` 就立即 `Set-ClipText "QA-PC-during-download-<guid>"`（Wi-Fi 轮如果出现 `file_waiting`，先 `Invoke-Ui '同步到电脑'`，再等 `file_requested`）。**前置判断**：如果在这次复制对应的 `push_queued` 之前，已经出现了这次下载的 `file_complete` 或 `file_failed`，说明复制时下载已经结束，不满足"下载期间复制"的前提，记为"无法判定"。满足前提时的通过条件：推送在 3 秒内完成；没有出现 `MetadataUnresponsive`；最后出现 `file_superseded`，剪贴板仍是刚复制的文字。如果手机端没有发起下载（没有 `file_requested`），记为"无法判定"，并在 A4 第 9 步改为请用户在「文件」App 手动拷贝 `qa-512MiB.bin` 重测 |
 | T-DEV-08 档位 | `QA-S1` 到 `QA-S5` | 这一轮使用 `file_ask_mb = 0`：64KiB、1MiB、25MiB、512MiB 都应自动接收，出现 `file_complete`；`Get-ClipFiles` 指向的文件哈希与 `$qa\samples.csv` 一致。513MiB 应出现 `file_failed reason=too_large`。记录每个档位从标记到完成的耗时，以及 512MiB 期间进程的专用工作集峰值（用 `Get-Process -Id $p.Id` 每秒采样） |
-| T-DEV-08 过期 | `QA-X0` 到 `QA-X1` | 100MiB 的 offer 被新复制取代后：出现 `file_failed ... offer_expired` 或 `file_superseded`，没有把旧文件放进剪贴板，剪贴板是 `QA-X1-replaces-offer` |
+| T-DEV-08 过期 | `QA-X0` 到 `QA-X1` | 按两轮的设置分别判定。**USB 轮（`file_ask_mb = 0`）**：100MiB 会立即开始下载，新复制在下载期间到达，应出现这次下载的 `file_superseded` 或 `file_failed ... offer_expired`，旧文件不放进剪贴板，剪贴板是 `QA-X1-replaces-offer`。**Wi-Fi 轮（`file_ask_mb = 20`）**：100MiB 只产生 `file_waiting`，不会发起下载，所以也不会有下载结果事件；通过条件是新复制到达后，面板里这个文件的确认入口消失（`Find-Ui '同步到电脑'` 返回空，并截图），日志里没有这次 offer 的 `file_requested`，剪贴板是 `QA-X1-replaces-offer`。底层的 `offer_expired` 判定由 A4 第 11 步的独立探针验证 |
 | U6 | `QA-F0` 后立即开始 | `Stop-Qa; Set-QaSettings -Pull @('text','file'); Start-Qa`，等到 `connected`。截图到来后应出现 `pull_filtered kind=image`，剪贴板没有变成截图。用 `Show-Qa` 打开面板截图核对提示文字（3.11 节）。然后执行 `Stop-Qa; Set-QaSettings; Start-Qa` 恢复 |
 | U7 | `QA-E0` 之后 | 见下表 |
 
@@ -362,6 +363,7 @@ Wait-Log 'event=connected transport=' $m0 90
 | N6 断线恢复 | 程序 Wi-Fi 连接中，`Enable-Isolation` 60 秒后 `Disable-Isolation` | 隔离期间回退 USB，或进入等待并显示 `Unreachable` 提示；解除后恢复 `transport=wifi` | 自动 |
 | N7 锁屏 | A4 第 6 步 | 锁屏期间的行为记录在报告里；解锁后 60 秒内恢复 `connected`，并能继续同步（`QA-M6` 能到电脑） | 协助 A4 |
 | N8 系统睡眠 | A4 第 7 步之前：`Add-Type -A System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)` | 唤醒后出现 `host_signal signal=Resumed`，60 秒内恢复 `connected`，`QA-M7` 能到电脑（T-DEV-05、T-APP-01、T-APP-02 的实际睡眠项） | 协助 A4 |
+| X2 过期 offer 探针 | A4 第 11 步：`Stop-Qa` 后运行 `.\target\release\examples\connection_probe.exe --check-expired-offer --seconds 120`，看到 `first_promised_offer_saved` 后告诉用户拷贝第二个文件 | 输出 `offer_expired`，并且没有发布旧文件（RR「文件确认、校验与大小边界」第 3 条）。结束后 `Start-Qa` | 协助 A4 |
 | N9 忘记设备 | 最后执行：`Show-Qa` → 设置页 → `Invoke-Ui '忘记此 iPhone'` 两次（3 秒内） | 出现 `forget success=true`；`$qa\data\device-data` 下的 `remote_*.plist` 消失；历史仍在；界面回到引导页（T-DEV-09 的忘记部分） | 自动 |
 
 ### 3.5 图片来源与不支持的类型（协助 A4）
@@ -392,7 +394,7 @@ A4 的前 5 步，每一步完成后：
 | G1 单实例 | 程序运行时再执行 `Start-Process $exe -ArgumentList '--minimized'`，然后 `Start-Process $exe` | 不产生第二个进程；第一次静默，第二次打开面板 | 自动 |
 | G2 Explorer 重启 | `Stop-Process -Name explorer`（系统会自动重启 Explorer） | 托盘图标恢复（截图）；面板仍能打开 | 自动 |
 | G3 设置持久化 | 用 UIA 切换每一个开关和语言，重启后检查 `settings.json` | 修改立即生效（语言立即切换）；字段持久保存；未知键保留（先往 settings.json 手动加一个 `"qa_unknown": 1`，验证它还在） | 自动 |
-| G4 开机启动 | 用 UIA 打开「开机启动」开关，然后读取 `HKCU:\Software\Microsoft\Windows\CurrentVersion\Run` | 出现对应的值，路径带引号并包含 `--minimized`；关闭后该值被移除。**测试结束前必须确认已移除** | 自动 |
+| G4 开机启动 | 隔离实例（设置了 `ICB_INSTANCE_NAMESPACE`）不会初始化开机启动状态，开关在界面上不可用，这是程序的有意设计，所以**在隔离实例里记为"不可测"**。只有用户在 A1 同意时，才按下面的非隔离流程做：先备份 `HKCU:\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `CopiaGo` 和 `iPhoneClipboardPrototype` 两个值（`Get-ItemProperty` 导出到 `$qa\run-backup.json`，不存在就记为不存在）；`Stop-Qa`，`Remove-Item Env:ICB_INSTANCE_NAMESPACE`（保留 `ICB_DATA_DIR`），启动测试 EXE；用 UIA 打开、再关闭「开机启动」开关，分别读取 Run 项；最后**按备份恢复这两个值**（原来存在就写回原值，原来不存在就删除），并重新设置 `ICB_INSTANCE_NAMESPACE` | 打开后 `CopiaGo` 值是带引号的测试 EXE 路径加 `--minimized`；关闭后该值被移除；恢复后两个值与备份完全一致（在报告里贴出对比） | 可选 |
 | G5 更新检查 | `cargo run --release --locked -p copiago-win --example update_probe -- --github 1.1.0`（去掉 `--open`，避免打开浏览器） | 报告有更新的稳定版；把 `1.1.0` 换成当前版本号重跑时无提示 | 自动 |
 | G6 键盘操作 | 打开面板，用 `[System.Windows.Forms.SendKeys]::SendWait('{TAB}')`、`'+{TAB}'`、`'{ENTER}'`、`' '` 操作 | 焦点可见（截图），Enter 和空格触发同一动作 | 自动 |
 | G7 讲述人 | `Win+Ctrl+Enter` 开启讲述人 | 需要听声音，Codex 无法判定。只在用户愿意时放进 A4，否则记为"不可测" | 可选 |

@@ -16,7 +16,7 @@ use copiago_win::{
     tray::NotificationKind,
 };
 
-use crate::clipboard::{PhoneClip, PushQueueError, clip_kind};
+use crate::clipboard::{PhoneClip, PushQueueError, clip_kind, superseded};
 
 use super::Host;
 
@@ -792,12 +792,6 @@ pub(super) fn retire_forgotten_session(
     }
 }
 
-/// Whether the Windows clipboard changed since a download began. A zero sequence
-/// means Windows could not report one, so nothing is known to be newer.
-fn superseded(started: u32, now: u32) -> bool {
-    started != 0 && now != started
-}
-
 fn payload_bytes(clip: &Clip) -> usize {
     match clip {
         Clip::Text(text) => text.len(),
@@ -1007,13 +1001,5 @@ mod tests {
 
         retire_forgotten_session(&mut clipboard, &mut file, &mut pushes, true);
         assert!(!clipboard.has_pending());
-    }
-
-    #[test]
-    fn a_download_yields_to_any_newer_clipboard_content() {
-        assert!(!superseded(7, 7));
-        assert!(superseded(7, 8));
-        // Windows reported no sequence: nothing is known to be newer.
-        assert!(!superseded(0, 8));
     }
 }

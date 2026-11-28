@@ -167,7 +167,9 @@ impl SettingsChange {
 
 fn read_document(path: &Path) -> io::Result<Document> {
     let source = fs::read_to_string(path)?;
-    serde_json::from_str(&source).map_err(|_| {
+    // Windows PowerShell 5.1 and older editors write UTF-8 with a BOM, which
+    // serde_json rejects; without this the whole file would silently fall back to defaults.
+    serde_json::from_str(source.strip_prefix('\u{feff}').unwrap_or(&source)).map_err(|_| {
         io::Error::new(
             ErrorKind::InvalidData,
             "settings.json must contain a JSON object",

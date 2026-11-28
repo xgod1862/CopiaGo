@@ -71,12 +71,19 @@ async fn replaces_only_unmounted_ddi_and_uploads_its_five_cryptex_payloads() {
 
     let started = Instant::now();
     within(Duration::from_secs(5), async {
-        let mut image = mount::prepare_image(&mut provider, &mut rsd, ImageKind::Cryptex, &root.0)
-            .await
-            .expect("cryptex preparation and replacement")
-            .expect("a stale cryptex is not mounted");
+        let mut log = SetupLog::new(&root.0);
+        let mut image = mount::prepare_image(
+            &mut provider,
+            &mut rsd,
+            ImageKind::Cryptex,
+            &root.0,
+            &mut log,
+        )
+        .await
+        .expect("cryptex preparation and replacement")
+        .expect("a stale cryptex is not mounted");
         let request = image
-            .signature_request(&mut provider, &mut rsd)
+            .signature_request(&mut provider, &mut rsd, &mut log)
             .await
             .expect("read chip and nonce");
         assert_eq!(request["@Cryptex1,Ticket"].as_boolean(), Some(true));
@@ -92,7 +99,7 @@ async fn replaces_only_unmounted_ddi_and_uploads_its_five_cryptex_payloads() {
                 .contains_key("Digest")
         );
         image
-            .install(&mut provider, &mut rsd, b"fake ticket".to_vec())
+            .install(&mut provider, &mut rsd, b"fake ticket".to_vec(), &mut log)
             .await
             .expect("cryptex upload and install verification");
         Ok(())

@@ -173,6 +173,17 @@ Apple 签名失败。请稍后重试。	Could not get a signature from Apple. Tr
 请求 Apple 签名超时。请检查电脑网络后重试。	Apple signing timed out. Check your PC’s internet connection and retry.
 无法在 iPhone 上安装开发组件。请保持手机解锁并连着数据线后重试。	Could not install developer files. Keep your iPhone connected and unlocked, then retry.
 安装 iPhone 开发组件超时。请保持手机解锁并连着数据线后重试。	Installation timed out. Keep your iPhone connected and unlocked, then retry.
+无法把开发组件保存到这台电脑。请确认磁盘空间充足、数据目录可写入，再点「继续连接」。	Could not save developer files on this PC. Make sure there is enough disk space and the data folder is writable, then select Continue.
+无法与 Apple 签名服务器建立安全连接。如开着代理、VPN 或会检查 HTTPS 的安全软件，请暂时关闭后重试。	Could not open a secure connection to Apple’s signing server. If a proxy, VPN, or security software that inspects HTTPS is on, turn it off for now and retry.
+无法连接 Apple 签名服务器。请检查电脑网络后重试。	Could not reach Apple’s signing server. Check your PC’s internet connection and retry.
+Apple 签名服务器暂时不可用。请过几分钟再点「继续连接」。	Apple’s signing server is temporarily unavailable. Wait a few minutes, then select Continue.
+Apple 拒绝为这台 iPhone 签发开发组件。请把 CopiaGo 更新到最新版后重试，仍失败请点「复制诊断信息」反馈。	Apple declined to sign developer files for this iPhone. Update CopiaGo to the latest version and retry. If it still fails, select Copy diagnostics and report it.
+iPhone 在安装开发组件时锁屏了。请解锁并停留在主屏幕，再点「继续连接」。	Your iPhone locked during installation. Unlock it, stay on the Home Screen, then select Continue.
+安装开发组件时与 iPhone 的连接断开了。请把数据线直接插在电脑机身的 USB 口，再点「继续连接」。	The connection to your iPhone dropped during installation. Plug the cable directly into a USB port on your PC, then select Continue.
+iPhone 的开发者服务没有响应。请重启 iPhone，解锁后再点「继续连接」。	Your iPhone’s developer service is not responding. Restart your iPhone, unlock it, then select Continue.
+iPhone 拒绝了开发组件。请重启 iPhone 并确认开发者模式已开启，再点「继续连接」；仍失败请点「复制诊断信息」反馈。	Your iPhone refused the developer files. Restart it, make sure Developer Mode is on, then select Continue. If it still fails, select Copy diagnostics and report it.
+当前开发组件不适配这台 iPhone 的型号或系统版本。请把 CopiaGo 更新到最新版，仍失败请点「复制诊断信息」反馈。	These developer files do not match this iPhone’s model or iOS version. Update CopiaGo to the latest version. If it still fails, select Copy diagnostics and report it.
+这台电脑上缓存的开发组件无法读取。请点「继续连接」重新校验，仍失败请点「复制诊断信息」反馈。	Developer files cached on this PC could not be read. Select Continue to verify them again. If it still fails, select Copy diagnostics and report it.
 已连接（无线）	Connected (Wi-Fi)
 已连接（USB） · 可以拔掉数据线，之后将通过无线连接	Connected (USB) · Unplug the cable to continue wirelessly
 iPhone 上复制了{kind}，目前只同步文字、图片和「文件」App 里的文件	Unsupported item ({kind}). CopiaGo syncs text, images, and files from the Files app.

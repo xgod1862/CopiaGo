@@ -260,6 +260,7 @@ impl Failure {
             Self::Usb(UsbProbeError::CoreDeviceProxy) => {
                 "已找到 iPhone，但开发者通道未能打开。请解锁手机，重新插拔数据线后重试。"
             }
+            Self::Usb(UsbProbeError::UnsupportedIos) => UNSUPPORTED_IOS,
             Self::Usb(UsbProbeError::Rsd) => {
                 "已连到 iPhone，但未能确认手机提供的服务。请保持解锁，重新插拔数据线后重试。"
             }
@@ -353,6 +354,7 @@ impl Failure {
             Self::Usb(UsbProbeError::CoreDeviceProxy) => {
                 "已通过 USB 找到 iPhone，但开发者通道未能打开，稍后会自动重试；反复出现时请重新插拔数据线。"
             }
+            Self::Usb(UsbProbeError::UnsupportedIos) => UNSUPPORTED_IOS,
             Self::Usb(UsbProbeError::Lockdown) => {
                 "已通过 USB 找到 iPhone，但 USB 会话未能建立，稍后会自动重试；反复出现时请重新插拔数据线。"
             }
@@ -418,6 +420,8 @@ impl Failure {
         }
     }
 }
+
+const UNSUPPORTED_IOS: &str = "这台 iPhone 的系统版本过低。CopiaGo 需要 iOS 17.4 或更高版本，请在 iPhone「设置 → 通用 → 软件更新」中更新后再连接。";
 
 /// The hint for a failed developer image stage. A known cause names what to fix; the
 /// stage-level text remains for causes the user cannot act on.

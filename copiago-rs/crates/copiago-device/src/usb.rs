@@ -83,6 +83,8 @@ pub enum UsbProbeError {
     DeveloperMenu,
     Lockdown,
     CoreDeviceProxy,
+    /// The phone runs an iOS older than [`MIN_TUNNEL_IOS`].
+    UnsupportedIos,
     Rsd,
     Timeout,
 }
@@ -105,6 +107,7 @@ impl fmt::Display for UsbProbeError {
             Self::DeveloperMenu => "iPhone did not confirm the Developer Mode menu request",
             Self::Lockdown => "failed to open a lockdown session",
             Self::CoreDeviceProxy => "failed to open the CoreDeviceProxy tunnel",
+            Self::UnsupportedIos => "iPhone runs an iOS older than 17.4",
             Self::Rsd => "failed to discover tunnel services through RSD",
             Self::Timeout => "USB probe timed out",
         };
@@ -488,6 +491,38 @@ async fn trusted_lockdown(
     Ok((lockdown, record, legacy_tls, source))
 }
 
+/// The first iOS whose lockdown offers CoreDeviceProxy, which the userspace tunnel needs.
+/// iOS 17.0–17.3 tunnel only through a kernel network interface and older releases have no
+/// RemoteXPC at all (go-ios `manualPairingTunnelStart`, pymobiledevice3 `start-tunnel`).
+const MIN_TUNNEL_IOS: (u32, u32) = (17, 4);
+
+/// Tells a phone that can never open the tunnel apart from a transient failure, so the user
+/// is asked to update iOS instead of replugging the cable. Asked only after a failure, to
+/// keep the usual path at one round trip.
+async fn explain_tunnel_failure(
+    lockdown: &mut LockdownClient,
+    error: UsbProbeError,
+) -> UsbProbeError {
+    let Ok(value) = lockdown.get_value(Some("ProductVersion"), None).await else {
+        return error;
+    };
+    match value.as_string() {
+        Some(version) if below_tunnel_minimum(version) => {
+            diagnostic::event(format_args!("event=usb_ios_unsupported ios={version}"));
+            UsbProbeError::UnsupportedIos
+        }
+        _ => error,
+    }
+}
+
+fn below_tunnel_minimum(version: &str) -> bool {
+    let mut parts = version.split('.').map(|part| part.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten().or(Some(0))) {
+        (Some(major), Some(minor)) => (major, minor) < MIN_TUNNEL_IOS,
+        _ => false,
+    }
+}
+
 async fn connect_lockdown_service(
     provider: &UsbmuxdProvider,
     lockdown: &mut LockdownClient,
@@ -590,7 +625,7 @@ async fn open_usb_tunnel_traced(
     step.set(TunnelStep::Lockdown);
     let (mut lockdown, record, legacy_tls, source) = trusted_lockdown(provider, data_dir).await?;
     step.set(TunnelStep::CoreDeviceProxy);
-    let connection = connect_lockdown_service(
+    let connection = match connect_lockdown_service(
         provider,
         &mut lockdown,
         &record,
@@ -598,12 +633,20 @@ async fn open_usb_tunnel_traced(
         CoreDeviceProxy::service_name(),
         UsbProbeError::CoreDeviceProxy,
     )
-    .await?;
+    .await
+    {
+        Ok(connection) => connection,
+        Err(error) => return Err(explain_tunnel_failure(&mut lockdown, error).await),
+    };
     drop(record);
 
-    let proxy = CoreDeviceProxy::new(connection)
-        .await
-        .map_err(|error| traced(error, UsbProbeError::CoreDeviceProxy))?;
+    let proxy = match CoreDeviceProxy::new(connection).await {
+        Ok(proxy) => proxy,
+        Err(error) => {
+            let error = traced(error, UsbProbeError::CoreDeviceProxy);
+            return Err(explain_tunnel_failure(&mut lockdown, error).await);
+        }
+    };
     drop(lockdown);
     let rsd_port = proxy.tunnel_info().server_rsd_port;
     step.set(TunnelStep::SoftwareTunnel);

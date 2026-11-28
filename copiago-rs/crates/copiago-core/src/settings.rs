@@ -53,6 +53,9 @@ pub struct Settings {
     pub push: bool,
     pub pull_types: Vec<SyncKind>,
     pub push_types: Vec<SyncKind>,
+    /// Also send copies another app marked as private, such as passwords copied from a
+    /// password manager. They are never kept in PC history.
+    pub push_marked: bool,
     /// Zero disables the size confirmation.
     pub file_ask_mb: u8,
     pub notifications: bool,
@@ -75,6 +78,7 @@ pub enum SettingsChange {
     Push(bool),
     PullTypes(Vec<SyncKind>),
     PushTypes(Vec<SyncKind>),
+    PushMarked(bool),
     FileAskMb(u8),
     Notifications(bool),
     UpdateCheck(bool),
@@ -126,6 +130,7 @@ impl Settings {
             push: read_bool(document, "push", false),
             pull_types: read_types(raw_setting(document, "pull_types"), &PULL_TYPES),
             push_types: read_types(raw_setting(document, "push_types"), &PUSH_TYPES),
+            push_marked: read_bool(document, "push_marked", true),
             file_ask_mb: read_file_ask_mb(raw_setting(document, "file_ask_mb")),
             notifications: read_bool(document, "notifications", true),
             update_check: read_bool(document, "update_check", true),
@@ -149,6 +154,7 @@ impl SettingsChange {
                 "push_types",
                 to_raw_value(&stored_types(&PUSH_TYPES, &kinds)),
             ),
+            Self::PushMarked(value) => ("push_marked", to_raw_value(&value)),
             Self::FileAskMb(value) if FILE_ASK_MB_CHOICES.contains(&value) => {
                 ("file_ask_mb", to_raw_value(&value))
             }

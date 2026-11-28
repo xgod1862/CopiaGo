@@ -12,7 +12,7 @@ use std::{
 use copiago_core::{
     DeviceInfo,
     clip::{Clip, FileOffer},
-    ddi::DdiStage,
+    ddi::{DdiCause, DdiStage},
     diagnostic,
     i18n::{Language, LanguagePreference, Message, message},
 };
@@ -196,6 +196,7 @@ enum Failure {
     Setup {
         stage: DdiStage,
         timed_out: bool,
+        cause: DdiCause,
     },
 }
 
@@ -211,6 +212,7 @@ impl Failure {
         Self::Setup {
             stage,
             timed_out: false,
+            cause: DdiCause::Unknown,
         }
     }
 
@@ -258,6 +260,7 @@ impl Failure {
             Self::Usb(UsbProbeError::CoreDeviceProxy) => {
                 "已找到 iPhone，但开发者通道未能打开。请解锁手机，重新插拔数据线后重试。"
             }
+            Self::Usb(UsbProbeError::UnsupportedIos) => UNSUPPORTED_IOS,
             Self::Usb(UsbProbeError::Rsd) => {
                 "已连到 iPhone，但未能确认手机提供的服务。请保持解锁，重新插拔数据线后重试。"
             }
@@ -351,6 +354,7 @@ impl Failure {
             Self::Usb(UsbProbeError::CoreDeviceProxy) => {
                 "已通过 USB 找到 iPhone，但开发者通道未能打开，稍后会自动重试；反复出现时请重新插拔数据线。"
             }
+            Self::Usb(UsbProbeError::UnsupportedIos) => UNSUPPORTED_IOS,
             Self::Usb(UsbProbeError::Lockdown) => {
                 "已通过 USB 找到 iPhone，但 USB 会话未能建立，稍后会自动重试；反复出现时请重新插拔数据线。"
             }
@@ -389,25 +393,14 @@ impl Failure {
                     "需要开启开发者模式：在 iPhone「设置 → 隐私与安全性 → 开发者模式」中开启并重启手机，解锁后点「继续连接」"
                 ),
             ),
-            Self::Setup { stage, timed_out } => (
+            Self::Setup {
+                stage,
+                timed_out,
+                cause,
+            } => (
                 WaitMode::User,
                 ConnState::Hold,
-                Message::new(match (stage, timed_out) {
-                    (DdiStage::Download, false) => {
-                        "下载 iPhone 开发组件失败。已下载的部分会保留，请检查电脑网络后点「继续连接」。"
-                    }
-                    (DdiStage::Download, true) => {
-                        "下载 iPhone 开发组件超时。已下载的部分会保留，请检查电脑网络后点「继续连接」。"
-                    }
-                    (DdiStage::Sign, false) => "Apple 签名失败。请稍后重试。",
-                    (DdiStage::Sign, true) => "请求 Apple 签名超时。请检查电脑网络后重试。",
-                    (DdiStage::Install, false) => {
-                        "无法在 iPhone 上安装开发组件。请保持手机解锁并连着数据线后重试。"
-                    }
-                    (DdiStage::Install, true) => {
-                        "安装 iPhone 开发组件超时。请保持手机解锁并连着数据线后重试。"
-                    }
-                }),
+                Message::new(setup_hint(stage, timed_out, cause)),
             ),
             error if first_setup => (
                 WaitMode::User,
@@ -424,6 +417,62 @@ impl Failure {
             mode,
             state,
             message,
+        }
+    }
+}
+
+const UNSUPPORTED_IOS: &str = "这台 iPhone 的系统版本过低。CopiaGo 需要 iOS 17.4 或更高版本，请在 iPhone「设置 → 通用 → 软件更新」中更新后再连接。";
+
+/// The hint for a failed developer image stage. A known cause names what to fix; the
+/// stage-level text remains for causes the user cannot act on.
+fn setup_hint(stage: DdiStage, timed_out: bool, cause: DdiCause) -> &'static str {
+    match (stage, timed_out, cause) {
+        (DdiStage::Download, _, DdiCause::LocalFiles) => {
+            "无法把开发组件保存到这台电脑。请确认磁盘空间充足、数据目录可写入，再点「继续连接」。"
+        }
+        (DdiStage::Download, false, _) => {
+            "下载 iPhone 开发组件失败。已下载的部分会保留，请检查电脑网络后点「继续连接」。"
+        }
+        (DdiStage::Download, true, _) => {
+            "下载 iPhone 开发组件超时。已下载的部分会保留，请检查电脑网络后点「继续连接」。"
+        }
+        (DdiStage::Sign, true, _) => "请求 Apple 签名超时。请检查电脑网络后重试。",
+        (DdiStage::Sign, false, DdiCause::SecureConnection) => {
+            "无法与 Apple 签名服务器建立安全连接。如开着代理、VPN 或会检查 HTTPS 的安全软件，请暂时关闭后重试。"
+        }
+        (DdiStage::Sign, false, DdiCause::Network) => {
+            "无法连接 Apple 签名服务器。请检查电脑网络后重试。"
+        }
+        (DdiStage::Sign, false, DdiCause::SigningServer) => {
+            "Apple 签名服务器暂时不可用。请过几分钟再点「继续连接」。"
+        }
+        (DdiStage::Sign, false, DdiCause::SigningRejected) => {
+            "Apple 拒绝为这台 iPhone 签发开发组件。请把 CopiaGo 更新到最新版后重试，仍失败请点「复制诊断信息」反馈。"
+        }
+        (DdiStage::Sign, false, _) => "Apple 签名失败。请稍后重试。",
+        (DdiStage::Install, true, _) => {
+            "安装 iPhone 开发组件超时。请保持手机解锁并连着数据线后重试。"
+        }
+        (DdiStage::Install, false, DdiCause::DeviceLocked) => {
+            "iPhone 在安装开发组件时锁屏了。请解锁并停留在主屏幕，再点「继续连接」。"
+        }
+        (DdiStage::Install, false, DdiCause::Disconnected) => {
+            "安装开发组件时与 iPhone 的连接断开了。请把数据线直接插在电脑机身的 USB 口，再点「继续连接」。"
+        }
+        (DdiStage::Install, false, DdiCause::ServiceUnavailable) => {
+            "iPhone 的开发者服务没有响应。请重启 iPhone，解锁后再点「继续连接」。"
+        }
+        (DdiStage::Install, false, DdiCause::DeviceRejected) => {
+            "iPhone 拒绝了开发组件。请重启 iPhone 并确认开发者模式已开启，再点「继续连接」；仍失败请点「复制诊断信息」反馈。"
+        }
+        (DdiStage::Install, false, DdiCause::Unsupported) => {
+            "当前开发组件不适配这台 iPhone 的型号或系统版本。请把 CopiaGo 更新到最新版，仍失败请点「复制诊断信息」反馈。"
+        }
+        (DdiStage::Install, false, DdiCause::LocalFiles) => {
+            "这台电脑上缓存的开发组件无法读取。请点「继续连接」重新校验，仍失败请点「复制诊断信息」反馈。"
+        }
+        (DdiStage::Install, false, _) => {
+            "无法在 iPhone 上安装开发组件。请保持手机解锁并连着数据线后重试。"
         }
     }
 }

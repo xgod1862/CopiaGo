@@ -23,6 +23,7 @@ const FORGET_WINDOW: Duration = Duration::from_secs(3);
 pub enum SettingSwitch {
     Pull,
     Push,
+    PushMarked,
     History,
     PcHistory,
     Startup,
@@ -422,6 +423,7 @@ impl SettingsState {
         let checked = match setting {
             SettingSwitch::Pull => self.settings.pull,
             SettingSwitch::Push => self.settings.push,
+            SettingSwitch::PushMarked => self.settings.push_marked,
             SettingSwitch::History => self.settings.history,
             SettingSwitch::PcHistory => self.settings.pc_history,
             SettingSwitch::Startup => {
@@ -526,6 +528,7 @@ impl SettingsState {
                 let change = match setting {
                     SettingSwitch::Pull => SettingsChange::Pull(value),
                     SettingSwitch::Push => SettingsChange::Push(value),
+                    SettingSwitch::PushMarked => SettingsChange::PushMarked(value),
                     SettingSwitch::History => SettingsChange::History(value),
                     SettingSwitch::PcHistory => SettingsChange::PcHistory(value),
                     SettingSwitch::Notifications => SettingsChange::Notifications(value),

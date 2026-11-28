@@ -284,7 +284,7 @@ fn python_log_keeps_field_order_and_rotates_without_raw_errors() {
         DdiStage::Download,
         2.0,
         "failed",
-        Some(StepError::HttpStatus(503)),
+        Some(("LoadDeveloperImage", StepError::HttpStatus(503))),
         Some(&stats),
     )
     .unwrap();
@@ -293,7 +293,7 @@ fn python_log_keeps_field_order_and_rotates_without_raw_errors() {
         DdiStage::Install,
         12.3,
         "failed",
-        Some(detail.into()),
+        Some(("QueryPersonalizationManifest", detail.into())),
         None,
     )
     .unwrap();
@@ -301,11 +301,11 @@ fn python_log_keeps_field_order_and_rotates_without_raw_errors() {
     let (download, install) = input.split_once("\r\n").unwrap();
     assert_eq!(
         &download[19..],
-        " download failed elapsed=2.0s error=HTTPError[503] file=Image.dmg part=2/3 received=4096 total=7168 resumed=2048 fetched=2048 restarts=1 http=206 speed=1KB/s source=raw.githubusercontent.com failures=ghfast.top:ConnectionError",
+        " download failed elapsed=2.0s error=HTTPError[503] file=Image.dmg part=2/3 received=4096 total=7168 resumed=2048 fetched=2048 restarts=1 http=206 speed=1KB/s source=raw.githubusercontent.com failures=ghfast.top:ConnectionError step=LoadDeveloperImage",
     );
     assert_eq!(
         &install[19..],
-        " install failed elapsed=12.3s error=IdeviceError\r\n"
+        " install failed elapsed=12.3s error=InternalError step=QueryPersonalizationManifest\r\n"
     );
     assert_eq!(fs::metadata(rolled).unwrap().len(), 256 * 1024);
 }
@@ -341,5 +341,112 @@ impl TempRoot {
 impl Drop for TempRoot {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn device_details_keep_wording_but_drop_identifiers() {
+    assert_eq!(
+        log::scrub(
+            "Failed to find a cached manifest (im4m) for variant DeveloperDiskImage (personalization required)."
+        ),
+        "Failed to find a cached manifest (im4m) for variant DeveloperDiskImage (personalization required)."
+    );
+    let scrubbed = log::scrub(
+        "Device 00008140-001A2B3C0E10801C ECID 1234567890 at /private/var/mobile/x \
+         named \"张三的iPhone\" owner me@example.com serial F2LXK0ABCD12 张三",
+    );
+    assert_eq!(
+        scrubbed,
+        "Device #-# ECID # at <path> named <text> owner <addr> serial # <text>"
+    );
+    assert!(log::scrub(&"word ".repeat(100)).ends_with(" ..."));
+    assert_eq!(
+        log::variant_name(&IdeviceError::UnexpectedResponse("secret".into())),
+        "UnexpectedResponse"
+    );
+}
+
+#[test]
+fn failed_steps_map_to_actionable_causes() {
+    use DdiStage::{Download, Install, Sign};
+    let device = StepError::Device {
+        kind: "InternalError",
+        detail: String::new(),
+    };
+    for (stage, step, error, expected) in [
+        (
+            Install,
+            "QueryNonce",
+            StepError::Kind("PasswordRequiredError"),
+            DdiCause::DeviceLocked,
+        ),
+        (Install, "MountImage", device, DdiCause::DeviceRejected),
+        (
+            Install,
+            "ConnectImageMounter",
+            StepError::Kind("InvalidServiceError"),
+            DdiCause::ServiceUnavailable,
+        ),
+        (
+            Install,
+            "UploadImage",
+            StepError::Kind("OSError"),
+            DdiCause::Disconnected,
+        ),
+        (
+            Install,
+            "ReadDeveloperImage",
+            StepError::Kind("OSError"),
+            DdiCause::LocalFiles,
+        ),
+        (
+            Install,
+            "LoadBuildIdentity",
+            StepError::Kind("NoSuchBuildIdentityError"),
+            DdiCause::Unsupported,
+        ),
+        (
+            Sign,
+            "RequestSigningTicket",
+            StepError::Kind("SSLError"),
+            DdiCause::SecureConnection,
+        ),
+        (
+            Sign,
+            "RequestSigningTicket",
+            StepError::Kind("TSSError"),
+            DdiCause::SigningRejected,
+        ),
+        (
+            Sign,
+            "RequestSigningTicket",
+            StepError::HttpStatus(503),
+            DdiCause::SigningServer,
+        ),
+        (
+            Sign,
+            "RequestSigningTicket",
+            StepError::Kind("ConnectionError"),
+            DdiCause::Network,
+        ),
+        (
+            Download,
+            "LoadDeveloperImage",
+            StepError::Kind("PermissionError"),
+            DdiCause::LocalFiles,
+        ),
+        (
+            Download,
+            "LoadDeveloperImage",
+            StepError::HttpStatus(503),
+            DdiCause::Unknown,
+        ),
+    ] {
+        assert_eq!(
+            log::cause(stage, step, &error),
+            expected,
+            "{stage:?} {step} {error:?}"
+        );
     }
 }

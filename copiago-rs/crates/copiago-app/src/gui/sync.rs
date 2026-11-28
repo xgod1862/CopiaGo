@@ -229,10 +229,11 @@ impl Host<'_> {
                 StatusTone::Muted,
             );
         }
-        let Some((clip, kind)) = self.clipboard_sync.read_windows(read) else {
+        let Some((clip, kind, marked)) = self.clipboard_sync.read_windows(read) else {
             return;
         };
-        if record {
+        // A password manager asked that its copies not be kept; send them only.
+        if record && !marked {
             self.record_clip(Source::Pc, &clip);
             if self.popup.visible() {
                 self.refresh_entries();

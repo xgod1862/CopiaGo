@@ -257,7 +257,13 @@ fn native_clipboard_round_trip() {
         .expect("write native CF_UNICODETEXT");
     assert_ne!(before, clipboard.sequence_number());
     window.wait_for_update();
-    assert!(matches!(clipboard.read(), Ok(ClipboardRead::Sensitive)));
+    assert!(matches!(
+        clipboard.read(),
+        Ok(ClipboardCopy {
+            content: ClipboardRead::Own,
+            ..
+        })
+    ));
     OpenClipboardGuard::run(external.0, |open| {
         assert!(open.available(clipboard.formats.excluded));
         for flag in [clipboard.formats.history, clipboard.formats.cloud] {
@@ -280,14 +286,22 @@ fn native_clipboard_round_trip() {
             OwnedMemory::from_bytes(&encode_text(TEXT).unwrap()).unwrap(),
         )],
     );
-    assert!(matches!(clipboard.read(), Ok(ClipboardRead::Text(text)) if text == TEXT));
+    assert!(
+        matches!(clipboard.read().map(|copy| copy.content), Ok(ClipboardRead::Text(text)) if text == TEXT)
+    );
 
     let conversion = Instant::now();
     clipboard
         .write_image(PNG)
         .expect("write native DIBV5 and PNG");
     let write_png = conversion.elapsed();
-    assert!(matches!(clipboard.read(), Ok(ClipboardRead::Sensitive)));
+    assert!(matches!(
+        clipboard.read(),
+        Ok(ClipboardCopy {
+            content: ClipboardRead::Own,
+            ..
+        })
+    ));
     let dib = OpenClipboardGuard::run(external.0, |open| {
         open.with_data(clipboard.formats.png, |data| {
             assert!(image::png_payload(data)? == PNG);
@@ -303,7 +317,11 @@ fn native_clipboard_round_trip() {
     .expect("read written PNG and DIBV5 from native clipboard");
 
     replace(external.0, [(CF_DIBV5.into(), dib)]);
-    let ClipboardRead::Png(png) = clipboard.read().expect("read native DIBV5-only bitmap") else {
+    let ClipboardRead::Png(png) = clipboard
+        .read()
+        .expect("read native DIBV5-only bitmap")
+        .content
+    else {
         panic!("DIBV5 clipboard did not return PNG");
     };
     assert_png_pixels(&png, PIXELS);
@@ -312,7 +330,11 @@ fn native_clipboard_round_trip() {
         external.0,
         [(CF_DIB.into(), OwnedMemory::from_bytes(&dib24()).unwrap())],
     );
-    let ClipboardRead::Png(png) = clipboard.read().expect("read native DIB-only bitmap") else {
+    let ClipboardRead::Png(png) = clipboard
+        .read()
+        .expect("read native DIB-only bitmap")
+        .content
+    else {
         panic!("DIB clipboard did not return PNG");
     };
     assert_png_pixels(&png, &[9, 8, 7, 255, 6, 5, 4, 255]);
@@ -329,13 +351,21 @@ fn native_clipboard_round_trip() {
             (clipboard.formats.png, OwnedMemory::from_bytes(PNG).unwrap()),
         ],
     );
-    assert!(matches!(clipboard.read(), Ok(ClipboardRead::Png(png)) if png == PNG));
+    assert!(
+        matches!(clipboard.read().map(|copy| copy.content), Ok(ClipboardRead::Png(png)) if png == PNG)
+    );
 
     let paths = test_paths();
     clipboard
         .write_files(&paths)
         .expect("write native CF_HDROP");
-    assert!(matches!(clipboard.read(), Ok(ClipboardRead::Sensitive)));
+    assert!(matches!(
+        clipboard.read(),
+        Ok(ClipboardCopy {
+            content: ClipboardRead::Own,
+            ..
+        })
+    ));
     OpenClipboardGuard::run(external.0, |open| {
         let handle = retry(|| {
             // SAFETY: The clipboard is open and CF_HDROP must belong to it.
@@ -392,13 +422,17 @@ fn native_clipboard_round_trip() {
                 clipboard.formats.viewer_ignore,
                 OwnedMemory::from_bytes(b"1").unwrap(),
             ),
-            (
-                clipboard.formats.png,
-                OwnedMemory::from_bytes(&oversized_png()).unwrap(),
-            ),
+            (clipboard.formats.png, OwnedMemory::from_bytes(PNG).unwrap()),
         ],
     );
-    assert!(matches!(clipboard.read(), Ok(ClipboardRead::Sensitive)));
+    // A password manager's marker no longer hides the copy; the caller decides.
+    assert!(matches!(
+        clipboard.read(),
+        Ok(ClipboardCopy {
+            content: ClipboardRead::Png(_),
+            marked: true
+        })
+    ));
 
     eprintln!(
         "Native clipboard text, PNG, DIBV5, DIB, files, markers, limits and notifications verified. PNG write: {write_png:?}."

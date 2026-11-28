@@ -132,6 +132,72 @@ pub(crate) fn text(
     )
 }
 
+/// A left-aligned, vertically centered line of text that can change without rebuilding its
+/// view. Transfer and download progress rewrite these several times a second; rebuilding
+/// and crossfading the surrounding page for each value makes the whole page flicker.
+pub(crate) struct LiveLabel {
+    parent: ContainerVisual,
+    visual: windows::UI::Composition::SpriteVisual,
+    bounds: Rect,
+    font: Font,
+    size: f32,
+    color: Color,
+    value: String,
+}
+
+impl LiveLabel {
+    pub(crate) fn new(
+        scene: &PopupScene,
+        parent: &ContainerVisual,
+        bounds: Rect,
+        value: &str,
+        (font, size): (Font, f32),
+        color: Color,
+    ) -> Result<Self> {
+        let visual = Self::draw(scene, bounds, value, font, size, color)?;
+        parent.Children()?.InsertAtTop(&visual)?;
+        Ok(Self {
+            parent: parent.clone(),
+            visual,
+            bounds,
+            font,
+            size,
+            color,
+            value: value.to_owned(),
+        })
+    }
+
+    /// Swaps the text in one composition batch, so no frame shows both or neither.
+    pub(crate) fn set(&mut self, scene: &PopupScene, value: &str) -> Result<()> {
+        if self.value == value {
+            return Ok(());
+        }
+        let next = Self::draw(scene, self.bounds, value, self.font, self.size, self.color)?;
+        let children = self.parent.Children()?;
+        children.InsertAbove(&next, &self.visual)?;
+        children.Remove(&self.visual)?;
+        self.visual = next;
+        self.value = value.to_owned();
+        Ok(())
+    }
+
+    fn draw(
+        scene: &PopupScene,
+        bounds: Rect,
+        value: &str,
+        font: Font,
+        size: f32,
+        color: Color,
+    ) -> Result<windows::UI::Composition::SpriteVisual> {
+        let surface = text(scene, value, font, size, bounds.width, color)?;
+        surface.visual.SetOffset(xy(
+            bounds.x,
+            bounds.y + (bounds.height - surface.size.Y) / 2.0,
+        ))?;
+        Ok(surface.visual)
+    }
+}
+
 pub(crate) fn center(surface: &TextSurface, bounds: Rect) -> Result<()> {
     surface.visual.SetOffset(xy(
         bounds.x + (bounds.width - surface.size.X) / 2.0,

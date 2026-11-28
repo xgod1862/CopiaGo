@@ -2,7 +2,7 @@ use std::{cell::Cell, ops::ControlFlow, path::Path};
 
 use copiago_core::{
     DeviceInfo,
-    ddi::{DdiStage, Progress},
+    ddi::{DdiCause, DdiStage, Progress},
     i18n::{Message, message},
 };
 use copiago_ddi::setup::{SetupError, SetupUpdate, prepare_developer_services};
@@ -231,6 +231,7 @@ async fn open_pasteboard<T: PasteboardTunnel>(
         Err(SetupError::Failed {
             stage: DdiStage::Install,
             timed_out: false,
+            cause: DdiCause::Unknown,
         })
     };
     tunnel.close().await;
@@ -239,8 +240,16 @@ async fn open_pasteboard<T: PasteboardTunnel>(
         Ok(()) => {}
         Err(SetupError::Canceled) => return Ok(None),
         Err(SetupError::DeveloperModeRequired) => return Err(Failure::DeveloperModeRequired),
-        Err(SetupError::Failed { stage, timed_out }) => {
-            return Err(Failure::Setup { stage, timed_out });
+        Err(SetupError::Failed {
+            stage,
+            timed_out,
+            cause,
+        }) => {
+            return Err(Failure::Setup {
+                stage,
+                timed_out,
+                cause,
+            });
         }
     }
 

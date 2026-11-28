@@ -33,6 +33,7 @@ const FORM: [(&str, &[Row]); 4] = [
         &[
             Row::Switch(SettingSwitch::Push, "自动同步到 iPhone"),
             Row::Choices(ChoiceRow::Content(SyncDirection::ToPhone), "同步内容"),
+            Row::Switch(SettingSwitch::PushMarked, "同步密码管理器复制的内容"),
             Row::Switch(SettingSwitch::PcHistory, "保留电脑剪贴板历史"),
         ],
     ),

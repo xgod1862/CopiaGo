@@ -18,12 +18,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use copiago_core::ddi::DdiStage;
+use copiago_core::ddi::{DdiCause, DdiStage};
 use idevice::{IdeviceError, provider::RsdProvider, rsd::RsdHandshake};
 use tokio::{sync::mpsc, task, time::timeout};
 use tracing::{Dispatch, instrument::WithSubscriber};
 
 use crate::download::{DownloadProgress, DownloadStats, ImageKind, load_image};
+use log::SetupLog;
 
 const SIGN_TIMEOUT: Duration = Duration::from_secs(45);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(240);
@@ -42,16 +43,25 @@ pub enum SetupUpdate {
 pub enum SetupError {
     Canceled,
     DeveloperModeRequired,
-    Failed { stage: DdiStage, timed_out: bool },
+    Failed {
+        stage: DdiStage,
+        timed_out: bool,
+        cause: DdiCause,
+    },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum StepError {
     Canceled,
     DeveloperModeRequired,
     Timeout,
     Kind(&'static str),
     HttpStatus(u16),
+    /// A device reply without a dedicated kind. `detail` is already scrubbed of identifiers.
+    Device {
+        kind: &'static str,
+        detail: String,
+    },
 }
 
 impl From<IdeviceError> for StepError {
@@ -64,12 +74,20 @@ impl From<IdeviceError> for StepError {
                 Self::DeveloperModeRequired
             }
             IdeviceError::DeviceLocked => Self::Kind("PasswordRequiredError"),
+            IdeviceError::InternalError(detail) => Self::Device {
+                kind: "InternalError",
+                detail: log::scrub(&detail),
+            },
             IdeviceError::Timeout => Self::Timeout,
             IdeviceError::Socket(io) => io.into(),
             IdeviceError::ServiceNotFound => Self::Kind("InvalidServiceError"),
             IdeviceError::Plist(_) => Self::Kind("InvalidFileException"),
             IdeviceError::BadBuildManifest => Self::Kind("NoSuchBuildIdentityError"),
-            _ => Self::Kind("IdeviceError"),
+            // Keep only the variant name: payloads may hold identifiers or ticket bytes.
+            other => Self::Device {
+                kind: "IdeviceError",
+                detail: log::variant_name(&other),
+            },
         }
     }
 }
@@ -106,65 +124,74 @@ async fn prepare(
     data_root: &Path,
     mut report: impl FnMut(SetupUpdate) -> ControlFlow<()>,
 ) -> Result<(), SetupError> {
-    use DdiStage::{Install, Sign};
-
     notify(&mut report, SetupUpdate::Checking)?;
     let kind = mount::image_kind(rsd);
+    log::context(rsd, kind);
+    let mut log = SetupLog::new(data_root);
     let started = Instant::now();
-    let checked = within(INSTALL_TIMEOUT, mount::check_device(provider, rsd)).await;
-    if log::finish(data_root, Install, started, checked, None, false)? {
+    let checked = within(
+        INSTALL_TIMEOUT,
+        mount::check_device(provider, rsd, &mut log),
+    )
+    .await;
+    if log.finish(DdiStage::Install, started, checked, None, false)? {
         return Ok(());
     }
 
-    let folder = download(data_root, kind, &mut report).await?;
+    log.step = "LoadDeveloperImage";
+    let folder = download(&log, kind, &mut report).await?;
+    install_image(
+        provider,
+        rsd,
+        kind,
+        &folder,
+        &mut log,
+        report,
+        signing::request_ticket,
+    )
+    .await
+}
+
+async fn install_image(
+    provider: &mut impl RsdProvider,
+    rsd: &mut RsdHandshake,
+    kind: ImageKind,
+    folder: &Path,
+    log: &mut SetupLog<'_>,
+    mut report: impl FnMut(SetupUpdate) -> ControlFlow<()>,
+    request_ticket: impl AsyncFnOnce(plist::Dictionary, ImageKind) -> Result<Vec<u8>, StepError>,
+) -> Result<(), SetupError> {
+    use DdiStage::{Install, Sign};
+
     notify(&mut report, SetupUpdate::Preparing)?;
 
     let started = Instant::now();
     let finished = timeout(INSTALL_TIMEOUT, async {
-        let Some(mut mount) = log::finish(
-            data_root,
-            Install,
-            started,
-            mount::prepare_image(provider, rsd, kind, &folder).await,
-            None,
-            false,
-        )?
-        else {
+        let prepared = mount::prepare_image(provider, rsd, kind, folder, log).await;
+        let Some(mut mount) = log.finish(Install, started, prepared, None, false)? else {
             return Ok(());
         };
         let ticket = match mount.take_cached_ticket() {
             Some(ticket) => ticket,
             None => {
-                let request = log::finish(
-                    data_root,
-                    Install,
-                    started,
-                    mount.signature_request(provider, rsd).await,
-                    None,
-                    false,
-                )?;
+                let request = mount.signature_request(provider, rsd, log).await;
+                let request = log.finish(Install, started, request, None, false)?;
                 notify(&mut report, SetupUpdate::Signing)?;
+                log.step = "RequestSigningTicket";
                 let sign_started = Instant::now();
-                let signed = within(SIGN_TIMEOUT, signing::request_ticket(request, kind)).await;
-                log::finish(data_root, Sign, sign_started, signed, None, true)?
+                let signed = within(SIGN_TIMEOUT, request_ticket(request, kind)).await;
+                log.finish(Sign, sign_started, signed, None, true)?
             }
         };
         notify(&mut report, SetupUpdate::Installing)?;
-        let mounted = mount.install(provider, rsd, ticket).await;
-        log::finish(data_root, Install, started, mounted, None, true)
+        let mounted = mount.install(provider, rsd, ticket, log).await;
+        log.finish(Install, started, mounted, None, true)
     })
     .await;
 
     match finished {
         Ok(result) => result,
-        Err(_) => log::finish(
-            data_root,
-            Install,
-            started,
-            Err(StepError::Timeout),
-            None,
-            false,
-        ),
+        Err(_) => log.finish(Install, started, Err(StepError::Timeout), None, false),
     }
 }
 
@@ -196,7 +223,7 @@ impl Drop for CancelDownload {
 }
 
 async fn download(
-    data_root: &Path,
+    log: &SetupLog<'_>,
     kind: ImageKind,
     report: &mut impl FnMut(SetupUpdate) -> ControlFlow<()>,
 ) -> Result<PathBuf, SetupError> {
@@ -204,7 +231,7 @@ async fn download(
     let started = Instant::now();
     let cancel = CancelDownload(Arc::new(AtomicBool::new(false)));
     let worker_cancel = Arc::clone(&cancel.0);
-    let worker_root = data_root.to_owned();
+    let worker_root = log.data_root.to_owned();
     let (updates, mut progress) = mpsc::channel(16);
     let worker = task::spawn_blocking(move || {
         let mut stats = DownloadStats::default();
@@ -223,8 +250,7 @@ async fn download(
             DownloadStats::default(),
         ),
     };
-    log::finish(
-        data_root,
+    log.finish(
         DdiStage::Download,
         started,
         result,

@@ -355,3 +355,20 @@ impl Drop for LocalFixture {
         let _ = fs::remove_dir(&self.root);
     }
 }
+
+#[test]
+fn only_releases_before_ios_17_4_lack_the_userspace_tunnel() {
+    for (version, below) in [
+        ("16.7.10", true),
+        ("17", true),
+        ("17.3.1", true),
+        ("17.4", false),
+        ("17.4.1", false),
+        ("18.5", false),
+        ("26.0", false),
+        ("", false),
+        ("beta", false),
+    ] {
+        assert_eq!(super::below_tunnel_minimum(version), below, "{version}");
+    }
+}

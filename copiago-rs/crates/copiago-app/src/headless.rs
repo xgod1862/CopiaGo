@@ -184,7 +184,7 @@ impl Host<'_> {
                 return;
             }
         };
-        let Some((clip, kind)) = self.sync.read_windows(read) else {
+        let Some((clip, kind, _)) = self.sync.read_windows(read) else {
             return;
         };
         match self

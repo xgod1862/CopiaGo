@@ -107,10 +107,12 @@ async fn disabled_developer_mode_and_sign_timeout_bypass_reopen() {
             SetupError::Failed {
                 stage: DdiStage::Sign,
                 timed_out: true,
+                cause: DdiCause::Network,
             },
             Failure::Setup {
                 stage: DdiStage::Sign,
                 timed_out: true,
+                cause: DdiCause::Network,
             },
             ConnState::Hold,
         ),

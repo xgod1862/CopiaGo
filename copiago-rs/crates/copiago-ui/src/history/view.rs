@@ -425,9 +425,16 @@ impl HistoryView {
                 .visual()
                 .SetOffset(xy(PAD, layout.feedback_bottom() - 15.0))?;
         }
-        let reveal_feedback =
-            layout.scrolls_feedback() && self.chrome.state.detail != layout.state.detail;
-        if self.chrome.state != layout.state
+        let same_frame = self.chrome.inline_height == layout.inline_height
+            && self.chrome.footer_top == layout.footer_top()
+            && self.chrome.state.same_frame(&layout.state);
+        // Progress rewrites the detail several times a second; only a new message scrolls.
+        let reveal_feedback = layout.scrolls_feedback()
+            && !same_frame
+            && self.chrome.state.detail != layout.state.detail;
+        if same_frame {
+            self.chrome.update_live(scene, &layout.state)?;
+        } else if self.chrome.state != layout.state
             || self.chrome.inline_height != layout.inline_height
             || self.chrome.footer_top != layout.footer_top()
         {

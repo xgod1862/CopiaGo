@@ -167,6 +167,14 @@ impl ClipboardSync {
     }
 }
 
+/// Whether the Windows clipboard changed since a phone download began. Reads run
+/// beside downloads, so a newer copy can reach the clipboard first and the finished
+/// file must not replace it. A zero sequence means Windows could not report one,
+/// so nothing is known to be newer.
+pub(super) fn superseded(started: u32, now: u32) -> bool {
+    started != 0 && now != started
+}
+
 pub(super) fn clip_kind(clip: &Clip) -> SyncKind {
     match clip {
         Clip::Text(_) => SyncKind::Text,
@@ -355,5 +363,13 @@ mod tests {
         assert_eq!(sync.push_filtered(&png), Some(SyncKind::Image));
         assert_eq!(sync.push_filtered(&ClipboardRead::Text("a".into())), None);
         assert_eq!(sync.push_filtered(&ClipboardRead::Sensitive), None);
+    }
+
+    #[test]
+    fn a_download_yields_to_any_newer_clipboard_content() {
+        assert!(!superseded(7, 7));
+        assert!(superseded(7, 8));
+        // Windows reported no sequence: nothing is known to be newer.
+        assert!(!superseded(0, 8));
     }
 }

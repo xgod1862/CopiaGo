@@ -3,6 +3,7 @@
 mod files;
 
 use std::{
+    collections::HashMap,
     fmt,
     io::{self, IsTerminal, Write},
     sync::mpsc,
@@ -25,7 +26,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use self::files::{Answer, PendingOffer};
 use crate::{
     VERSION,
-    clipboard::{ClipboardSync, PhoneClip, PushQueueError},
+    clipboard::{ClipboardSync, PhoneClip, PushQueueError, superseded},
     launch::Launch,
     window::{ConsoleControl, NetworkNotifications, PowerNotifications, Window, WindowEvent},
     worker::DeviceWorker,
@@ -90,6 +91,7 @@ fn start(launch: Launch, log: &Log) -> Result<(), HostError> {
         worker: &worker,
         file_answers,
         pending_offer: PendingOffer::default(),
+        downloads: HashMap::new(),
         log,
     };
     let result = host.message_loop(&window);
@@ -107,6 +109,8 @@ struct Host<'a> {
     worker: &'a DeviceWorker,
     file_answers: Option<mpsc::Receiver<Answer>>,
     pending_offer: PendingOffer,
+    /// Windows clipboard sequence when each requested download began.
+    downloads: HashMap<u64, u32>,
     log: &'a Log,
 }
 
@@ -238,7 +242,7 @@ impl Host<'_> {
                     progress.received_bytes, progress.total_bytes
                 ),
             ),
-            DeviceEvent::FileResult(_, result) => self.on_file_result(result),
+            DeviceEvent::FileResult(id, result) => self.on_file_result(id, result),
             DeviceEvent::Unsupported { .. } => {
                 self.pending_offer.clear();
                 self.log.event("unsupported", format_args!(""));
@@ -305,7 +309,7 @@ impl Host<'_> {
 
     fn on_file_answer(&mut self, answer: Answer) {
         let Some(offer) = self.pending_offer.take(answer.id) else {
-            self.on_file_result(Err(FileTransferError::OfferExpired));
+            self.on_file_result(answer.id, Err(FileTransferError::OfferExpired));
             return;
         };
         if answer.accept {
@@ -316,16 +320,18 @@ impl Host<'_> {
         }
     }
 
-    fn fetch_offer(&self, offer: FileOffer, id: u64) {
+    fn fetch_offer(&mut self, offer: FileOffer, id: u64) {
         let bytes = offer.size;
         match self
             .worker
             .commands
             .try_send(DeviceCommand::FetchOffer(offer, id))
         {
-            Ok(()) => self
-                .log
-                .event("file_requested", format_args!("id={id} bytes={bytes}")),
+            Ok(()) => {
+                self.downloads.insert(id, self.clipboard.sequence_number());
+                self.log
+                    .event("file_requested", format_args!("id={id} bytes={bytes}"));
+            }
             Err(tokio_mpsc::error::TrySendError::Full(_)) => {
                 self.log
                     .event("file_failed", format_args!("reason=queue_full"));
@@ -337,8 +343,13 @@ impl Host<'_> {
         }
     }
 
-    fn on_file_result(&mut self, result: Result<ReceivedFile, FileTransferError>) {
+    fn on_file_result(&mut self, id: u64, result: Result<ReceivedFile, FileTransferError>) {
+        let started = self.downloads.remove(&id).unwrap_or(0);
         match result {
+            // Headless keeps no history, so the superseded file is discarded.
+            Ok(file) if superseded(started, self.clipboard.sequence_number()) => self
+                .log
+                .event("file_superseded", format_args!("bytes={}", file.bytes())),
             Ok(file) => match self.clipboard.write_files(&[file.path().to_path_buf()]) {
                 Ok(()) => {
                     self.sync.mark_written(self.clipboard.sequence_number());

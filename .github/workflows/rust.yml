@@ -5,10 +5,13 @@ on:
     branches: [main]
     paths:
       - 'copiago-rs/**'
+      # Changes to this workflow must run it, or they reach main unverified.
+      - '.github/workflows/rust.yml'
   push:
     branches: [main]
     paths:
       - 'copiago-rs/**'
+      - '.github/workflows/rust.yml'
 
 permissions:
   contents: read
@@ -17,7 +20,39 @@ concurrency:
   group: rust-ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Tests, the native clipboard test, the release build and the executable size budget run once,
+# in the required "Windows tests and build" check (windows-ci.yml). This workflow only adds the
+# checks that one does not cover, in parallel with it.
 jobs:
+  lint:
+    # Formatting and license metadata do not depend on the platform, and a Linux runner starts
+    # and finishes faster than a Windows one.
+    name: Rust format and licenses
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: copiago-rs
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Install cargo-deny
+        # Prebuilt binary: building it with cargo install took about three minutes per run.
+        uses: taiki-e/install-action@073e1fd0bc889c9aee68dbaaa927cde1b5653a83 # v2.90.11
+        with:
+          tool: cargo-deny@0.22.0
+
+      - name: Check dependency licenses
+        # deny.toml sets no target filter, so Windows-only dependencies are checked here too.
+        run: cargo deny --locked check licenses
+
   quality-gates:
     name: Rust quality gates
     runs-on: windows-latest
@@ -33,32 +68,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --version 0.22.0 --locked
-
-      - name: Check dependency licenses
-        run: cargo deny --locked check licenses
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: copiago-rs -> target
+          # Pull requests restore main's cache but never save their own, so they cannot evict it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run Clippy
-        run: cargo clippy --workspace --locked -- -D warnings
-
-      - name: Run tests
-        run: cargo test --workspace --locked
-
-      - name: Test native Windows clipboard
-        run: cargo test -p copiago-win --locked clipboard::tests::native_clipboard_round_trip -- --ignored --exact --nocapture
-
-      - name: Build release
-        run: cargo build --workspace --release --locked
-
-      - name: Check executable size
-        run: |
-          $exe = Get-Item -LiteralPath 'target/release/copiago.exe' -ErrorAction Stop
-          $limit = 6000000
-          Write-Host "$($exe.Name) is $($exe.Length) bytes. Budget is $limit bytes."
-          if ($exe.Length -gt $limit) {
-            throw "$($exe.Name) exceeds the executable size budget."
-          }
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings

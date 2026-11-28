@@ -41,15 +41,42 @@ jobs:
         shell: pwsh
     env:
       BUILD_INSTALLER: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.installer) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
+      # Line tables keep file and line numbers in test panics while linking much less debug info.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Covers both the test build and build.ps1's release build for the msvc target.
+          workspaces: copiago-rs -> target
+          # Pull requests restore main's cache but never save their own, so they cannot evict it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Run tests
         working-directory: copiago-rs
         run: cargo test --workspace --locked
+
+      - name: Test native Windows clipboard
+        working-directory: copiago-rs
+        run: cargo test -p copiago-win --locked clipboard::tests::native_clipboard_round_trip -- --ignored --exact --nocapture
+
+      - name: Check executable size
+        # build.ps1 enforces the same budget when packages are built. Fork pull requests skip
+        # packaging, so build and check the release executable here instead.
+        if: env.BUILD_INSTALLER != 'true'
+        working-directory: copiago-rs
+        run: |
+          cargo build --release --locked --package copiago-app --bin copiago
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)." }
+          $exe = Get-Item -LiteralPath 'target/release/copiago.exe' -ErrorAction Stop
+          $limit = 6000000
+          Write-Host "$($exe.Name) is $($exe.Length) bytes. Budget is $limit bytes."
+          if ($exe.Length -gt $limit) { throw "$($exe.Name) exceeds the executable size budget." }
 
       - name: Build installer and portable ZIP
         if: env.BUILD_INSTALLER == 'true'
